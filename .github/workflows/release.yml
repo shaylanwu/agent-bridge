@@ -1,0 +1,42 @@
+name: release
+
+# 这个文件在 monorepo 里是「惰性」的（GitHub 只读仓库根的 .github/workflows），
+# 但通过 `git subtree split -P apps/agent-bridge` 拆成独立仓库后，它就变成了
+# 独立仓库的发布流水线：打 v* tag 时自动校验版本并发布到 npm。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # 冒烟：真扫一遍（CI 机器上多数工具未装，只验证命令能跑通、输出合法 JSON）
+      - run: node dist/cli.js status --json
+      - name: guard tag == package.json version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag (v$tag) 与 package.json version ($ver) 不一致"
+            exit 1
+          fi
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
