@@ -1,26 +1,55 @@
 #!/usr/bin/env bash
-# pre-action-check.sh — 工具调用前置拦截（退出码非 0 = 阻断）
-# 用法：echo "<拟执行动作>" | bash .harness/hooks/pre-action-check.sh
-#       bash .harness/hooks/pre-action-check.sh "<拟执行动作>"
+# pre-action-check.sh — 工具调用前置拦截
+#
+# 退出码语义（WorkBuddy / CodeBuddy 钩子规范，与 Claude Code 一致）：
+#   0  = 放行
+#   2  = **阻断**（stderr 内容回填给模型）
+#   其他非零 = 非阻断错误（只提示，仍然放行）—— ⚠️ 所以阻断必须用 2，用 1 等于没拦
+#
+# 用法：echo '<tool_input JSON>' | bash .harness/hooks/pre-action-check.sh   # 钩子调用
+#       bash .harness/hooks/pre-action-check.sh "<拟执行动作>"               # 人肉自测
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-ACTION="${1:-}"
-if [ -z "$ACTION" ] && [ ! -t 0 ]; then
-  ACTION="$(cat)"
+RAW="${1:-}"
+if [ -z "$RAW" ] && [ ! -t 0 ]; then
+  RAW="$(cat)"
 fi
-if [ -z "$ACTION" ]; then
+if [ -z "$RAW" ]; then
   echo "[pre-action-check] 无输入动作，放行（无操作）"
   exit 0
 fi
 
+# 宿主会把整个 tool_input 以 JSON 从 stdin 传入：归一化成「工具 + 目标」一行，
+# 否则 JSON 里的引号/换行会让下面的模式匹配失准（也会让 .harness 读取被误判成写入）。
+ACTION="$RAW"
+case "$(printf '%s' "$RAW" | cut -c1)" in
+  '{')
+    ACTION="$(printf '%s' "$RAW" | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d)).on("end", () => {
+  try {
+    const j = JSON.parse(s);
+    const ti = j.tool_input || {};
+    const tool = j.tool_name || "?";
+    const tgt = ti.command || ti.file_path || ti.path || ti.pattern || ti.url || ti.notebook_path || "";
+    process.stdout.write((tool === "Bash" ? String(tgt) : `${tool} ${tgt}`).trim());
+  } catch {
+    process.stdout.write(s.replace(/\s+/g, " ").slice(0, 2000));
+  }
+});' 2>/dev/null)"
+    ;;
+esac
+
 block() {
   local reason="$1"
-  echo "⛔ [pre-action-check] 已拦截：$reason"
-  echo "    动作: $ACTION"
-  echo "    处置: 属高风险/禁止项（policy.yaml），须人工审批后由人工执行或显式授权。"
+  {
+    echo "⛔ [pre-action-check] 已拦截：$reason"
+    echo "    动作: $ACTION"
+    echo "    处置: 属高风险/禁止项（policy.yaml），须人工审批后由人工执行或显式授权。"
+  } >&2
   bash "$ROOT/.harness/hooks/audit-logger.sh" "agent" "pre-action-blocked" "blocked" "$reason" >/dev/null 2>&1 || true
-  exit 1
+  exit 2
 }
 
 warn() {

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # post-change-gate.sh — 变更后质量门禁（契约边界 / 文档同步 / 类型 / 单测 / 构建 / 提案）
 # 用法: bash .harness/hooks/post-change-gate.sh [变更文件...]   （无参数时用 git status 检测）
-# 任一门禁失败 → 退出码非 0，必须修复后重跑，禁止继续后续步骤。
+#
+# 退出码：0 = 通过；2 = **阻断**（Stop 钩子的阻断语义；其他非零码在宿主里只是提示，等于没拦）
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
@@ -118,7 +119,7 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   echo "⛔ [gate] 门禁未通过（${#FAILED[@]} 项失败）："
   for f in "${FAILED[@]}"; do echo "   - $f"; done
   bash .harness/hooks/audit-logger.sh "agent" "post-change-gate" "failed" "failures=${#FAILED[@]}" >/dev/null 2>&1 || true
-  exit 1
+  exit 2
 fi
 
 echo "✅ [gate] 门禁全部通过"

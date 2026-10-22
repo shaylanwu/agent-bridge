@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "description": "agent-bridge Harness hooks 清单：宿主 Agent 按本文件把护栏脚本挂到对应事件。非零退出码 = 阻断。",
+  "description": "agent-bridge Harness hooks 清单：宿主按本文件把护栏脚本挂到对应事件。**exit 2 = 阻断**（0 放行；其他非零码在宿主里只是提示，不阻断）。实际挂载见 .workbuddy/settings.json。",
   "hooks": {
     "PreToolUse": [
       {
@@ -44,8 +44,8 @@
     ]
   },
   "invocation_notes": {
-    "pre-action-check": "stdin 传入拟执行动作描述（或作为 $1），拦截时输出原因并 exit 1",
-    "post-change-gate": "可选传变更文件列表；缺省用 git status 检测；任一门禁失败 exit 1",
+    "pre-action-check": "stdin 收宿主传入的 tool_input JSON（或作为 $1 传人肉可读动作），拦截时输出原因到 stderr 并 exit 2",
+    "post-change-gate": "可选传变更文件列表；缺省用 git status 检测；任一门禁失败 exit 2（阻断 Stop）",
     "audit-logger": "bash audit-logger.sh <actor> <action> <result> [detail]，JSONL 追加至 .harness/work/audit-<date>.jsonl"
   }
 }

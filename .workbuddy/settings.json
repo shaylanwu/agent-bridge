@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 30,
+            "command": "bash -c 'if [ -n \"${CODEBUDDY_PROJECT_DIR:-}\" ] && [ -f \"$CODEBUDDY_PROJECT_DIR/.harness/hooks/pre-action-check.sh\" ]; then exec bash \"$CODEBUDDY_PROJECT_DIR/.harness/hooks/pre-action-check.sh\"; fi; exec bash .harness/hooks/pre-action-check.sh'",
+            "description": "agent-bridge 护栏：拦截 .harness 写入 / 无提案改 protocol.ts / npm publish / execSync / 明文密钥 / 读凭据 / 改归档（exit 2 = 阻断）"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "bash -c 'if [ -n \"${CODEBUDDY_PROJECT_DIR:-}\" ] && [ -f \"$CODEBUDDY_PROJECT_DIR/.harness/hooks/audit-logger.sh\" ]; then exec bash \"$CODEBUDDY_PROJECT_DIR/.harness/hooks/audit-logger.sh\" agent tool_write done; fi; exec bash .harness/hooks/audit-logger.sh agent tool_write done'",
+            "description": "文件写入留痕（审计 → .harness/work/audit-*.jsonl）"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 55,
+            "command": "bash -c 'if [ -n \"${CODEBUDDY_PROJECT_DIR:-}\" ] && [ -f \"$CODEBUDDY_PROJECT_DIR/.harness/hooks/post-change-gate.sh\" ]; then exec bash \"$CODEBUDDY_PROJECT_DIR/.harness/hooks/post-change-gate.sh\"; fi; exec bash .harness/hooks/post-change-gate.sh'",
+            "description": "收尾门禁：契约边界 + 文档一致 + 类型 + 单测 + 构建 + 提案（失败 exit 2 阻断收尾）"
+          }
+        ]
+      }
+    ]
+  }
+}

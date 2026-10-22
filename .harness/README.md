@@ -62,7 +62,8 @@ e2e-pilot 是 monorepo，护栏重点是**分包依赖边界 + DB 迁移**。age
 1. **Skill = 目录**：`<kebab-name>/SKILL.md` 必需，frontmatter `name` 与目录名一致；细节下沉 `references/`，可执行逻辑放 `scripts/`；
 2. **Agent = 目录**：`AGENT.md` frontmatter 声明 `role / tools_allowed / tools_forbidden / escalates_to`；评审清单独立成 `checklists/`；
 3. **Rule = 带 frontmatter 的文档**：`priority / applies_to / enforced_by` 让规则可被机器路由；
-4. **Hook = 脚本 + 清单**：`hooks.json` 声明事件映射；脚本只做一件事，非零退出码阻断；
+4. **Hook = 脚本 + 清单**：`hooks.json` 声明事件映射，`.workbuddy/settings.json` 是真正挂载点；脚本只做一件事，
+   **exit 2 阻断**（WorkBuddy/CodeBuddy 语义：0 放行、2 阻断、其他非零码只是提示 —— 用 `exit 1` 等于没拦）；
 5. **Eval = 带 frontmatter 的用例**：`kind / expected / enforced_by` 可批量回归护栏能力。
 
 ## 设计原则
@@ -92,8 +93,9 @@ bash .harness/scripts/rollback.sh --files <f>      # 回退（dry-run；CONFIRM=
 
 ## 实施落地步骤（人工执行）
 
-1. **接入宿主**：按 `hooks/hooks.json` 把三个脚本挂到宿主 Agent 事件（PreToolUse → pre-action-check；
-   PostToolUse(Write|Edit) → 审计留痕；Stop → post-change-gate）。**非零退出码必须阻断**；
+1. **接入宿主**：把三个脚本挂到宿主事件 —— **已挂载在 `.workbuddy/settings.json`**（PreToolUse → pre-action-check；
+   PostToolUse(Write|Edit|MultiEdit) → 审计留痕；Stop → post-change-gate）。宿主只认 **exit 2** 为阻断，
+   改动脚本时不要退回 `exit 1`。若桌面端不读项目级配置，把该文件的 `hooks` 段原样复制到 `~/.workbuddy/settings.json`；
 2. **逐份评审**：由仓库 owner 评审 `.harness/`（重点：`policy.yaml` 的风险分级是否与真实高-risk 文件一致；
    `always-on.md` 的红线是否覆盖协议/凭据/spawn 三块）；
 3. **护栏自测**：逐条跑 `evals/negative/`（每条都必须被拦），再跑 `evals/positive/`（每条都应放行且门禁全绿）；
