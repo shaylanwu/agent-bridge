@@ -37,6 +37,6 @@
 
 ## 7. 归档
 
-- [ ] 7.1 合并 spec delta（bridge-protocol 的工具状态上报 + local-tool-scan 的探测口径）到 `openspec/specs/`
-- [ ] 7.2 提案移入 `openspec/changes/archive/YYYY-MM-DD-add-logo-and-streaming-scan/`
-- [ ] 7.3 人工评审：确认 `logo` 体积（约 70KB/全量）与协议新增可接受
+- [x] 7.1 合并 spec delta（bridge-protocol 的工具状态上报 + local-tool-scan 的探测口径）到 `openspec/specs/`
+- [x] 7.2 提案移入 `openspec/changes/archive/YYYY-MM-DD-add-logo-and-streaming-scan/`
+- [x] 7.3 人工评审：确认 `logo` 体积与协议新增（2026-10-22 已确认；实测全量 64KB）

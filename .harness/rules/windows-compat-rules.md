@@ -29,9 +29,13 @@ version: 1.0.0
 
 ## 3. 事件循环与阻塞
 
-- 探测使用 `execFileSync`（同步）。单次扫描实测约 12s，期间事件循环被占满 → WS 心跳与入站指令都会延迟。
-- ⛔ 禁止在 `onOpen` 之外新增同步全量扫描；新增扫描入口必须走 `scanAgents()` 缓存（30s TTL）。
-- 若要把探测改为异步：必须同时保证 `scan_result` 的 `requestId` 能正确配对，且不改协议字段。
+- 探测已改为**异步 `spawn` + 并发上限 6**（`scan.ts`），并有 `resolveBinAsync` 避免同步 `where`
+  串行（每次 ~370ms）。实测：串行 12.8s/25.7s → 并发后 6.7s，首个结果 1.3s 到达。
+- ⛔ 禁止回退成同步探测（`execFileSync` 跑 `--version`）——那样会重新占住事件循环，WS 心跳与入站指令全部延迟。
+- 新增扫描入口必须走 `scanAgents()`（30s TTL 缓存 + `onItem` 逐项回调），不要自己起一条探测通路。
+- 并发上限是有意压着的：gemini/mimo 单体探测约 5s，是当前关键路径；调到 8 收益为零（实测 7.4s vs 7.2s），
+  只会抬高内存峰值。
+- 改探测链路时必须保证：`scan_result` 仍带 `requestId` 配对、终态仍在流式 `scan_progress` 之后发出。
 
 ## 4. 路径与换行
 

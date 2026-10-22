@@ -9,8 +9,9 @@
 
 ### Requirement: 三态探测
 
-bridge SHALL 为 11 个内置适配器分别产出 `agent_list` 项，`status` 为 `ready` / `installed_no_cred` /
+bridge SHALL 为 11 个内置适配器分别产出扫描结果项，`status` 为 `ready` / `installed_no_cred` /
 `not_installed` 之一；若二进制可定位但版本探测失败，SHALL 置 `installedButBroken: true`。
+探测 SHALL 并发执行（并发上限 4），SHALL NOT 阻塞事件循环等待子进程。
 
 #### Scenario: 未安装
 
@@ -21,6 +22,11 @@ bridge SHALL 为 11 个内置适配器分别产出 `agent_list` 项，`status` �
 
 - **WHEN** 找到可执行文件但 `--version` 非零退出或超时
 - **THEN** 该项保留 `path`，置 `installedButBroken = true`，版本号只在 stdout 明确出现时才回填
+
+#### Scenario: 并发不阻塞心跳
+
+- **WHEN** 11 个工具中有 3 个版本探测很慢（接近超时）
+- **THEN** 其余 8 个仍按完成顺序即时回传 `scan_progress`，期间 WS 心跳与 `ping/pong` 不受阻塞
 
 ### Requirement: 凭据只探测不读取
 
@@ -55,3 +61,18 @@ bridge SHALL 缓存扫描结果 30 秒，`--fresh` 或平台 `scan` 指令 SHALL
 
 - **WHEN** 30 秒内重复调用 `status`
 - **THEN** 直接返回缓存结果，不重复 spawn 11 次版本探测
+
+### Requirement: 品牌图标
+
+bridge SHALL 为每个适配器携带一份品牌图标（`logo`），取自随包发布的 `assets/agent-icons/<kind>.svg`，
+SHALL 以 `data:image/svg+xml;base64,…` 形式随扫描结果回传；图标资产缺失时 SHALL 省略字段而非报错。
+
+#### Scenario: 图标随结果下发
+
+- **WHEN** bridge 上报 `Claude Code` 的扫描项
+- **THEN** 该项含 `logo`，值为 `data:image/svg+xml;base64,` 开头的 24×24 矢量
+
+#### Scenario: 资产缺失
+
+- **WHEN** 某个 kind 对应的 svg 不在包内
+- **THEN** 该项不含 `logo` 字段，其余字段正常，扫描不失败
