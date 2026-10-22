@@ -179,8 +179,15 @@ async function cmdConnect(flags: Flags): Promise<void> {
     hostname: hostname(),
     log: (l) => console.log(C.dim(l)),
     onOpen: async () => {
-      const items = await scanAgents({ fresh: true });
-      client.send({ type: 'agent_list', agents: items, scannedAt: new Date().toISOString() });
+      const now = (): string => new Date().toISOString();
+      // 流式上报：每完成一个工具就推一条 scan_progress，平台可以边收边亮卡片
+      const items = await scanAgents({
+        fresh: true,
+        onItem: (item) =>
+          client.send({ type: 'scan_progress', items: [item], scannedAt: now(), done: false }),
+      });
+      client.send({ type: 'scan_progress', items: [], scannedAt: now(), done: true });
+      client.send({ type: 'agent_list', agents: items, scannedAt: now() });
       console.log(C.green(`[agent-bridge] 已上报 ${items.length} 个工具状态，等待平台任务…`));
     },
     onMessage: (raw) => {
@@ -199,14 +206,22 @@ async function cmdConnect(flags: Flags): Promise<void> {
         return;
       }
       if (msg.type === 'scan') {
-        void scanAgents({ fresh: true }).then((agents) =>
-          client.send({
-            type: 'scan_result',
-            requestId: msg.requestId,
-            agents,
-            scannedAt: new Date().toISOString(),
-          }),
-        );
+        const requestId = msg.requestId;
+        void scanAgents({
+          fresh: true,
+          onItem: (item) =>
+            client.send({
+              type: 'scan_progress',
+              requestId,
+              items: [item],
+              scannedAt: new Date().toISOString(),
+              done: false,
+            }),
+        }).then((agents) => {
+          const scannedAt = new Date().toISOString();
+          client.send({ type: 'scan_progress', requestId, items: [], scannedAt, done: true });
+          client.send({ type: 'scan_result', requestId, agents, scannedAt });
+        });
         return;
       }
       if (msg.type === 'cancel_task') {

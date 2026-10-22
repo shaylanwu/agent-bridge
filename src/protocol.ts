@@ -26,6 +26,8 @@ export interface AgentListItem {
   capability: AgentCapability;
   /** 找到二进制但执行失败（exit≠0 / 超时），典型是 Node 版本不兼容 */
   installedButBroken?: boolean;
+  /** 品牌图标：`data:image/svg+xml;base64,…`（24×24 单色）；资产缺失时省略。平台应按 kind 缓存 */
+  logo?: string;
 }
 
 export type ClientMessage =
@@ -38,6 +40,14 @@ export type ClientMessage =
       hostname: string;
     }
   | { type: 'agent_list'; agents: AgentListItem[]; scannedAt: string }
+  | {
+      /** 扫描过程中的增量回传：每完成一个适配器发一条，`done: true` 表示探测阶段结束 */
+      type: 'scan_progress';
+      requestId?: string;
+      items: AgentListItem[];
+      scannedAt: string;
+      done: boolean;
+    }
   | { type: 'task_status'; taskId: string; status: TaskStatus; exitCode?: number; error?: string }
   | { type: 'task_log'; taskId: string; stream: 'stdout' | 'stderr'; data: string; isAnsi: boolean }
   | { type: 'pong'; at: number }

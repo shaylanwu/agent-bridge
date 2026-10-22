@@ -9,6 +9,7 @@ import { buildWinCommandLine } from '../src/win-exec';
 import { isUnder, startTask } from '../src/runner';
 import { loadConfig, normalizeAllowedCwd } from '../src/config';
 import { resolveDeviceId, wsUrlOf } from '../src/bridge-client';
+import { logoDataUri } from '../src/agent-logos';
 
 describe('chunkLog', () => {
   it('按 UTF-8 字节切成 ≤4KB 且不切断多字节字符', () => {
@@ -138,6 +139,27 @@ describe('WS 地址与 deviceId 解析', () => {
   it('全是空/空白时返回空串（调用方提示平台按 token 反查）', () => {
     expect(resolveDeviceId({})).toBe('');
     expect(resolveDeviceId({ fromAuth: '  ', flag: '', env: '   ', saved: undefined })).toBe('');
+  });
+});
+
+describe('品牌图标', () => {
+  it('已收录的 kind 返回 base64 data URI（24×24 单色矢量）', () => {
+    const uri = logoDataUri('claude-code');
+    expect(uri).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(uri && Buffer.from(uri.split(',')[1] ?? '', 'base64').toString('utf8')).toContain('<svg');
+  });
+
+  it('未知 kind 返回 undefined（调用方省略 logo 字段，不报错）', () => {
+    expect(logoDataUri('not-a-real-agent')).toBeUndefined();
+  });
+
+  it('重复调用命中缓存（同一字符串引用）', () => {
+    expect(logoDataUri('codex')).toBe(logoDataUri('codex'));
+  });
+
+  it('11 个适配器都能解析到 logo（资产缺失会在这里暴露）', () => {
+    const missing = AGENTS.filter((a) => !logoDataUri(a.kind)).map((a) => a.kind);
+    expect(missing).toEqual([]);
   });
 });
 

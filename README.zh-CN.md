@@ -156,8 +156,20 @@ bridge 不持有超出启动它的系统用户的任何权限；除授权期间�
 
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| bridge → 平台 | `hello`、`agent_list`、`scan_result`、`task_log`、`task_status`、`pong` |
+| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`pong` |
 | 平台 → bridge | `run_task`、`cancel_task`、`scan`、`ping`                               |
+
+### 扫描结果实时回传与品牌图标
+
+探测 11 个 CLI 需要几秒，所以结果是**流式**回传而不是一次性丢出去：每有一个适配器探测完成，bridge 就发一条
+`scan_progress`（`items` 为刚完成的项，`done: false`）；全部完成后发一条 `done: true` 收尾，再发终态清单
+（首连是 `agent_list`，响应 `scan` 则是带同一 `requestId` 的 `scan_result`）。忽略 `scan_progress` 的平台
+仍能拿到完整清单。
+
+每一项都带卡片需要的四要素：`display`（工具名）、`version`（版本）、`status`（状态）、`logo`（品牌图标）——
+`logo` 是 `data:image/svg+xml;base64,…` 的 24×24 单色矢量，取自 `assets/agent-icons/<kind>.svg` 里的官方
+商标副本。同一批图标会在每条消息里重复（11 个合计约 64 KB），平台请按 `kind` 缓存，不要每帧重新解析；
+资产缺失时字段直接省略。
 
 ## 案例
 

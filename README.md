@@ -170,8 +170,21 @@ Protocol (JSON over one connection):
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_result`, `task_log`, `task_status`, `pong` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `pong` |
 | platform → bridge | `run_task`, `cancel_task`, `scan`, `ping`                               |
+
+### Live scan progress and brand icons
+
+Probing 11 CLIs takes a few seconds, so results stream in instead of arriving as one batch: for every adapter
+that finishes, the bridge sends `scan_progress` with the newly finished `items` and `done: false`; one final
+`scan_progress` with `done: true` closes the probing phase, followed by the terminal list (`agent_list` on
+connect, or `scan_result` carrying the same `requestId` when answering `scan`). A platform that ignores
+`scan_progress` still gets the complete list.
+
+Every item carries what a card needs: `display` (name), `version`, `status`, and `logo` — a
+`data:image/svg+xml;base64,…` 24×24 monochrome SVG taken from the official brand marks in
+`assets/agent-icons/<kind>.svg`. The same logos repeat in each message (~64 KB for all 11), so cache them by
+`kind` rather than re-parsing every frame. A missing asset just omits the field.
 
 ## Examples
 
