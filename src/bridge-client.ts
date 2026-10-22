@@ -6,6 +6,7 @@
  */
 
 import { WebSocket } from 'ws';
+import { Outbox } from './outbox.js';
 import type { ClientMessage, ServerMessage } from './protocol.js';
 
 export interface BridgeClientOptions {
@@ -27,7 +28,6 @@ export interface BridgeClient {
 }
 
 const HEARTBEAT_MS = 15_000;
-const MAX_QUEUE = 500;
 const MAX_BACKOFF_MS = 30_000;
 
 /**
@@ -65,16 +65,18 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
   let ws: WebSocket | null = null;
   let closedByUs = false;
   let backoff = 1000;
-  /** 断线期间待发消息：只保留最新的 agent_list，日志类直接丢（避免内存膨胀） */
-  const queue: ClientMessage[] = [];
+  /** 断线期间待发消息：控制类按条数、日志按字节各自有界（见 outbox.ts） */
+  const outbox = new Outbox();
   let hbTimer: NodeJS.Timeout | undefined;
 
   const flush = (): void => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    while (queue.length) {
-      const msg = queue.shift();
-      if (msg) ws.send(JSON.stringify(msg));
+    const droppedBytes = outbox.dropped;
+    const pending = outbox.drain();
+    if (droppedBytes > 0) {
+      log(`[agent-bridge] 断线期间日志超出缓冲上限，丢弃约 ${Math.round(droppedBytes / 1024)} KB`);
     }
+    for (const msg of pending) ws.send(JSON.stringify(msg));
   };
 
   const send = (msg: ClientMessage): void => {
@@ -82,10 +84,8 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       ws.send(JSON.stringify(msg));
       return;
     }
-    // 断线补发：状态类消息保留，日志类丢弃
-    if (msg.type === 'task_log') return;
-    if (queue.length >= MAX_QUEUE) queue.shift();
-    queue.push(msg);
+    // 断线补发：控制类与日志都进缓冲（日志有界、超限带截断提示），不再静默丢弃
+    outbox.push(msg);
   };
 
   const connect = (): void => {

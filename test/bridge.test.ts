@@ -9,6 +9,7 @@ import { buildWinCommandLine } from '../src/win-exec';
 import { isUnder, startTask } from '../src/runner';
 import { loadConfig, normalizeAllowedCwd, resolveMaxQueued, resolveMaxTasks } from '../src/config';
 import { resolveDeviceId, wsUrlOf } from '../src/bridge-client';
+import { Outbox } from '../src/outbox';
 import { logoDataUri } from '../src/agent-logos';
 
 describe('chunkLog', () => {
@@ -228,6 +229,63 @@ describe('并发上限配置', () => {
       if (savedEnv !== undefined) process.env['AGENT_BRIDGE_MAX_TASKS'] = savedEnv;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('断线缓冲 Outbox', () => {
+  const logMsg = (taskId: string, data: string) =>
+    ({ type: 'task_log' as const, taskId, stream: 'stdout' as const, data, isAnsi: false });
+  const statusMsg = (taskId: string) => ({ type: 'task_status' as const, taskId, status: 'success' as const });
+  const logTexts = (msgs: { type: string }[]): string[] =>
+    msgs.filter((m) => m.type === 'task_log').map((m) => (m as { data: string }).data);
+
+  it('先控制后日志，各自 FIFO；drain 后清空', () => {
+    const ob = new Outbox();
+    ob.push(logMsg('t1', 'a'));
+    ob.push(statusMsg('t1'));
+    ob.push(logMsg('t1', 'b'));
+    const out = ob.drain();
+    expect(out.map((m) => m.type)).toEqual(['task_status', 'task_log', 'task_log']);
+    expect(logTexts(out)).toEqual(['a', 'b']);
+    expect(ob.pending).toBe(0);
+    expect(ob.drain()).toEqual([]);
+  });
+
+  it('控制消息按条数限流，丢最旧', () => {
+    const ob = new Outbox({ maxControls: 2 });
+    ob.push(statusMsg('a'));
+    ob.push(statusMsg('b'));
+    ob.push(statusMsg('c'));
+    const ids = ob.drain().map((m) => (m as { taskId: string }).taskId);
+    expect(ids).toEqual(['b', 'c']);
+  });
+
+  it('日志按字节限流：丢最旧 + 插入截断提示', () => {
+    const ob = new Outbox({ maxLogBytes: 400 });
+    for (let i = 0; i < 10; i += 1) ob.push(logMsg('t1', `${i}:`.padEnd(100, 'x')));
+    expect(ob.dropped).toBeGreaterThan(0);
+    const out = ob.drain();
+    const texts = logTexts(out);
+    expect(texts[0]).toContain('断线期间日志超出缓冲上限');
+    expect(texts.length).toBeLessThan(11);
+    expect(texts.at(-1)).toContain('9:');
+  });
+
+  it('未超限时不插提示（正常补发不产生噪声）', () => {
+    const ob = new Outbox({ maxLogBytes: 10 * 1024 });
+    ob.push(logMsg('t1', 'hello'));
+    const out = ob.drain();
+    expect(out).toHaveLength(1);
+    expect(logTexts(out)).toEqual(['hello']);
+    expect(ob.dropped).toBe(0);
+  });
+
+  it('单条日志本身超限时保留它，不丢成空', () => {
+    const ob = new Outbox({ maxLogBytes: 10 });
+    ob.push(logMsg('t1', 'y'.repeat(200)));
+    const out = ob.drain();
+    expect(out).toHaveLength(1);
+    expect(ob.dropped).toBe(0);
   });
 });
 

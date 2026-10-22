@@ -200,6 +200,13 @@ Every item carries what a card needs: `display` (name), `version`, `status`, and
 `assets/agent-icons/<kind>.svg`. The same logos repeat in each message (~64 KB for all 11), so cache them by
 `kind` rather than re-parsing every frame. A missing asset just omits the field.
 
+### Logs while the socket is down
+
+`task_log` frames produced during a disconnect are buffered, not dropped: up to 256 KB of log frames per
+disconnect (oldest dropped first, control messages kept in a separate bounded queue). On reconnect everything
+is replayed in order. If the buffer overflowed, the replay starts with
+`[agent-bridge] 断线期间日志超出缓冲上限（N KB），已丢弃较早部分`, so a gap is never silent.
+
 ## Examples
 
 **Bind a laptop and confirm the device is online**
