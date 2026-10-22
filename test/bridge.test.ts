@@ -7,7 +7,7 @@ import { createPkce } from '../src/auth';
 import { AGENTS, agentDefOf, probeCredential } from '../src/agent-adapters';
 import { buildWinCommandLine } from '../src/win-exec';
 import { isUnder, startTask } from '../src/runner';
-import { loadConfig, normalizeAllowedCwd, resolveMaxTasks } from '../src/config';
+import { loadConfig, normalizeAllowedCwd, resolveMaxQueued, resolveMaxTasks } from '../src/config';
 import { resolveDeviceId, wsUrlOf } from '../src/bridge-client';
 import { logoDataUri } from '../src/agent-logos';
 
@@ -184,6 +184,27 @@ describe('并发上限配置', () => {
     } finally {
       if (saved === undefined) delete process.env['AGENT_BRIDGE_MAX_TASKS'];
       else process.env['AGENT_BRIDGE_MAX_TASKS'] = saved;
+    }
+  });
+
+  it('队列上限：默认 32，允许 0（不排队），过大截断', () => {
+    expect(resolveMaxQueued()).toBe(32);
+    expect(resolveMaxQueued(0)).toBe(0);
+    expect(resolveMaxQueued(8)).toBe(8);
+    expect(resolveMaxQueued(99999)).toBe(1024);
+    expect(resolveMaxQueued(-1)).toBe(32);
+  });
+
+  it('队列上限：环境变量优先，空字符串视为未设置', () => {
+    const saved = process.env['AGENT_BRIDGE_MAX_QUEUE'];
+    try {
+      process.env['AGENT_BRIDGE_MAX_QUEUE'] = '5';
+      expect(resolveMaxQueued(8)).toBe(5);
+      process.env['AGENT_BRIDGE_MAX_QUEUE'] = '';
+      expect(resolveMaxQueued(8)).toBe(8);
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_MAX_QUEUE'];
+      else process.env['AGENT_BRIDGE_MAX_QUEUE'] = saved;
     }
   });
 

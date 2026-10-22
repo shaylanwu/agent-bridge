@@ -19,6 +19,8 @@ export interface BridgeConfig {
   allowedCwd?: string[];
   /** 同时运行的任务数上限（缺省 3；见 resolveMaxTasks） */
   maxTasks?: number;
+  /** 排队等待的任务数上限（缺省 32；见 resolveMaxQueued） */
+  maxQueued?: number;
   /** 设备展示名（默认 hostname） */
   label?: string;
   /** 记一次绑定时间，便于排查 */
@@ -37,6 +39,18 @@ export function resolveMaxTasks(fromConfig?: number): number {
   const chosen = Number.isFinite(envRaw) && envRaw > 0 ? envRaw : fromConfig;
   if (!Number.isFinite(chosen ?? NaN) || (chosen ?? 0) <= 0) return DEFAULT_MAX_TASKS;
   return Math.min(MAX_TASKS_CEILING, Math.max(1, Math.floor(chosen as number)));
+}
+
+/** 队列上限：默认 32，夹在 0~1024（0 = 不允许排队，超限直接失败） */
+export const DEFAULT_MAX_QUEUED = 32;
+const MAX_QUEUED_CEILING = 1024;
+
+export function resolveMaxQueued(fromConfig?: number): number {
+  const rawEnv = process.env['AGENT_BRIDGE_MAX_QUEUE'];
+  const envValue = rawEnv === undefined || rawEnv.trim() === '' ? undefined : Number(rawEnv);
+  const chosen = envValue !== undefined && Number.isFinite(envValue) && envValue >= 0 ? envValue : fromConfig;
+  if (chosen === undefined || !Number.isFinite(chosen) || chosen < 0) return DEFAULT_MAX_QUEUED;
+  return Math.min(MAX_QUEUED_CEILING, Math.floor(chosen));
 }
 
 /** 白名单条目规范化：`resolve()` 成绝对路径、丢弃空项、去重；空数组等价于「未配置」。
@@ -70,7 +84,9 @@ export function loadConfig(): BridgeConfig | null {
     const allowedCwd = normalizeAllowedCwd(raw['allowed_cwd'] ?? raw['allowedCwd']);
     const maxTasksRaw = Number(raw['max_tasks'] ?? raw['maxTasks'] ?? '');
     const maxTasks = Number.isFinite(maxTasksRaw) && maxTasksRaw > 0 ? Math.floor(maxTasksRaw) : undefined;
-    return { ...(raw as unknown as BridgeConfig), allowedCwd, maxTasks };
+    const maxQueuedRaw = Number(raw['max_queue'] ?? raw['maxQueued'] ?? '');
+    const maxQueued = Number.isFinite(maxQueuedRaw) && maxQueuedRaw >= 0 ? Math.floor(maxQueuedRaw) : undefined;
+    return { ...(raw as unknown as BridgeConfig), allowedCwd, maxTasks, maxQueued };
   } catch {
     return null;
   }
@@ -88,6 +104,7 @@ export function saveConfig(cfg: BridgeConfig): string {
   if (cfg.refreshToken) out['refreshToken'] = cfg.refreshToken;
   if (cfg.allowedCwd?.length) out['allowed_cwd'] = cfg.allowedCwd;
   if (cfg.maxTasks) out['max_tasks'] = cfg.maxTasks;
+  if (cfg.maxQueued !== undefined) out['max_queue'] = cfg.maxQueued;
   if (cfg.label) out['label'] = cfg.label;
   if (cfg.boundAt) out['boundAt'] = cfg.boundAt;
   const body = stringifyToml(out);

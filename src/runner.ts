@@ -1,12 +1,17 @@
 /**
- * 任务执行器：拉起目标 CLI、流式回传输出、支持取消与超时
+ * 任务执行器：拉起目标 CLI、流式回传输出、支持取消与超时、并发上限 + 有界 FIFO 队列
  *
  * 安全边界（本地强校验，不信任平台）：
  *  - agentType 必须在白名单（AGENTS 表）内
  *  - 平台不能下发任意 shell 命令：只拼「白名单二进制 + 参数数组」，不经过 shell
  *    （Windows 的 .cmd 垫片必须经 cmd.exe，这是唯一例外，且命令名固定为白名单里的 bin）
+ *  - 平台不能注入环境变量：子进程环境恒为 bridge 自身 process.env
  *  - cwd 必须存在且是目录；配置了 allowed_cwd 时还必须是其子目录
  *  - 每个任务强制 timeout，到点 SIGTERM → 2s 后 SIGKILL
+ *
+ * 调度（2026-10-22）：超出并发上限的任务**排队**而不是拒绝 —— 排队是任务系统的标准做法，
+ * 平台不必自己实现重试。队列有界（`max_queue`），满了才拒绝；排队任务可取消，
+ * `timeoutMs` 从**入队**开始计算（含排队等待），避免"排队半小时再跑十分钟"击穿平台自己的超时。
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -24,8 +29,10 @@ export interface RunTaskRequest {
   prompt?: string;
   timeoutMs?: number;
   allowedCwd?: string[];
-  /** 并发上限（由 cli 从 config.toml / 环境变量解析后传入；缺省用 DEFAULT_MAX_TASKS） */
+  /** 并发上限（由 cli 从 config.toml / 环境变量解析后传入；缺省 DEFAULT_MAX_TASKS） */
   maxConcurrent?: number;
+  /** 队列长度上限（缺省 DEFAULT_MAX_QUEUED；0 表示不允许排队） */
+  maxQueued?: number;
 }
 
 export interface TaskHooks {
@@ -43,13 +50,37 @@ const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const KILL_GRACE_MS = 2000;
 /** 默认并发上限：开发机 4~8 核，几个大模型 CLI 同时跑就会卡死整机。可用 config.toml 的 max_tasks 调整 */
 const DEFAULT_MAX_TASKS = 3;
+/** 默认队列上限：再长的排队对平台来说也没有意义（真那么忙应该换台机器） */
+const DEFAULT_MAX_QUEUED = 32;
 
 /** 当前运行中的任务数（只在本进程内有效） */
 let runningTasks = 0;
+/** 当前生效的并发上限（cli 每次下发都带同一个值；pump 时按最近一次的值算） */
+let currentMaxTasks = DEFAULT_MAX_TASKS;
+/** 排队中的任务（FIFO） */
+const queue: Entry[] = [];
 
-/** 仅用于测试与诊断：当前并发数 */
+/** 仅用于测试与诊断 */
 export function runningTaskCount(): number {
   return runningTasks;
+}
+export function queuedTaskCount(): number {
+  return queue.length;
+}
+
+interface Entry {
+  req: RunTaskRequest;
+  hooks: TaskHooks;
+  cmd: string;
+  argv: string[];
+  status: TaskStatus;
+  started: boolean;
+  finished: boolean;
+  child?: ChildProcess;
+  timer?: NodeJS.Timeout;
+  killTimer?: NodeJS.Timeout;
+  resolve: (s: TaskStatus) => void;
+  done: Promise<TaskStatus>;
 }
 
 /**
@@ -72,6 +103,90 @@ function buildArgs(template: string[], prompt?: string): string[] {
   return template.map((a) => (prompt === undefined ? a : a.replaceAll('{{prompt}}', prompt)));
 }
 
+function timeoutOf(req: RunTaskRequest): number {
+  return req.timeoutMs && req.timeoutMs > 0 ? req.timeoutMs : DEFAULT_TIMEOUT_MS;
+}
+
+/** 统一收口：任何路径进入终态都走这里（保证只 settle 一次、只释放一次名额） */
+function finish(entry: Entry, status: TaskStatus, exitCode?: number, error?: string): void {
+  if (entry.finished) return;
+  entry.finished = true;
+  entry.status = status;
+  if (entry.timer) clearTimeout(entry.timer);
+  if (entry.killTimer) clearTimeout(entry.killTimer);
+  if (entry.started) {
+    runningTasks = Math.max(0, runningTasks - 1);
+    entry.hooks.onStatus(status, { exitCode, error });
+    entry.resolve(status);
+    pump();
+    return;
+  }
+  // 排队中就被取消/超时：从队列里摘掉
+  const idx = queue.indexOf(entry);
+  if (idx >= 0) queue.splice(idx, 1);
+  entry.hooks.onStatus(status, { exitCode, error });
+  entry.resolve(status);
+}
+
+/** 有空位就从队列取任务启动（FIFO） */
+function pump(): void {
+  while (runningTasks < currentMaxTasks && queue.length > 0) {
+    const next = queue[0];
+    if (!next) return;
+    queue.shift();
+    launch(next);
+  }
+}
+
+/** 真正 spawn 一个任务（入队与直跑共用） */
+function launch(entry: Entry): void {
+  if (entry.finished) return;
+  const { req } = entry;
+  entry.started = true;
+  runningTasks += 1;
+
+  // 子进程环境 = bridge 自身进程环境。平台**不能**注入任何环境变量（见 protocol.ts 的说明）
+  const shim = isWinShim(entry.cmd);
+  const child: ChildProcess = shim
+    ? spawn(buildWinCommandLine(entry.cmd, entry.argv), {
+        cwd: req.cwd,
+        env: process.env,
+        shell: true,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    : spawn(entry.cmd, entry.argv, {
+        cwd: req.cwd,
+        env: process.env,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+  entry.child = child;
+
+  const emit = (stream: 'stdout' | 'stderr', buf: Buffer): void => {
+    for (const piece of chunkLog(buf.toString('utf8'))) entry.hooks.onLog(stream, piece);
+  };
+  child.stdout?.on('data', (b: Buffer) => emit('stdout', b));
+  child.stderr?.on('data', (b: Buffer) => emit('stderr', b));
+
+  child.on('error', (e) => finish(entry, 'failed', undefined, `进程启动失败：${e.message}`));
+  child.on('close', (code) => {
+    if (entry.status === 'timeout') finish(entry, 'timeout', code ?? undefined, '任务超时，进程已终止');
+    else if (entry.status === 'cancelled') finish(entry, 'cancelled', code ?? undefined, '任务已取消');
+    else if (code === 0) finish(entry, 'success', 0);
+    else finish(entry, 'failed', code ?? undefined, `CLI 退出码 ${code ?? 'unknown'}`);
+  });
+
+  entry.hooks.onStatus('running');
+}
+
+/** 终止一个已启动的进程：先礼后兵 */
+function terminate(entry: Entry): void {
+  if (!entry.child) return;
+  entry.child.kill('SIGTERM');
+  entry.killTimer = setTimeout(() => entry.child?.kill('SIGKILL'), KILL_GRACE_MS);
+}
+
 export function startTask(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
   const def = agentDefOf(req.agentType);
   const finishEarly = (status: TaskStatus, error: string): TaskHandle => {
@@ -86,16 +201,9 @@ export function startTask(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
   if (req.allowedCwd?.length && !req.allowedCwd.some((root) => isUnder(req.cwd, root))) {
     return finishEarly('failed', `工作目录不在允许范围内：${req.cwd}`);
   }
-  // 并发上限：快速拒绝而不是排队 —— 排队会让平台的超时语义不可预测，平台本身可以重试
-  const maxTasks = req.maxConcurrent && req.maxConcurrent > 0 ? Math.floor(req.maxConcurrent) : DEFAULT_MAX_TASKS;
-  if (runningTasks >= maxTasks) {
-    return finishEarly('failed', `并发任务已达上限（${maxTasks}），请稍后重试`);
-  }
 
   // 命令 = 白名单 bin（或 npx 免安装），参数 = 模板（有显式 args 时以平台为准）
-  const explicitArgs = req.args.length > 0;
-  const args = explicitArgs ? req.args : buildArgs(def.taskArgs, req.prompt ?? '');
-
+  const args = req.args.length > 0 ? req.args : buildArgs(def.taskArgs, req.prompt ?? '');
   let cmd: string;
   let argv: string[];
   if (def.npxSpec && !resolveBin([def.bin, ...(def.altBins ?? [])])) {
@@ -108,72 +216,58 @@ export function startTask(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
     argv = args;
   }
 
-  // Windows 的 .cmd 垫片：自己拼完整命令行 + shell（路径带空格也不会断，见 win-exec.ts）
-  const shim = isWinShim(cmd);
-  // 子进程环境 = bridge 自身进程环境。平台**不能**注入任何环境变量（见 protocol.ts 的说明）
-  runningTasks += 1;
-  const child: ChildProcess = shim
-    ? spawn(buildWinCommandLine(cmd, argv), {
-        cwd: req.cwd,
-        env: process.env,
-        shell: true,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-    : spawn(cmd, argv, {
-        cwd: req.cwd,
-        env: process.env,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+  const maxTasks = req.maxConcurrent && req.maxConcurrent > 0 ? Math.floor(req.maxConcurrent) : DEFAULT_MAX_TASKS;
+  const maxQueued = req.maxQueued !== undefined && req.maxQueued >= 0 ? Math.floor(req.maxQueued) : DEFAULT_MAX_QUEUED;
+  currentMaxTasks = maxTasks;
 
-  let status: TaskStatus = 'running';
-  let settled = false;
-  const timeoutMs = req.timeoutMs && req.timeoutMs > 0 ? req.timeoutMs : DEFAULT_TIMEOUT_MS;
-  let killTimer: NodeJS.Timeout | undefined;
+  // 队列满才拒绝（标准做法：先排队，排不下才算过载）
+  if (runningTasks >= maxTasks && queue.length >= maxQueued) {
+    return finishEarly('failed', `任务队列已满（并发 ${maxTasks}，排队 ${maxQueued}），请稍后重试`);
+  }
 
-  const timer = setTimeout(() => {
-    status = 'timeout';
-    child.kill('SIGTERM');
-    killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
-  }, timeoutMs);
-
-  const emit = (stream: 'stdout' | 'stderr', buf: Buffer): void => {
-    for (const piece of chunkLog(buf.toString('utf8'))) hooks.onLog(stream, piece);
-  };
-  child.stdout?.on('data', (b: Buffer) => emit('stdout', b));
-  child.stderr?.on('data', (b: Buffer) => emit('stderr', b));
-
-  const done = new Promise<TaskStatus>((resolve) => {
-    const settle = (next: TaskStatus, exitCode?: number, error?: string): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      runningTasks = Math.max(0, runningTasks - 1); // 终态释放并发名额
-      status = next;
-      hooks.onStatus(next, { exitCode, error });
-      resolve(next);
-    };
-    child.on('error', (e) => settle('failed', undefined, `进程启动失败：${e.message}`));
-    child.on('close', (code) => {
-      if (status === 'timeout') settle('timeout', code ?? undefined, '任务超时，进程已终止');
-      else if (status === 'cancelled') settle('cancelled', code ?? undefined, '任务已取消');
-      else if (code === 0) settle('success', 0);
-      else settle('failed', code ?? undefined, `CLI 退出码 ${code ?? 'unknown'}`);
-    });
+  let resolve!: (s: TaskStatus) => void;
+  const done = new Promise<TaskStatus>((r) => {
+    resolve = r;
   });
+  const entry: Entry = {
+    req,
+    hooks,
+    cmd,
+    argv,
+    status: 'running',
+    started: false,
+    finished: false,
+    resolve,
+    done,
+  };
 
-  hooks.onStatus('running');
+  // timeoutMs 从入队开始算：排队也是用户的等待时间，不能让它无限堆积
+  entry.timer = setTimeout(() => {
+    if (entry.finished) return;
+    if (!entry.started) {
+      finish(entry, 'timeout', undefined, `排队超时（等待超过 ${timeoutOf(req)}ms）`);
+      return;
+    }
+    entry.status = 'timeout';
+    terminate(entry);
+  }, timeoutOf(req));
+
+  if (runningTasks < maxTasks) launch(entry);
+  else {
+    queue.push(entry);
+    hooks.onStatus('running', { error: `排队中（第 ${queue.length} 位，并发上限 ${maxTasks}）` });
+  }
 
   return {
     taskId: req.taskId,
     cancel: () => {
-      if (settled) return;
-      status = 'cancelled';
-      // 先礼后兵：SIGTERM 给 CLI 保存现场的机会，2s 后强杀
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS);
+      if (entry.finished) return;
+      if (!entry.started) {
+        finish(entry, 'cancelled', undefined, '任务已取消（排队中被取消）');
+        return;
+      }
+      entry.status = 'cancelled';
+      terminate(entry);
     },
     done,
   };

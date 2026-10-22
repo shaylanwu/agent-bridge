@@ -21,9 +21,11 @@
 - **移除 `env`**：`RunTaskCommand` 删掉 `env` 字段（`assertServerMessage` 不再透传；未知字段照旧忽略 →
   老平台继续发也不报错、不断连）。`runner` 的子进程环境固定为 bridge 自身 `process.env`，
   删除上一版新增的 `sanitizePlatformEnv()` 与危险键清单（不再需要）。
-- **并发上限可配置**：`config.toml` 新增 `max_tasks`（默认 3，夹在 1–32）；
-  `AGENT_BRIDGE_MAX_TASKS` 环境变量优先于配置文件（CI 场景）。
-  达到上限时快速回 `task_status: failed` + `并发任务已达上限（N）…`，**不排队**（排队会让平台超时语义不可预测）。
+- **并发上限 + 有界 FIFO 队列**（按标准任务系统做法，不直接拒活）：
+  `config.toml` 新增 `max_tasks`（默认 3，夹 1–32）与 `max_queue`（默认 32，夹 0–1024）；
+  `AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` 环境变量优先于配置文件。
+  超出并发上限的任务**排队**（先入先出），队列满才拒绝；排队任务可 `cancel_task`；
+  `timeoutMs` 从**入队**开始计算（含排队等待），避免「排队半小时再跑十分钟」击穿平台自己的超时。
 - 文档：两份 README 的协议/安全表与配置段同步（明确「平台不能设置环境变量」是**设计**，不是疏漏）。
 
 `PROTOCOL_VERSION` 不变：删除一个从未被使用的可选字段，且未知字段本就忽略。

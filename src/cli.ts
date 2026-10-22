@@ -11,7 +11,15 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { clearConfig, configPath, loadConfig, resolveMaxTasks, saveConfig, tokenTail } from './config.js';
+import {
+  clearConfig,
+  configPath,
+  loadConfig,
+  resolveMaxQueued,
+  resolveMaxTasks,
+  saveConfig,
+  tokenTail,
+} from './config.js';
 import { authorizeWithBrowser, authorizeWithDeviceCode, AuthError } from './auth.js';
 import { createBridgeClient, resolveDeviceId } from './bridge-client.js';
 import { assertServerMessage, ProtocolError, type AgentListItem } from './protocol.js';
@@ -240,6 +248,7 @@ async function cmdConnect(flags: Flags): Promise<void> {
           timeoutMs: msg.timeoutMs,
           allowedCwd: saved?.allowedCwd,
           maxConcurrent: resolveMaxTasks(saved?.maxTasks),
+          maxQueued: resolveMaxQueued(saved?.maxQueued),
         },
         {
           onLog: (stream, data) => {

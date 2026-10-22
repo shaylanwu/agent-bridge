@@ -122,14 +122,17 @@ When set, a `run_task` whose `cwd` is outside every listed directory fails befor
 compared by directory boundary, so `/Users/me/work-old` is **not** covered by `/Users/me/work`. Omit the key
 to keep the default behaviour (only "exists and is a directory" is checked).
 
-How many tasks may run at the same time — default 3, raise it only if you know the machine can take it:
+How many tasks may run at the same time, and how many may wait — defaults 3 and 32:
 
 ```toml
 max_tasks = 3
+max_queue = 32   # 0 = no queueing at all
 ```
 
-`AGENT_BRIDGE_MAX_TASKS` overrides the file (handy for CI). Values are clamped to 1–32; when the limit is
-reached, new tasks fail immediately with `并发任务已达上限（N）` instead of queueing.
+Tasks beyond `max_tasks` wait in a FIFO queue and start as slots free up; only when the queue is full does a new
+task fail immediately (`任务队列已满（并发 N，排队 M）`). `timeoutMs` is measured **from queueing**, so a task can
+never sit in the queue for hours and then run for ten more minutes. `AGENT_BRIDGE_MAX_TASKS` /
+`AGENT_BRIDGE_MAX_QUEUE` override the file (handy for CI).
 
 ## Security boundaries
 
@@ -139,7 +142,7 @@ reached, new tasks fail immediately with `并发任务已达上限（N）` inste
 | What can be executed   | Whitelisted agent kinds only; an unknown `agentType` is rejected locally.              |
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
 | Env from the platform  | **Not accepted**: any `env` inside `run_task` is ignored; children always run with the bridge's own environment. |
-| Concurrency            | At most `max_tasks` tasks at once (config.toml, default 3; `AGENT_BRIDGE_MAX_TASKS` overrides); extra tasks fail fast instead of queueing. |
+| Concurrency            | `max_tasks` (default 3) run at once; the rest queue FIFO up to `max_queue` (default 32), then fail. `timeoutMs` counts from queueing. |
 | Where it runs          | `cwd` must exist and be a directory; `allowed_cwd` (optional) confines it further.     |
 | Runaway processes      | Every task has a timeout; cancel sends `SIGTERM`, then `SIGKILL` after 2 s.            |
 | Transport              | `wss://` only; handshake authenticated with `Authorization: Bearer <device_token>`.    |
