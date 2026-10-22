@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "description": "agent-bridge Harness hooks 清单：宿主 Agent 按本文件把护栏脚本挂到对应事件。非零退出码 = 阻断。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "timeout": 10,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .harness/hooks/pre-action-check.sh",
+            "stdin": "tool_input",
+            "description": "工具调用前拦截：.harness 写入 / rm -rf / force push / 明文 token / shell 字符串拼接 / 凭据读取 / 非回环监听"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "timeout": 600,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .harness/hooks/audit-logger.sh agent tool_write done",
+            "description": "文件写入留痕（完整门禁按批次跑 npm run gate）"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "timeout": 900,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .harness/hooks/post-change-gate.sh",
+            "description": "任务收尾门禁：契约边界 + 文档同步 + 类型检查 + 单测 + 构建 + 提案校验，失败阻断收尾"
+          }
+        ]
+      }
+    ]
+  },
+  "invocation_notes": {
+    "pre-action-check": "stdin 传入拟执行动作描述（或作为 $1），拦截时输出原因并 exit 1",
+    "post-change-gate": "可选传变更文件列表；缺省用 git status 检测；任一门禁失败 exit 1",
+    "audit-logger": "bash audit-logger.sh <actor> <action> <result> [detail]，JSONL 追加至 .harness/work/audit-<date>.jsonl"
+  }
+}

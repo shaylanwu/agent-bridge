@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { chunkLog, assertServerMessage, ProtocolError } from '../src/protocol';
 import { createPkce } from '../src/auth';
 import { AGENTS, agentDefOf, probeCredential } from '../src/agent-adapters';
 import { buildWinCommandLine } from '../src/win-exec';
+import { isUnder, startTask } from '../src/runner';
+import { loadConfig, normalizeAllowedCwd } from '../src/config';
 
 describe('chunkLog', () => {
   it('按 UTF-8 字节切成 ≤4KB 且不切断多字节字符', () => {
@@ -117,5 +122,103 @@ describe('Windows 垫片命令行拼装', () => {
     const bin = String.raw`C:\a b\x.cmd`;
     const line = buildWinCommandLine(bin, ['say "hi"']);
     expect(line).toBe(`"${bin}" "say ""hi"""`);
+  });
+});
+
+describe('目录白名单（allowed_cwd）', () => {
+  const base = join(tmpdir(), 'ab-allow-test');
+
+  it('isUnder：同目录与子目录放行', () => {
+    expect(isUnder(base, base)).toBe(true);
+    expect(isUnder(join(base, 'api'), base)).toBe(true);
+    expect(isUnder(join(base, 'a', 'b'), base)).toBe(true);
+  });
+
+  it('isUnder：父目录、兄弟目录拒绝', () => {
+    expect(isUnder(tmpdir(), base)).toBe(false);
+    expect(isUnder(join(base, '..', 'other'), base)).toBe(false);
+  });
+
+  it('isUnder：前缀旁路拒绝（/a/b-old 不属于 /a/b）', () => {
+    expect(isUnder(`${base}-old`, base)).toBe(false);
+    expect(isUnder(`${base}-old${join('x')}`, base)).toBe(false);
+  });
+
+  it('isUnder：Windows 路径大小写不敏感', () => {
+    if (process.platform !== 'win32') return;
+    expect(isUnder(base.toUpperCase(), base)).toBe(true);
+  });
+
+  it('normalizeAllowedCwd：丢空项、解析绝对路径、去重；空数组视为未配置', () => {
+    const r = normalizeAllowedCwd(['   ', base, base, 'rel-dir']);
+    expect(r).toEqual([base, resolve('rel-dir')]);
+    expect(normalizeAllowedCwd([])).toBeUndefined();
+    expect(normalizeAllowedCwd(undefined)).toBeUndefined();
+    expect(normalizeAllowedCwd('not-an-array')).toBeUndefined();
+  });
+
+  it('loadConfig：从 config.toml 的 allowed_cwd 读取并规范化', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-cfg-'));
+    const file = join(dir, 'config.toml');
+    const posixBase = base.replace(/\\/g, '/');
+    writeFileSync(
+      file,
+      [
+        'platformUrl = "https://platform.example.com"',
+        'deviceId = "bd_smoke"',
+        'deviceToken = "tok_smoke"',
+        `allowed_cwd = ["${posixBase}", ""]`,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const saved = process.env['AGENT_BRIDGE_CONFIG'];
+    process.env['AGENT_BRIDGE_CONFIG'] = file;
+    try {
+      expect(loadConfig()?.allowedCwd).toEqual([resolve(base)]);
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_CONFIG'];
+      else process.env['AGENT_BRIDGE_CONFIG'] = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadConfig：没有 allowed_cwd 时为 undefined（保持原行为）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-cfg2-'));
+    const file = join(dir, 'config.toml');
+    writeFileSync(
+      file,
+      ['platformUrl = "https://p.example.com"', 'deviceId = "bd_x"', 'deviceToken = "tok_x"', ''].join('\n'),
+      'utf8',
+    );
+    const saved = process.env['AGENT_BRIDGE_CONFIG'];
+    process.env['AGENT_BRIDGE_CONFIG'] = file;
+    try {
+      expect(loadConfig()?.allowedCwd).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_CONFIG'];
+      else process.env['AGENT_BRIDGE_CONFIG'] = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('startTask：cwd 越界直接 failed，且不 spawn 任何进程', async () => {
+    const statuses: string[] = [];
+    const handle = startTask(
+      {
+        taskId: 't-out-of-scope',
+        agentType: 'codex',
+        cwd: tmpdir(),
+        args: [],
+        prompt: 'should never run',
+        allowedCwd: [join(tmpdir(), 'ab-allowed-only')],
+      },
+      {
+        onLog: () => undefined,
+        onStatus: (s) => statuses.push(s),
+      },
+    );
+    expect(await handle.done).toBe('failed');
+    expect(statuses).toEqual(['failed']);
   });
 });

@@ -1,0 +1,101 @@
+# .harness/contracts/policy.yaml — 权限策略（风险分级 / 工具白名单 / 资源上限）
+# 执行器：hooks/pre-action-check.sh（前置拦截）+ hooks/post-change-gate.sh（变更后门禁）
+# 本文件属 .harness 护栏，仅限人工维护（见 rules/always-on.md 第一红线）。
+
+version: 1
+
+risk_levels:
+  low:
+    description: 只读与自检：看代码、跑类型检查/单测、harness 自校验、openspec 格式校验
+    auto_approve: true
+    audit: false
+    actions:
+      - read_file
+      - list_directory
+      - search_code
+      - 'git status / git diff / git log'
+      - 'run: npm run typecheck | npm test | npm run build | npm run status'
+      - 'run: node .harness/scripts/doc-contract-check.mjs | protocol-boundary-check.mjs'
+      - 'run: bash .harness/scripts/harness-validate.sh'
+      - 'run: bash .harness/skills/openspec-workflow/scripts/validate-change.sh'
+
+  medium:
+    description: 常规实现：CLI 命令、适配器表、探测逻辑、日志分片、文档与提案
+    auto_approve: false
+    requires: [change_plan, audit_log]
+    actions:
+      - 'write: src/cli.ts'
+      - 'write: src/config.ts'
+      - 'write: src/bridge-client.ts'
+      - 'write: src/scan.ts'
+      - 'write: src/agent-adapters.ts'
+      - 'write: src/win-exec.ts'
+      - 'write: test/**'
+      - 'write: README.md | README.zh-CN.md | CHANGELOG.md'
+      - 'write: openspec/**'          # 活跃提案；archive/ 只增不改（见 forbidden）
+      - 'write: AGENTS.md'
+      - 'git commit (conventional)'
+
+  high:
+    description: >-
+      协议契约改动、任务执行与授权流程改动、依赖增删、删除文件、发布与打 tag、
+      git 强推/改历史、跨机器外发动作
+    auto_approve: false
+    requires: [change_plan, audit_log, human_approval]
+    actions:
+      - 'write: src/protocol.ts'      # wire 契约：第三方平台按它实现
+      - 'write: src/runner.ts'        # spawn 安全边界
+      - 'write: src/auth.ts'          # PKCE / 回环回调 / 设备码
+      - 'write: package.json'         # 依赖 / files / bin / version
+      - 'write: tsconfig.json'
+      - 'write: .github/**'
+      - delete_file
+      - 'run: npm publish | npm unpublish | npm i -g'
+      - 'run: npm install <new-dep> | npm uninstall'
+      - 'git push --force | git reset --hard | git rebase -i'
+      - 'git tag | git push --tags'
+      - external_send
+
+forbidden:
+  description: 任何审批都不允许 —— Agent 绝对禁止
+  actions:
+    - 'write|delete: .harness/**'                # 第一红线（.harness/work/ 写入除外）
+    - 'write|delete: openspec/changes/archive/**' # 归档历史只增不改
+    - bypass_hooks_or_gates
+    - read_credential_file_contents              # 只允许 existsSync 判存在
+    - write_plaintext_secrets                    # 代码/日志/审计/commit 里的明文 token 或 key
+    - print_full_device_token                    # 只允许 tokenTail()
+    - build_shell_string_from_platform_args      # 参数必须数组传递
+    - bind_non_loopback_listener                 # 唯一允许监听 127.0.0.1 授权回调
+    - define_wire_types_outside_protocol_ts
+    - execute_on_production_platform
+
+tool_whitelist:
+  files: [Read, Write, Edit, Glob, Grep]
+  shell:
+    allow:
+      - 'npm run <script>'
+      - 'npm test | npx vitest run'
+      - 'node dist/cli.js <status|connect|logout|--version>'
+      - 'git status|diff|log|add|commit'
+      - 'bash .harness/**/*.sh'
+    deny:
+      - 'rm -rf'
+      - 'git push --force*'
+      - 'git reset --hard'
+      - 'npm publish'
+      - 'npm i -g'
+      - 'sudo *'
+
+limits:
+  max_tokens_per_task: 400000
+  max_tool_calls_per_task: 200
+  max_iteration_rounds: 12        # 超限强制转人工（workflow-rules.md）
+  max_gate_failure_retries: 3     # 门禁连续失败 3 次停止修复并报告根因假设
+  max_same_bug_fix_attempts: 3    # 超限转 systematic-debugging 四阶段
+  max_adapters_without_proposal: 0 # 新增适配器需提案（面向平台的可见能力）
+
+approval:
+  human_timeout_hours: 24
+  on_timeout: escalate_to_human
+  channels: [PR_review, 人工确认回复]

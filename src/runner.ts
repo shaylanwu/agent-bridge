@@ -41,9 +41,18 @@ export interface TaskHandle {
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const KILL_GRACE_MS = 2000;
 
-function isUnder(child: string, parent: string): boolean {
-  const c = resolvePath(child);
-  const p = resolvePath(parent);
+/**
+ * `child` 是否位于 `parent` 目录之下（含相等）。
+ * 必须按目录边界判断：`/a/b-old` 不能因为字符串前缀是 `/a/b` 就放行。
+ * Windows 路径大小写不敏感（`C:\Work` 与 `c:\work` 是同一目录），比较前统一折叠。
+ */
+export function isUnder(child: string, parent: string): boolean {
+  const fold = (p: string): string => {
+    const abs = resolvePath(p);
+    return process.platform === 'win32' ? abs.toLowerCase() : abs;
+  };
+  const c = fold(child);
+  const p = fold(parent);
   return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
 }
 

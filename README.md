@@ -81,6 +81,9 @@ agent-bridge status --json --fresh     # --fresh bypasses the 30 s cache
 agent-bridge logout
 ```
 
+> `agent-bridge daemon` is **not implemented yet** (Phase 3). Until it lands, keep `connect` running in the
+> foreground under your own process manager (systemd / launchd / a Windows service wrapper).
+
 Example `status` output:
 
 ```
@@ -101,6 +104,17 @@ Kimi Code           -                    not installed
 Configuration lives in `~/.agent-bridge/config.toml` (Windows: `%APPDATA%\agent-bridge\config.toml`)
 with `0600` permissions. The device token is never printed in full.
 
+Optional working-directory allow-list — confine task execution to specific directories:
+
+```toml
+allowed_cwd = ["/Users/me/work", "/Users/me/repos"]
+```
+
+When set, a `run_task` whose `cwd` is outside every listed directory fails before anything is spawned
+(`{"status":"failed","error":"工作目录不在允许范围内：…"}`). Entries are resolved to absolute paths and
+compared by directory boundary, so `/Users/me/work-old` is **not** covered by `/Users/me/work`. Omit the key
+to keep the default behaviour (only "exists and is a directory" is checked).
+
 ## Security boundaries
 
 | Concern                | Behaviour                                                                              |
@@ -108,7 +122,7 @@ with `0600` permissions. The device token is never printed in full.
 | API keys / credentials | Never read, never uploaded. Only “present / absent” is reported.                       |
 | What can be executed   | Whitelisted agent kinds only; an unknown `agentType` is rejected locally.              |
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
-| Where it runs          | `cwd` must exist and be a directory; an optional allow-list confines it further.       |
+| Where it runs          | `cwd` must exist and be a directory; `allowed_cwd` (optional) confines it further.     |
 | Runaway processes      | Every task has a timeout; cancel sends `SIGTERM`, then `SIGKILL` after 2 s.            |
 | Transport              | `wss://` only; handshake authenticated with `Authorization: Bearer <device_token>`.    |
 | Token storage          | `0600` file in the user's home; the platform stores only a SHA-256 hash.               |
@@ -185,9 +199,13 @@ The platform sends:
   "taskId": "bt_7f3a",
   "agentType": "codex",
   "cwd": "/Users/me/work/api",
+  "args": [],
   "prompt": "fix the failing login test"
 }
 ```
+
+`args` is required by the protocol, even when you want the adapter's default argument template: send `"args": []`
+and the bridge expands its own template (here `codex exec --json {{prompt}}`) with the `prompt` above.
 
 The bridge validates the adapter and directory, spawns the CLI, and streams:
 

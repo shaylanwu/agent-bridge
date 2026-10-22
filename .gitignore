@@ -2,3 +2,9 @@ node_modules/
 dist/
 *.tgz
 .DS_Store
+
+# ---------- Harness 运行时目录（审计/备份，不入库） ----------
+.harness/work/
+
+# ---------- AI 工作笔记（本地，不入库） ----------
+.workbuddy/memory/

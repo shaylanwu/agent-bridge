@@ -146,6 +146,11 @@ async function cmdConnect(flags: Flags): Promise<void> {
   }
 
   // 上报初值 + 长连接
+  if (saved?.allowedCwd?.length) {
+    console.log(
+      C.dim(`[agent-bridge] 目录白名单已启用（${saved.allowedCwd.length} 个条目），越界任务将被拒绝`),
+    );
+  }
   const tasks = new Map<string, TaskHandle>();
   const client = createBridgeClient({
     platformUrl: boundUrl || platformUrl,
@@ -200,6 +205,7 @@ async function cmdConnect(flags: Flags): Promise<void> {
           prompt: msg.prompt,
           env: msg.env,
           timeoutMs: msg.timeoutMs,
+          allowedCwd: saved?.allowedCwd,
         },
         {
           onLog: (stream, data) => {

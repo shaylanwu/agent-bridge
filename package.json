@@ -21,7 +21,13 @@
     "test": "vitest run",
     "dev": "tsx src/cli.ts",
     "start": "npm run build && node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "gate": "bash .harness/hooks/post-change-gate.sh",
+    "arch:check": "node .harness/scripts/protocol-boundary-check.mjs",
+    "doc:check": "node .harness/scripts/doc-contract-check.mjs",
+    "harness:validate": "bash .harness/scripts/harness-validate.sh",
+    "openspec:validate": "bash .harness/skills/openspec-workflow/scripts/validate-change.sh",
+    "e2e:smoke": "node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs"
   },
   "keywords": [
     "ai",

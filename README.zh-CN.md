@@ -70,6 +70,9 @@ agent-bridge status --json --fresh     # --fresh 绕过 30 秒缓存
 agent-bridge logout
 ```
 
+> `agent-bridge daemon` **尚未实现**（Phase 3）。在此之前请用你自己的进程守护（systemd / launchd /
+> Windows 服务包装）托管前台运行的 `connect`。
+
 `status` 输出示例：
 
 ```
@@ -90,6 +93,16 @@ Kimi Code          -                    未装
 配置位于 `~/.agent-bridge/config.toml`（Windows：`%APPDATA%\agent-bridge\config.toml`），权限 `0600`；
 设备 token 从不明文完整打印。
 
+可选的**工作目录白名单**——把任务执行收窄到指定目录：
+
+```toml
+allowed_cwd = ["/Users/me/work", "/Users/me/repos"]
+```
+
+配置后，`run_task` 的 `cwd` 若不在任一目录之下，bridge 会在 spawn 之前就拒绝，并回
+`{"status":"failed","error":"工作目录不在允许范围内：…"}`。条目会被解析成绝对路径、按**目录边界**比较，
+因此 `/Users/me/work-old` **不会**被 `/Users/me/work` 放行。不写这个键则保持原有行为（只校验目录存在）。
+
 ## 安全边界
 
 | 关注点         | 行为                                                                 |
@@ -97,7 +110,7 @@ Kimi Code          -                    未装
 | API Key / 凭据 | 从不读取、从不上传，只上报「是否存在」                               |
 | 能执行什么     | 仅限白名单内的工具类型，未知 `agentType` 在本地直接拒绝              |
 | 怎么执行       | 参数以数组传入，不做 shell 拼接（Windows `.cmd` 垫片单独做引号处理） |
-| 在哪里执行     | `cwd` 必须存在且是目录；可配置允许目录，进一步收窄范围               |
+| 在哪里执行     | `cwd` 必须存在且是目录；可用 `allowed_cwd` 白名单进一步收窄范围      |
 | 失控进程       | 每个任务都有超时；取消先发 `SIGTERM`，2 秒后 `SIGKILL`               |
 | 传输           | 仅 `wss://`，握手用 `Authorization: Bearer <device_token>` 鉴权      |
 | Token 存储     | 本机 `0600` 文件；平台只保存其 SHA-256 哈希                          |
@@ -173,9 +186,13 @@ DeepSeek Harness
   "taskId": "bt_7f3a",
   "agentType": "codex",
   "cwd": "/Users/me/work/api",
+  "args": [],
   "prompt": "修复登录用例失败的问题"
 }
 ```
+
+`args` 是协议必填字段。想用适配器自带的参数模板时也要发 `"args": []`，bridge 会把上面的 `prompt`
+代入模板（这里是 `codex exec --json {{prompt}}`）。漏掉 `args` 会被本地校验直接拒帧。
 
 bridge 校验适配器与目录后拉起 CLI，并实时回传：
 
