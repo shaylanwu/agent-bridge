@@ -40,6 +40,6 @@
 
 ## 6. 归档
 
-- [ ] 6.1 合并 spec delta（task-execution：平台不得下发环境变量 + 并发上限可配置）
-- [ ] 6.2 提案移入 `openspec/changes/archive/YYYY-MM-DD-harden-runner-env-and-concurrency/`
-- [ ] 6.3 人工评审：确认「env 通道移除」与「超限直接失败不排队」可接受
+- [x] 6.1 合并 spec delta（task-execution：平台不得下发环境变量 + 并发上限可配置）
+- [x] 6.2 提案移入 `openspec/changes/archive/YYYY-MM-DD-harden-runner-env-and-concurrency/`
+- [x] 6.3 人工评审：确认「env 通道移除」与「超限行为」—— 2026-10-22 用户答复「可移除」「按标准方式做」（= 排队）
