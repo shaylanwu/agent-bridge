@@ -29,7 +29,9 @@ version: 1.0.0
 ## 3. 子进程
 
 - 白名单 + 参数数组（见 `always-on.md` §4）。
-- 子进程环境 = `process.env` + 平台 `env`。平台 `env` 属于**不可信输入**：白名单之外的敏感变量（`NODE_OPTIONS`、`PATH`、`PATHEXT`、`LD_PRELOAD`、`DYLD_*`）必须在合并前剔除或拒绝任务。
+- 子进程环境 = bridge 自身 `process.env`。⛔ **平台不能设置任何环境变量**（`run_task.env` 已移除，2026-10-22）：
+  `NODE_OPTIONS` / `PATH` / `PATHEXT` / `LD_PRELOAD` / `DYLD_*` 这类键能直接换掉「被执行的是什么代码」，
+  等价于绕过白名单。若未来要恢复 env 通道，必须先做白名单过滤并重新走提案。
 - ⛔ 子进程 stdin 保持 `ignore`（当前实现），不得改为继承终端 —— 否则受控 CLI 会等交互输入、卡死到超时。
 
 ## 4. 网络

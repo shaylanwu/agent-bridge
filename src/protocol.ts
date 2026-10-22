@@ -63,7 +63,6 @@ export interface RunTaskCommand {
   /** 传给 CLI 的参数（不含二进制本身）；平台可用 {{prompt}} 占位 */
   args: string[];
   prompt?: string;
-  env?: Record<string, string>;
   timeoutMs?: number;
   allowInteractive?: boolean;
 }
@@ -111,7 +110,8 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       cwd: String(msg['cwd']),
       args: msg['args'] as string[],
       prompt: typeof msg['prompt'] === 'string' ? msg['prompt'] : undefined,
-      env: (msg['env'] as Record<string, string> | undefined) ?? undefined,
+      // 注意：平台**不得**下发 env（2026-10-22 移除）。这里刻意不透传，
+      // 未知字段一律忽略 —— 子进程只用 bridge 自身进程的环境。
       timeoutMs: typeof msg['timeoutMs'] === 'number' ? msg['timeoutMs'] : undefined,
       allowInteractive: msg['allowInteractive'] === true,
     };

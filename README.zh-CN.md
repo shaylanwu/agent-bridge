@@ -109,6 +109,15 @@ allowed_cwd = ["/Users/me/work", "/Users/me/repos"]
 `{"status":"failed","error":"工作目录不在允许范围内：…"}`。条目会被解析成绝对路径、按**目录边界**比较，
 因此 `/Users/me/work-old` **不会**被 `/Users/me/work` 放行。不写这个键则保持原有行为（只校验目录存在）。
 
+同时运行几个任务——默认 3，机器扛得住再调大：
+
+```toml
+max_tasks = 3
+```
+
+`AGENT_BRIDGE_MAX_TASKS` 环境变量优先于配置文件（CI 里方便）。取值会被夹在 1–32；达到上限时新任务立即失败并回
+`并发任务已达上限（N）`，不排队。
+
 ## 安全边界
 
 | 关注点         | 行为                                                                 |
@@ -116,7 +125,8 @@ allowed_cwd = ["/Users/me/work", "/Users/me/repos"]
 | API Key / 凭据 | 从不读取、从不上传，只上报「是否存在」                               |
 | 能执行什么     | 仅限白名单内的工具类型，未知 `agentType` 在本地直接拒绝              |
 | 怎么执行       | 参数以数组传入，不做 shell 拼接（Windows `.cmd` 垫片单独做引号处理） |
-| 平台下发的 env | 走白名单：能劫持解释器或可执行文件解析的键（`NODE_OPTIONS`、`PATH`、`PATHEXT`、`LD_PRELOAD`、`DYLD_*` 等）一律剔除，且只在本地记录 |
+| 平台下发的 env | **不接受**：`run_task` 里的 `env` 一律忽略，子进程只用 bridge 自身的环境 |
+| 并发           | 同时最多 `max_tasks` 个任务（config.toml，默认 3，`AGENT_BRIDGE_MAX_TASKS` 可覆盖）；超出的立即失败，不排队 |
 | 并发           | 同时最多 3 个任务（`AGENT_BRIDGE_MAX_TASKS` 可调）；超过的立即失败，不排队 |
 | 在哪里执行     | `cwd` 必须存在且是目录；可用 `allowed_cwd` 白名单进一步收窄范围      |
 | 失控进程       | 每个任务都有超时；取消先发 `SIGTERM`，2 秒后 `SIGKILL`               |

@@ -29,7 +29,10 @@ version: 1.0.0
 - `run_task.args` 虽然平台可能只想传 `prompt`，但**校验层要求 `args` 必存在且为字符串数组**；想用适配器默认参数模板，平台必须显式发 `"args": []`。
   - 这与 README 早期示例矛盾（示例只给 `prompt`）→ 已按「实现为准 + 修示例」处理。
   - 若要放宽为可选，属于协议变更：需提案 + 版本递增 + 明确 `args` 缺省语义（不能悄悄改）。
-- `agentType` / `cwd` / `taskId` 必填且非空；`env` / `prompt` / `timeoutMs` / `allowInteractive` 可选。
+- `agentType` / `cwd` / `taskId` 必填且非空；`prompt` / `timeoutMs` / `allowInteractive` 可选。
+- ⛔ **`env` 已被移除**（2026-10-22，提案 `harden-runner-env-and-concurrency`）：平台不得下发环境变量，
+  子进程只用 bridge 自身环境。老平台仍发 `env` 会被忽略（未知字段一律忽略），不得因此报错或断连。
+  要加回来必须先证明「平台确实需要」并重新评估注入面。
 - ⛔ 禁止「平台多发字段就报错」的严格模式：未知字段必须忽略（前向兼容），校验只做形状与白名单。
 
 ## 3. 版本策略

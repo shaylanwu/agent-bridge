@@ -17,6 +17,8 @@ export interface BridgeConfig {
   refreshToken?: string;
   /** 任务只允许在这些目录下执行（缺省 = 不限制；见 runner 的 allowedCwd 校验） */
   allowedCwd?: string[];
+  /** 同时运行的任务数上限（缺省 3；见 resolveMaxTasks） */
+  maxTasks?: number;
   /** 设备展示名（默认 hostname） */
   label?: string;
   /** 记一次绑定时间，便于排查 */
@@ -24,7 +26,20 @@ export interface BridgeConfig {
 }
 
 /**
- * 白名单条目规范化：`resolve()` 成绝对路径、丢弃空项、去重；空数组等价于「未配置」。
+ * 并发上限解析：`AGENT_BRIDGE_MAX_TASKS`（临时/CI 覆盖）> config.toml 的 `max_tasks` > 默认 3。
+ * 夹在 1~32：0 或负数会让 bridge 一个任务都跑不了，过大则回到"并发打爆开发机"的老问题。
+ */
+export const DEFAULT_MAX_TASKS = 3;
+const MAX_TASKS_CEILING = 32;
+
+export function resolveMaxTasks(fromConfig?: number): number {
+  const envRaw = Number(process.env['AGENT_BRIDGE_MAX_TASKS'] ?? '');
+  const chosen = Number.isFinite(envRaw) && envRaw > 0 ? envRaw : fromConfig;
+  if (!Number.isFinite(chosen ?? NaN) || (chosen ?? 0) <= 0) return DEFAULT_MAX_TASKS;
+  return Math.min(MAX_TASKS_CEILING, Math.max(1, Math.floor(chosen as number)));
+}
+
+/** 白名单条目规范化：`resolve()` 成绝对路径、丢弃空项、去重；空数组等价于「未配置」。
  * 配置里写相对路径（如 `"./"`）时以启动 bridge 时的 cwd 为基准 —— 规范化一次，避免每次任务都算。
  */
 export function normalizeAllowedCwd(value: unknown): string[] | undefined {
@@ -53,7 +68,9 @@ export function loadConfig(): BridgeConfig | null {
     if (!raw['platformUrl'] || !raw['deviceId']) return null;
     // 白名单：文档口径是 snake_case（allowed_cwd），同时兼容早期手写的 camelCase
     const allowedCwd = normalizeAllowedCwd(raw['allowed_cwd'] ?? raw['allowedCwd']);
-    return { ...(raw as unknown as BridgeConfig), allowedCwd };
+    const maxTasksRaw = Number(raw['max_tasks'] ?? raw['maxTasks'] ?? '');
+    const maxTasks = Number.isFinite(maxTasksRaw) && maxTasksRaw > 0 ? Math.floor(maxTasksRaw) : undefined;
+    return { ...(raw as unknown as BridgeConfig), allowedCwd, maxTasks };
   } catch {
     return null;
   }
@@ -70,6 +87,7 @@ export function saveConfig(cfg: BridgeConfig): string {
   };
   if (cfg.refreshToken) out['refreshToken'] = cfg.refreshToken;
   if (cfg.allowedCwd?.length) out['allowed_cwd'] = cfg.allowedCwd;
+  if (cfg.maxTasks) out['max_tasks'] = cfg.maxTasks;
   if (cfg.label) out['label'] = cfg.label;
   if (cfg.boundAt) out['boundAt'] = cfg.boundAt;
   const body = stringifyToml(out);

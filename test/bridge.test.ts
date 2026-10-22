@@ -7,8 +7,7 @@ import { createPkce } from '../src/auth';
 import { AGENTS, agentDefOf, probeCredential } from '../src/agent-adapters';
 import { buildWinCommandLine } from '../src/win-exec';
 import { isUnder, startTask } from '../src/runner';
-import { sanitizePlatformEnv } from '../src/runner';
-import { loadConfig, normalizeAllowedCwd } from '../src/config';
+import { loadConfig, normalizeAllowedCwd, resolveMaxTasks } from '../src/config';
 import { resolveDeviceId, wsUrlOf } from '../src/bridge-client';
 import { logoDataUri } from '../src/agent-logos';
 
@@ -164,36 +163,50 @@ describe('品牌图标', () => {
   });
 });
 
-describe('平台 env 白名单', () => {
-  it('剔除能改变解释器/加载器行为的键', () => {
-    const { env, dropped } = sanitizePlatformEnv({
-      NODE_OPTIONS: '--require ./evil.js',
-      PATH: '/tmp/evil',
-      LD_PRELOAD: '/tmp/evil.so',
-      PATHEXT: '.EVIL',
-    });
-    expect(env).toEqual({});
-    expect(dropped).toEqual(['NODE_OPTIONS', 'PATH', 'LD_PRELOAD', 'PATHEXT']);
+describe('并发上限配置', () => {
+  it('默认 3；config 给值就用 config', () => {
+    expect(resolveMaxTasks()).toBe(3);
+    expect(resolveMaxTasks(5)).toBe(5);
   });
 
-  it('保留正常变量（代理/时区/业务自定义）', () => {
-    const { env, dropped } = sanitizePlatformEnv({
-      HTTPS_PROXY: 'http://127.0.0.1:7890',
-      TZ: 'UTC',
-      MY_FLAG: '1',
-    });
-    expect(env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:7890', TZ: 'UTC', MY_FLAG: '1' });
-    expect(dropped).toEqual([]);
+  it('夹在 1~32（0/负数回落默认，过大截断）', () => {
+    expect(resolveMaxTasks(0)).toBe(3);
+    expect(resolveMaxTasks(-2)).toBe(3);
+    expect(resolveMaxTasks(100)).toBe(32);
+    expect(resolveMaxTasks(2.7)).toBe(2);
   });
 
-  it('键名大小写不敏感（node_options 同样剔除）', () => {
-    const { env, dropped } = sanitizePlatformEnv({ node_options: '--inspect', Path: '/evil' });
-    expect(env).toEqual({});
-    expect(dropped).toEqual(['node_options', 'Path']);
+  it('环境变量优先于 config（临时/CI 覆盖）', () => {
+    const saved = process.env['AGENT_BRIDGE_MAX_TASKS'];
+    process.env['AGENT_BRIDGE_MAX_TASKS'] = '4';
+    try {
+      expect(resolveMaxTasks(5)).toBe(4);
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_MAX_TASKS'];
+      else process.env['AGENT_BRIDGE_MAX_TASKS'] = saved;
+    }
   });
 
-  it('未传 env 时返回空对象', () => {
-    expect(sanitizePlatformEnv(undefined)).toEqual({ env: {}, dropped: [] });
+  it('loadConfig 读取 config.toml 的 max_tasks', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-cfg3-'));
+    const file = join(dir, 'config.toml');
+    writeFileSync(
+      file,
+      ['platformUrl = "https://p.example.com"', 'deviceId = "bd_x"', 'deviceToken = "tok_x"', 'max_tasks = 6', ''].join('\n'),
+      'utf8',
+    );
+    const saved = process.env['AGENT_BRIDGE_CONFIG'];
+    process.env['AGENT_BRIDGE_CONFIG'] = file;
+    const savedEnv = process.env['AGENT_BRIDGE_MAX_TASKS'];
+    delete process.env['AGENT_BRIDGE_MAX_TASKS'];
+    try {
+      expect(loadConfig()?.maxTasks).toBe(6);
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_CONFIG'];
+      else process.env['AGENT_BRIDGE_CONFIG'] = saved;
+      if (savedEnv !== undefined) process.env['AGENT_BRIDGE_MAX_TASKS'] = savedEnv;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

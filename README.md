@@ -122,6 +122,15 @@ When set, a `run_task` whose `cwd` is outside every listed directory fails befor
 compared by directory boundary, so `/Users/me/work-old` is **not** covered by `/Users/me/work`. Omit the key
 to keep the default behaviour (only "exists and is a directory" is checked).
 
+How many tasks may run at the same time — default 3, raise it only if you know the machine can take it:
+
+```toml
+max_tasks = 3
+```
+
+`AGENT_BRIDGE_MAX_TASKS` overrides the file (handy for CI). Values are clamped to 1–32; when the limit is
+reached, new tasks fail immediately with `并发任务已达上限（N）` instead of queueing.
+
 ## Security boundaries
 
 | Concern                | Behaviour                                                                              |
@@ -129,8 +138,8 @@ to keep the default behaviour (only "exists and is a directory" is checked).
 | API keys / credentials | Never read, never uploaded. Only “present / absent” is reported.                       |
 | What can be executed   | Whitelisted agent kinds only; an unknown `agentType` is rejected locally.              |
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
-| Env from the platform  | Whitelisted: keys that can hijack the interpreter or binary resolution (`NODE_OPTIONS`, `PATH`, `PATHEXT`, `LD_PRELOAD`, `DYLD_*`, …) are dropped and only logged locally. |
-| Concurrency            | At most 3 tasks at once (`AGENT_BRIDGE_MAX_TASKS`); extra tasks fail fast instead of queueing. |
+| Env from the platform  | **Not accepted**: any `env` inside `run_task` is ignored; children always run with the bridge's own environment. |
+| Concurrency            | At most `max_tasks` tasks at once (config.toml, default 3; `AGENT_BRIDGE_MAX_TASKS` overrides); extra tasks fail fast instead of queueing. |
 | Where it runs          | `cwd` must exist and be a directory; `allowed_cwd` (optional) confines it further.     |
 | Runaway processes      | Every task has a timeout; cancel sends `SIGTERM`, then `SIGKILL` after 2 s.            |
 | Transport              | `wss://` only; handshake authenticated with `Authorization: Bearer <device_token>`.    |
