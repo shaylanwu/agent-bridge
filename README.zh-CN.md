@@ -116,6 +116,8 @@ allowed_cwd = ["/Users/me/work", "/Users/me/repos"]
 | API Key / 凭据 | 从不读取、从不上传，只上报「是否存在」                               |
 | 能执行什么     | 仅限白名单内的工具类型，未知 `agentType` 在本地直接拒绝              |
 | 怎么执行       | 参数以数组传入，不做 shell 拼接（Windows `.cmd` 垫片单独做引号处理） |
+| 平台下发的 env | 走白名单：能劫持解释器或可执行文件解析的键（`NODE_OPTIONS`、`PATH`、`PATHEXT`、`LD_PRELOAD`、`DYLD_*` 等）一律剔除，且只在本地记录 |
+| 并发           | 同时最多 3 个任务（`AGENT_BRIDGE_MAX_TASKS` 可调）；超过的立即失败，不排队 |
 | 在哪里执行     | `cwd` 必须存在且是目录；可用 `allowed_cwd` 白名单进一步收窄范围      |
 | 失控进程       | 每个任务都有超时；取消先发 `SIGTERM`，2 秒后 `SIGKILL`               |
 | 传输           | 仅 `wss://`，握手用 `Authorization: Bearer <device_token>` 鉴权      |

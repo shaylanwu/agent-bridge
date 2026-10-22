@@ -7,6 +7,7 @@ import { createPkce } from '../src/auth';
 import { AGENTS, agentDefOf, probeCredential } from '../src/agent-adapters';
 import { buildWinCommandLine } from '../src/win-exec';
 import { isUnder, startTask } from '../src/runner';
+import { sanitizePlatformEnv } from '../src/runner';
 import { loadConfig, normalizeAllowedCwd } from '../src/config';
 import { resolveDeviceId, wsUrlOf } from '../src/bridge-client';
 import { logoDataUri } from '../src/agent-logos';
@@ -160,6 +161,39 @@ describe('品牌图标', () => {
   it('11 个适配器都能解析到 logo（资产缺失会在这里暴露）', () => {
     const missing = AGENTS.filter((a) => !logoDataUri(a.kind)).map((a) => a.kind);
     expect(missing).toEqual([]);
+  });
+});
+
+describe('平台 env 白名单', () => {
+  it('剔除能改变解释器/加载器行为的键', () => {
+    const { env, dropped } = sanitizePlatformEnv({
+      NODE_OPTIONS: '--require ./evil.js',
+      PATH: '/tmp/evil',
+      LD_PRELOAD: '/tmp/evil.so',
+      PATHEXT: '.EVIL',
+    });
+    expect(env).toEqual({});
+    expect(dropped).toEqual(['NODE_OPTIONS', 'PATH', 'LD_PRELOAD', 'PATHEXT']);
+  });
+
+  it('保留正常变量（代理/时区/业务自定义）', () => {
+    const { env, dropped } = sanitizePlatformEnv({
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      TZ: 'UTC',
+      MY_FLAG: '1',
+    });
+    expect(env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:7890', TZ: 'UTC', MY_FLAG: '1' });
+    expect(dropped).toEqual([]);
+  });
+
+  it('键名大小写不敏感（node_options 同样剔除）', () => {
+    const { env, dropped } = sanitizePlatformEnv({ node_options: '--inspect', Path: '/evil' });
+    expect(env).toEqual({});
+    expect(dropped).toEqual(['node_options', 'Path']);
+  });
+
+  it('未传 env 时返回空对象', () => {
+    expect(sanitizePlatformEnv(undefined)).toEqual({ env: {}, dropped: [] });
   });
 });
 

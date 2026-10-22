@@ -40,6 +40,65 @@ export interface TaskHandle {
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const KILL_GRACE_MS = 2000;
+/** 默认并发上限：开发机 4~8 核，几个大模型 CLI 同时跑就会卡死整机 */
+const DEFAULT_MAX_TASKS = 3;
+
+/**
+ * 平台下发 env 里**一律剔除**的键：它们能改变「子进程实际执行什么代码」，威力等价于直接跑任意命令。
+ * 键名比较大小写不敏感（Windows 环境变量本来就不区分大小写）。
+ */
+const DANGEROUS_ENV = new Set(
+  [
+    'NODE_OPTIONS', // Node 系 CLI 启动前注入 --require/--import
+    'PATH', // 换掉白名单二进制（我们刚按绝对路径解析，PATH 被改就前功尽弃）
+    'PATHEXT', // Windows 上改变可执行后缀解析顺序
+    'COMSPEC', // 换掉 cmd.exe 本身
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'DYLD_INSERT_LIBRARIES',
+    'DYLD_LIBRARY_PATH',
+    'BASH_ENV',
+    'ENV',
+    'PYTHONSTARTUP',
+    'PYTHONHOME',
+    'GIT_SSH_COMMAND',
+    'SSH_ASKPASS',
+  ].map((k) => k.toUpperCase()),
+);
+
+/**
+ * 平台 env 白名单过滤：剔除能改变解释器/加载器行为的键，其余（代理、时区、语言等）原样透传。
+ * 被剔除的键只在本地 stderr 记录 —— 不回传给平台，避免暴露本机环境细节。
+ */
+export function sanitizePlatformEnv(env?: Record<string, string>): {
+  env: Record<string, string>;
+  dropped: string[];
+} {
+  const kept: Record<string, string> = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (DANGEROUS_ENV.has(key.toUpperCase())) {
+      dropped.push(key);
+      continue;
+    }
+    kept[key] = value;
+  }
+  return { env: kept, dropped };
+}
+
+/** 并发上限：`AGENT_BRIDGE_MAX_TASKS` 可覆盖（本地配置，非平台可控） */
+function maxConcurrentTasks(): number {
+  const raw = Number(process.env['AGENT_BRIDGE_MAX_TASKS'] ?? '');
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAX_TASKS;
+}
+
+/** 当前运行中的任务数（只在本进程内有效） */
+let runningTasks = 0;
+
+/** 仅用于测试与诊断：当前并发数 */
+export function runningTaskCount(): number {
+  return runningTasks;
+}
 
 /**
  * `child` 是否位于 `parent` 目录之下（含相等）。
@@ -75,6 +134,11 @@ export function startTask(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
   if (req.allowedCwd?.length && !req.allowedCwd.some((root) => isUnder(req.cwd, root))) {
     return finishEarly('failed', `工作目录不在允许范围内：${req.cwd}`);
   }
+  // 并发上限：快速拒绝而不是排队 —— 排队会让平台的超时语义不可预测，平台本身可以重试
+  const maxTasks = maxConcurrentTasks();
+  if (runningTasks >= maxTasks) {
+    return finishEarly('failed', `并发任务已达上限（${maxTasks}），请稍后重试`);
+  }
 
   // 命令 = 白名单 bin（或 npx 免安装），参数 = 模板（有显式 args 时以平台为准）
   const explicitArgs = req.args.length > 0;
@@ -94,17 +158,25 @@ export function startTask(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
 
   // Windows 的 .cmd 垫片：自己拼完整命令行 + shell（路径带空格也不会断，见 win-exec.ts）
   const shim = isWinShim(cmd);
+  // 平台 env 不可信：先过白名单，再与宿主环境合并
+  const { env: platformEnv, dropped } = sanitizePlatformEnv(req.env);
+  if (dropped.length) {
+    process.stderr.write(`[runner] 已忽略平台下发的敏感环境变量：${dropped.join(', ')}\n`);
+  }
+  const childEnv = { ...process.env, ...platformEnv };
+
+  runningTasks += 1;
   const child: ChildProcess = shim
     ? spawn(buildWinCommandLine(cmd, argv), {
         cwd: req.cwd,
-        env: { ...process.env, ...(req.env ?? {}) },
+        env: childEnv,
         shell: true,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     : spawn(cmd, argv, {
         cwd: req.cwd,
-        env: { ...process.env, ...(req.env ?? {}) },
+        env: childEnv,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -132,6 +204,7 @@ export function startTask(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
       settled = true;
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      runningTasks = Math.max(0, runningTasks - 1); // 终态释放并发名额
       status = next;
       hooks.onStatus(next, { exitCode, error });
       resolve(next);

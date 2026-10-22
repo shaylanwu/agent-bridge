@@ -129,6 +129,8 @@ to keep the default behaviour (only "exists and is a directory" is checked).
 | API keys / credentials | Never read, never uploaded. Only “present / absent” is reported.                       |
 | What can be executed   | Whitelisted agent kinds only; an unknown `agentType` is rejected locally.              |
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
+| Env from the platform  | Whitelisted: keys that can hijack the interpreter or binary resolution (`NODE_OPTIONS`, `PATH`, `PATHEXT`, `LD_PRELOAD`, `DYLD_*`, …) are dropped and only logged locally. |
+| Concurrency            | At most 3 tasks at once (`AGENT_BRIDGE_MAX_TASKS`); extra tasks fail fast instead of queueing. |
 | Where it runs          | `cwd` must exist and be a directory; `allowed_cwd` (optional) confines it further.     |
 | Runaway processes      | Every task has a timeout; cancel sends `SIGTERM`, then `SIGKILL` after 2 s.            |
 | Transport              | `wss://` only; handshake authenticated with `Authorization: Bearer <device_token>`.    |
