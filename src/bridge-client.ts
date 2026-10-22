@@ -30,12 +30,33 @@ const HEARTBEAT_MS = 15_000;
 const MAX_QUEUE = 500;
 const MAX_BACKOFF_MS = 30_000;
 
-function wsUrlOf(platformUrl: string, deviceId: string): string {
+/**
+ * WS 入口地址。`deviceId` 为空时**不拼查询参数**（发 `?deviceId=` 空值会让平台误以为设备 ID 是空串）。
+ * 这时平台必须按 `Authorization: Bearer` 反查设备 —— 见 README 的 CI 用法。
+ */
+export function wsUrlOf(platformUrl: string, deviceId: string): string {
   const u = new URL(platformUrl);
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
   u.pathname = '/api/bridge/ws';
-  u.search = `?deviceId=${encodeURIComponent(deviceId)}`;
+  u.search = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
   return u.toString();
+}
+
+/**
+ * `--token` 模式下的设备 ID 解析：授权响应 > 显式 flag > 环境变量 > 已保存配置。
+ * 全是空就返回空串（调用方负责提示平台按 token 反查），不阻断连接。
+ */
+export function resolveDeviceId(input: {
+  fromAuth?: string;
+  flag?: string;
+  env?: string;
+  saved?: string;
+}): string {
+  for (const v of [input.fromAuth, input.flag, input.env, input.saved]) {
+    const t = (v ?? '').trim();
+    if (t) return t;
+  }
+  return '';
 }
 
 export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {

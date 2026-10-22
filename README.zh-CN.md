@@ -60,7 +60,8 @@ agent-bridge connect https://platform.example.com
 agent-bridge connect https://platform.example.com --no-browser
 
 # CI 或脚本化：使用平台签发的设备 token
-agent-bridge connect https://platform.example.com --token=<device-token>
+# （--device-id 可选，也可用 AGENT_BRIDGE_DEVICE_ID 环境变量）
+agent-bridge connect https://platform.example.com --token=<device-token> --device-id=<device-id>
 
 # 只探测本机工具（不需要连接平台）
 agent-bridge status
@@ -72,6 +73,11 @@ agent-bridge logout
 
 > `agent-bridge daemon` **尚未实现**（Phase 3）。在此之前请用你自己的进程守护（systemd / launchd /
 > Windows 服务包装）托管前台运行的 `connect`。
+
+用 `--token` 时，只有显式给 `--device-id` 或设置 `AGENT_BRIDGE_DEVICE_ID` 才有 `deviceId`（解析顺序：
+授权响应 → `--device-id` → 环境变量 → 同平台的已保存配置）。都解析不到时，WS 地址会**省略** `deviceId`
+查询参数（而不是发一个空值），`hello.deviceId` 为空串 —— **此时平台必须按 `Authorization: Bearer` 反查设备**。
+从未交互式绑定过的 CI 机器就是这种情况。
 
 `status` 输出示例：
 

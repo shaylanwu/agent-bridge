@@ -71,7 +71,8 @@ agent-bridge connect https://platform.example.com
 agent-bridge connect https://platform.example.com --no-browser
 
 # CI or scripted setup: use a device token issued by the platform
-agent-bridge connect https://platform.example.com --token=<device-token>
+# (--device-id is optional; also read from AGENT_BRIDGE_DEVICE_ID)
+agent-bridge connect https://platform.example.com --token=<device-token> --device-id=<device-id>
 
 # Inspect the local toolchain only (no connection required)
 agent-bridge status
@@ -83,6 +84,12 @@ agent-bridge logout
 
 > `agent-bridge daemon` is **not implemented yet** (Phase 3). Until it lands, keep `connect` running in the
 > foreground under your own process manager (systemd / launchd / a Windows service wrapper).
+
+With `--token` the bridge has no `deviceId` unless you pass `--device-id` or set `AGENT_BRIDGE_DEVICE_ID`
+(resolution order: auth response → `--device-id` → env → saved config for the same platform URL). When it
+resolves to nothing, the WS URL omits the `deviceId` query parameter instead of sending an empty one, and
+`hello.deviceId` is an empty string — **the platform must then resolve the device from `Authorization: Bearer`**.
+That is the normal case for CI runners that were never bound interactively.
 
 Example `status` output:
 

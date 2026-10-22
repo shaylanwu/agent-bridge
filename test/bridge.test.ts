@@ -8,6 +8,7 @@ import { AGENTS, agentDefOf, probeCredential } from '../src/agent-adapters';
 import { buildWinCommandLine } from '../src/win-exec';
 import { isUnder, startTask } from '../src/runner';
 import { loadConfig, normalizeAllowedCwd } from '../src/config';
+import { resolveDeviceId, wsUrlOf } from '../src/bridge-client';
 
 describe('chunkLog', () => {
   it('按 UTF-8 字节切成 ≤4KB 且不切断多字节字符', () => {
@@ -109,6 +110,34 @@ describe('凭据探测', () => {
     } finally {
       if (saved !== undefined) process.env['MIMO_API_KEY'] = saved;
     }
+  });
+});
+
+describe('WS 地址与 deviceId 解析', () => {
+  it('有 deviceId 时拼查询参数，https → wss', () => {
+    expect(wsUrlOf('https://platform.example.com', 'bd_9f1c')).toBe(
+      'wss://platform.example.com/api/bridge/ws?deviceId=bd_9f1c',
+    );
+  });
+
+  it('deviceId 为空时省略查询参数（不发空值）', () => {
+    expect(wsUrlOf('https://platform.example.com', '')).toBe('wss://platform.example.com/api/bridge/ws');
+  });
+
+  it('http → ws 且保留端口', () => {
+    expect(wsUrlOf('http://127.0.0.1:8899', 'bd_x')).toBe('ws://127.0.0.1:8899/api/bridge/ws?deviceId=bd_x');
+  });
+
+  it('解析优先级：授权响应 > flag > env > 已存配置', () => {
+    expect(resolveDeviceId({ fromAuth: 'bd_auth', flag: 'bd_flag', env: 'bd_env', saved: 'bd_saved' })).toBe('bd_auth');
+    expect(resolveDeviceId({ flag: 'bd_flag', env: 'bd_env', saved: 'bd_saved' })).toBe('bd_flag');
+    expect(resolveDeviceId({ env: 'bd_env', saved: 'bd_saved' })).toBe('bd_env');
+    expect(resolveDeviceId({ saved: 'bd_saved' })).toBe('bd_saved');
+  });
+
+  it('全是空/空白时返回空串（调用方提示平台按 token 反查）', () => {
+    expect(resolveDeviceId({})).toBe('');
+    expect(resolveDeviceId({ fromAuth: '  ', flag: '', env: '   ', saved: undefined })).toBe('');
   });
 });
 

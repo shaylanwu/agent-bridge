@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { clearConfig, configPath, loadConfig, saveConfig, tokenTail } from './config.js';
 import { authorizeWithBrowser, authorizeWithDeviceCode, AuthError } from './auth.js';
-import { createBridgeClient } from './bridge-client.js';
+import { createBridgeClient, resolveDeviceId } from './bridge-client.js';
 import { assertServerMessage, ProtocolError, type AgentListItem } from './protocol.js';
 import { scanAgents } from './scan.js';
 import { startTask, type TaskHandle } from './runner.js';
@@ -101,7 +101,8 @@ async function cmdConnect(flags: Flags): Promise<void> {
   }
   const saved = loadConfig();
   let deviceToken = typeof flags['token'] === 'string' ? flags['token'] : undefined;
-  let deviceId = saved?.deviceId ?? '';
+  // 只在授权/复用配置时被赋值；--token 模式下由下面的 resolveDeviceId 解析
+  let deviceId = '';
   let boundUrl = saved?.platformUrl ?? '';
 
   if (!deviceToken) {
@@ -143,6 +144,24 @@ async function cmdConnect(flags: Flags): Promise<void> {
         throw e;
       }
     }
+  }
+
+  // deviceId 解析优先级：授权响应 > --device-id > AGENT_BRIDGE_DEVICE_ID > 已保存配置（同平台）
+  const targetUrl = (boundUrl || platformUrl).replace(/\/+$/, '');
+  const savedId = saved && saved.platformUrl === targetUrl ? saved.deviceId : '';
+  deviceId = resolveDeviceId({
+    fromAuth: deviceId,
+    flag: typeof flags['device-id'] === 'string' ? String(flags['device-id']) : '',
+    env: process.env['AGENT_BRIDGE_DEVICE_ID'] ?? '',
+    saved: savedId,
+  });
+  if (!deviceId) {
+    console.log(
+      C.yellow(
+        '[agent-bridge] 未提供 deviceId（--device-id / AGENT_BRIDGE_DEVICE_ID）：' +
+          '连接将不带 deviceId 参数，平台需按 Bearer token 反查设备',
+      ),
+    );
   }
 
   // 上报初值 + 长连接
@@ -262,8 +281,9 @@ function help(): void {
 ${C.bold('agent-bridge')} ${version()} —— 把本机 AI 编码 CLI 接入你的编排平台
 
 用法：
-  agent-bridge connect <platformUrl> [--token=xxx] [--no-browser] [--label=name]
+  agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-browser] [--label=name]
       绑定本机设备并保持长连接（浏览器授权；SSH 场景加 --no-browser 走设备码）
+      --token 模式建议同时给 --device-id（或设 AGENT_BRIDGE_DEVICE_ID），否则平台需按 token 反查设备
   agent-bridge status [--json] [--fresh]
       扫描并打印本机 11 个 AI 编码 CLI 的安装/凭据状态
   agent-bridge logout
