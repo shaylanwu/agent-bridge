@@ -18,7 +18,7 @@ import { Emitter, isTerminal } from '../src/core/emitter';
 import { BRIDGE_ERROR_CODES, BridgeError, tokenDenyCode } from '../src/core/errors';
 import { redact } from '../src/core/redact';
 import { TaskSupervisor } from '../src/core/task-supervisor';
-import { createPkce } from '../src/infra/auth';
+import { browserOpenCommand, createPkce } from '../src/infra/auth';
 import { AGENTS, agentDefOf, probeCredential } from '../src/adapters/agent-adapters';
 import { buildWinCommandLine } from '../src/adapters/win-exec';
 import { isUnder, startTask } from '../src/runner';
@@ -79,6 +79,47 @@ describe('PKCE', () => {
     expect(a.verifier).not.toBe(b.verifier);
     expect(a.challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(a.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+});
+
+describe('浏览器唤起命令（Windows 下 & 截断回归）', () => {
+  // 结构与真实授权 URL 一致：第一个参数之后全是 & 分隔的 query
+  const AUTH_URL =
+    'http://localhost:5173/bridge/authorize?client_id=agent-bridge' +
+    '&code_challenge=F0T_test-challenge&code_challenge_method=S256' +
+    '&redirect_uri=http%3A%2F%2F127.0.0.1%3A51000%2Fcallback&state=probe-state';
+
+  it('Windows 不经 cmd /c start（& 会被 cmd 当命令分隔符）', () => {
+    const { cmd, args } = browserOpenCommand('win32', AUTH_URL);
+    expect(cmd.toLowerCase()).not.toMatch(/\bcmd(\.exe)?$/);
+    expect(args.join(' ')).not.toContain('/c');
+  });
+
+  it('整条 URL 作为单个 argv 传递，不拼接、不手写引号', () => {
+    const { args } = browserOpenCommand('win32', AUTH_URL);
+    const url = args.at(-1) ?? '';
+    expect(args).toHaveLength(2); // [url.dll,FileProtocolHandler, <url>]
+    expect(url).toBe(AUTH_URL);
+    expect(url).not.toMatch(/^["']|["']$/);
+  });
+
+  it('URL 里每个 query 参数都完整保留（含 & 之后的）', () => {
+    const { args } = browserOpenCommand('win32', AUTH_URL);
+    const url = args.at(-1) ?? '';
+    for (const param of [
+      'client_id=agent-bridge',
+      'code_challenge=F0T_test-challenge',
+      'code_challenge_method=S256',
+      'redirect_uri=http%3A%2F%2F127.0.0.1%3A51000%2Fcallback',
+      'state=probe-state',
+    ]) {
+      expect(url).toContain(param);
+    }
+  });
+
+  it('macOS / Linux 各自走 open / xdg-open，URL 仍为单参数', () => {
+    expect(browserOpenCommand('darwin', AUTH_URL)).toEqual({ cmd: 'open', args: [AUTH_URL] });
+    expect(browserOpenCommand('linux', AUTH_URL)).toEqual({ cmd: 'xdg-open', args: [AUTH_URL] });
   });
 });
 

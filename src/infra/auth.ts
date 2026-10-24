@@ -36,10 +36,34 @@ export function createPkce(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
+/**
+ * 唤起浏览器的命令（纯函数，可在非 Windows 上单测）。
+ *
+ * ⛔ Windows 不得走 `cmd /c start "" <url>`：Node 只在参数含空格时加引号，而授权 URL
+ * 里全是 `&`，cmd 会把 `&` 当成**命令分隔符** —— 浏览器只收到第一个 query 参数
+ * （2026-10-24 实测：`?client_id=agent-bridge` 之后的 `code_challenge` / `redirect_uri`
+ * 全被当成命令吞掉，平台授权页读不到 code_challenge，报「授权链接无效」）。
+ *
+ * ✅ 走 `rundll32 url.dll,FileProtocolHandler`：由 CreateProcess 直接收 argv，
+ * 全程不经任何 shell 解析，`&` 无需引号、无需转义，也不会引入 `shell: true`
+ * （对齐 always-on.md §4「参数一律字符串数组传给 spawn」）。
+ * 实测对照：cmd start 只送到 `?client_id=agent-bridge`；rundll32 整条送达（含 state）。
+ * 取舍：rundll32 对超长 URL（~2048 字符）有限制，而授权 URL 实测约 200 字符，够用。
+ * （`explorer.exe <url>` 是另一条零引号路径，但本机 Win11 实测不再转交默认浏览器，弃用。）
+ */
+export function browserOpenCommand(
+  platform: NodeJS.Platform,
+  url: string,
+): { cmd: string; args: string[] } {
+  if (platform === 'win32') {
+    return { cmd: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] };
+  }
+  if (platform === 'darwin') return { cmd: 'open', args: [url] };
+  return { cmd: 'xdg-open', args: [url] };
+}
+
 export function openBrowser(url: string): void {
-  const cmd =
-    process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  const { cmd, args } = browserOpenCommand(process.platform, url);
   const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true });
   child.on('error', () => {
     /* 打不开浏览器由调用方降级到 device code */
