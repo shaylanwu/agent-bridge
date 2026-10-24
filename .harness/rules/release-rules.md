@@ -83,6 +83,10 @@ commit（conventional）
 ⚠️ 这三档由 `feat` / `fix` / `feat!` 决定，**清单只是事后核对用的字典**：
 想把某次改动定为 minor 却写成了 `chore:`，它就不会发布 —— 这是本仓库最常见的"发布事故"。
 
+⚠️ **反向同样成立，而且代价是版本号噪音**：修 CI / workflow 本身请用 `ci:` 或 `chore:`，
+不要用 `fix:`。2026-10-24 实测：三次流水线修复写成 `fix(release)` / `fix(site)`，
+直接把版本从 0.2.0 顶到 0.2.2 —— 三个 patch 版本里没有一个包含用户可见的代码改动。
+
 ## 3. 发布动作的风险分级
 
 - **自动发布**（CI 里的 semantic-release）= 已授权路径：只在 `main` 上、且只在有 `feat`/`fix`/breaking 时发生。
