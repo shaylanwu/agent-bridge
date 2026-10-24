@@ -39,11 +39,13 @@ jobs:
       # 只装站点依赖：site-check 用的 yaml、构建用的 astro / starlight、索引用的 pagefind 都在 site/
       - run: npm ci --prefix site
 
-      # 防漂移先行（快）：命令/契约/生成页新鲜度、i18n 对等、版本历史页 ↔ CHANGELOG.md。
-      # 放在 build 之前是有意的 —— 生成页落后时这里直接给一句人话，比构建到一半再炸好定位。
-      - run: npm run site:check
-
+      # ⚠️ 顺序：先 build 再 check。
+      #    build 链里会跑 gen-reference / gen-changelog 刷新生成页；check 的 1.8 项正是校验
+      #    「版本历史页 ↔ CHANGELOG.md」是否同步。若把 check 放在前面，semantic-release 刚写回的
+      #    CHANGELOG.md 会让它立刻报红，把整条部署链挡在门外（2026-10-24 实测踩过）。
+      #    check 仍然保留：命令覆盖 / 契约解析 / i18n 对等 / 页脚死链这些与生成无关的不变量照旧守。
       - run: npm run site:build
+      - run: npm run site:check
 
       # 产物自检：不看退出码，直接查关键页面有没有落盘（构建"看似成功但少页"是常见事故）
       - name: 产物自检
