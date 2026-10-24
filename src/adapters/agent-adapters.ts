@@ -1,5 +1,5 @@
 /**
- * 11 个 AI 编码 CLI 的适配器定义 + 本机探测（不读、不上传任何密钥内容）
+ * 12 个 AI 编码 CLI 的适配器定义 + 本机探测（不读、不上传任何密钥内容）
  *
  * 探测口径与平台侧保持一致：
  *  - 先 which/where，再扫常见安装目录 + `%LOCALAPPDATA%\Programs\<厂商>\<产品>\bin`
@@ -11,7 +11,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import type { AgentCapability, AgentListItem, AgentStatus } from './protocol.js';
+import type { AgentCapability, AgentListItem, AgentStatus } from '../protocol.js';
 import { logoDataUri } from './agent-logos.js';
 import { buildWinCommandLine, isWinShim } from './win-exec.js';
 
@@ -53,6 +53,21 @@ export const AGENTS: AgentDef[] = [
       envs: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'],
       files: [join(home(), '.claude', '.credentials.json'), join(home(), '.claude.json')],
       loginCommand: 'claude',
+    },
+  },
+  {
+    // 腾讯 CodeBuddy CLI（@tencent-ai/codebuddy-code），命令名 codebuddy，别名 cbc。
+    // 接口与 Claude Code 同构：-p 非交互 + --output-format text；登录后凭据落 ~/.codebuddy。
+    kind: 'codebuddy-cli',
+    display: 'CodeBuddy CLI',
+    bin: 'codebuddy',
+    altBins: ['cbc'],
+    capability: 'non_interactive',
+    taskArgs: ['-p', '{{prompt}}', '--output-format', 'text'],
+    credential: {
+      envs: [],
+      files: [join(home(), '.codebuddy')],
+      loginCommand: 'codebuddy',
     },
   },
   {
@@ -279,7 +294,7 @@ export function resolveBin(names: string[]): string | undefined {
 
 /**
  * `resolveBin` 的异步版本，供扫描并发使用。
- * 同步版每次 `where` 约 300-400ms，11 个工具串行就是 4s 量级 —— 扫描用这个才能与版本探测并行。
+ * 同步版每次 `where` 约 300-400ms，12 个工具串行就是 4s 量级 —— 扫描用这个才能与版本探测并行。
  * runner 仍用同步版（`startTask` 是同步 API，不必为一个任务改整条调用链）。
  */
 export async function resolveBinAsync(names: string[]): Promise<string | undefined> {
@@ -352,7 +367,7 @@ export function probeVersion(
   args = ['--version'],
   timeoutMs = 8000,
 ): Promise<VersionProbe> {
-  // 异步 spawn：11 个工具并发探测时不阻塞事件循环（WS 心跳、ping/pong 都要靠它）
+  // 异步 spawn：12 个工具并发探测时不阻塞事件循环（WS 心跳、ping/pong 都要靠它）
   return new Promise<VersionProbe>((resolve) => {
     const shim = isWinShim(binPath);
     let stdout = '';

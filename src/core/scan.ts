@@ -1,5 +1,5 @@
 /**
- * 扫描调度：并发探测 11 个工具 + 30s TTL 缓存 + 逐项回调（实时回传）
+ * 扫描调度：并发探测 12 个工具 + 30s TTL 缓存 + 逐项回调（实时回传）
  *
  * 为什么要并发：单个工具一次 `--version` 子进程（Windows 上还要过 cmd 垫片），串行实测 12.8s（空载）～
  * 25.7s（机器繁忙），期间事件循环被占住、WS 心跳与入站指令全被推迟。改为并发上限 4 后落到秒级。
@@ -8,11 +8,11 @@
  * 每完成一个就推一条 `scan_progress`（见 cli.ts），终态再发全量 `agent_list` / `scan_result`。
  */
 
-import { AGENTS, probeAgent } from './agent-adapters.js';
-import type { AgentListItem } from './protocol.js';
+import { AGENTS, probeAgent } from '../adapters/agent-adapters.js';
+import type { AgentListItem } from '../protocol.js';
 
 const TTL_MS = 30_000;
-/** 并发上限：11 个子进程全开会在低配机器上抢 CPU，4 个是实测的平衡点 */
+/** 并发上限：12 个子进程全开会在低配机器上抢 CPU，4 个是实测的平衡点 */
 const CONCURRENCY = 6;
 
 let cache: { at: number; items: AgentListItem[] } | null = null;

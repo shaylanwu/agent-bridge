@@ -7,7 +7,7 @@
 
 import { WebSocket } from 'ws';
 import { Outbox } from './outbox.js';
-import type { ClientMessage, ServerMessage } from './protocol.js';
+import { PROTOCOL_CAPABILITIES, type ClientMessage, type ServerMessage } from '../protocol.js';
 
 export interface BridgeClientOptions {
   platformUrl: string;
@@ -106,6 +106,8 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
         cliVersion: opts.cliVersion,
         platform: process.platform,
         hostname: opts.hostname,
+        // 能力协商：让任意第三方平台自己判断能用哪些可选能力，而不是猜 CLI 版本号
+        capabilities: [...PROTOCOL_CAPABILITIES],
       });
       flush();
       opts.onOpen?.();

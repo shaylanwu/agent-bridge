@@ -9,6 +9,33 @@
 
 export const PROTOCOL_VERSION = 1;
 
+/**
+ * 能力协商清单（hello.capabilities）
+ *
+ * 平台（可能是任意第三方系统）据此判断本机支持哪些**可选**能力，而不是靠 CLI 版本号猜。
+ * 规则：新增能力 = 加一个字符串 + 保持 PROTOCOL_VERSION 不变；语义变更/必填字段才 +1。
+ */
+export const PROTOCOL_CAPABILITIES = [
+  'diff',
+  'service-token',
+  'queue',
+  'scan-progress',
+  'cloud-events',
+] as const;
+
+/** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
+const MAX_META_LEN = 128;
+const MAX_PURPOSE_LEN = 64;
+const MAX_TOKEN_LEN = 256;
+
+/** 取字符串字段：类型不对或超长一律忽略（前向兼容，不因为新字段拒帧） */
+function strField(msg: Record<string, unknown>, key: string, max: number): string | undefined {
+  const v = msg[key];
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t.length > 0 && t.length <= max ? t : undefined;
+}
+
 /** 单个 AI 编码 CLI 的安装/凭据状态（对应平台工具卡片的三个标签） */
 export type AgentStatus = 'not_installed' | 'installed_no_cred' | 'ready';
 
@@ -38,6 +65,8 @@ export type ClientMessage =
       cliVersion: string;
       platform: string;
       hostname: string;
+      /** 本机支持的可选能力（见 PROTOCOL_CAPABILITIES）；平台据此降级，而不是猜版本 */
+      capabilities?: string[];
     }
   | { type: 'agent_list'; agents: AgentListItem[]; scannedAt: string }
   | {
@@ -48,14 +77,52 @@ export type ClientMessage =
       scannedAt: string;
       done: boolean;
     }
-  | { type: 'task_status'; taskId: string; status: TaskStatus; exitCode?: number; error?: string }
+  | {
+      type: 'task_status';
+      taskId: string;
+      status: TaskStatus;
+      exitCode?: number;
+      error?: string;
+      /** 机器可读错误码（见 src/core/errors 的受控枚举；人类可读串仍在 error） */
+      errorCode?: string;
+      /** 任务结束时 cwd 下的 unified diff（仅 captureDiff 启用时有值） */
+      diff?: string;
+      /** 变更文件清单（仓库相对路径） */
+      changedFiles?: string[];
+      /** diff 是否因超过 diff_max_bytes 被截断 */
+      diffTruncated?: boolean;
+      /** 回显本次调用的服务身份，供平台落 requested_by 审计 */
+      requestedBy?: string;
+      /**
+       * 排队语义：`status` 恒为 `running`（v1 兼容，老平台不会收到未知状态值），
+       * 排队中的任务额外给出 `phase: 'queued'` 与 `queuePosition`。
+       * 这是"新增可选字段 = 同版本"而不是新增状态值 —— 避免老平台遇到未知 status 崩溃。
+       */
+      phase?: 'queued' | 'running';
+      /** 队列中的位次（从 1 开始），仅在 `phase: 'queued'` 时出现 */
+      queuePosition?: number;
+    }
   | { type: 'task_log'; taskId: string; stream: 'stdout' | 'stderr'; data: string; isAnsi: boolean }
   | { type: 'pong'; at: number }
   | { type: 'scan_result'; requestId?: string; agents: AgentListItem[]; scannedAt: string };
 
 export type TaskStatus = 'running' | 'success' | 'failed' | 'cancelled' | 'timeout';
 
-export interface RunTaskCommand {
+/**
+ * 服务身份（P0-8）：任何第三方系统/后端服务都可以带一个 scoped service token 调进来。
+ * `requestedBy` 是调用方标识（如 `svc:repair-orchestrator`），bridge 会回显到终态供平台审计。
+ * 三个字段全部可选 —— 不带就完全等同 v1 行为（除本地显式开启 require_service_token）。
+ */
+export interface ServiceIdentity {
+  /** 调用方/服务标识（≤128 字符） */
+  requestedBy?: string;
+  /** 业务意图，如 repair / test / free（≤64 字符） */
+  purpose?: string;
+  /** scoped 服务令牌（≤256 字符）；一旦携带，bridge 必须校验 */
+  serviceToken?: string;
+}
+
+export interface RunTaskCommand extends ServiceIdentity {
   type: 'run_task';
   taskId: string;
   agentType: string;
@@ -65,9 +132,11 @@ export interface RunTaskCommand {
   prompt?: string;
   timeoutMs?: number;
   allowInteractive?: boolean;
+  /** 任务终态时回传 cwd 下的 unified diff（P0-6） */
+  captureDiff?: boolean;
 }
 
-export interface CancelTaskCommand {
+export interface CancelTaskCommand extends ServiceIdentity {
   type: 'cancel_task';
   taskId: string;
 }
@@ -114,11 +183,23 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       // 未知字段一律忽略 —— 子进程只用 bridge 自身进程的环境。
       timeoutMs: typeof msg['timeoutMs'] === 'number' ? msg['timeoutMs'] : undefined,
       allowInteractive: msg['allowInteractive'] === true,
+      // P0-6：只有显式 true 才捕获 diff（本地 diff_default 可在 cli 层兜底）
+      captureDiff: msg['captureDiff'] === true,
+      // P0-8：服务身份三件套，形状不对就忽略（不因为新字段拒帧）
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
     };
   }
   if (type === 'cancel_task') {
     if (typeof msg['taskId'] !== 'string') throw new ProtocolError('cancel_task 缺少 taskId');
-    return { type: 'cancel_task', taskId: String(msg['taskId']) };
+    return {
+      type: 'cancel_task',
+      taskId: String(msg['taskId']),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
   }
   if (type === 'scan') {
     return {
@@ -130,6 +211,59 @@ export function assertServerMessage(raw: unknown): ServerMessage {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
   }
   throw new ProtocolError(`未知指令类型: ${String(type)}`);
+}
+
+// ---------- CloudEvents 1.0 信封（可选，由 capabilities 协商） ----------
+
+/**
+ * 上行事件的 **CloudEvents 1.0** 信封（CNCF 标准）。
+ *
+ * 为什么提供：默认报文是扁平的自研结构，第三方要接必须读文档。给一条"标准信封"开关后，
+ * 任何支持 CloudEvents 的事件系统（Kafka / Knative / 各类网关）可以直接消费，
+ * 不必为 bridge 单独写解析器。
+ *
+ * 默认关闭（保持 v1 扁平报文）；平台在 `hello` 协商到 `cloud-events` 后请求启用。
+ */
+export const CLOUD_EVENTS_SPECVERSION = '1.0';
+
+export interface CloudEvent<T = unknown> {
+  specversion: '1.0';
+  /** 事件唯一 id */
+  id: string;
+  /** 事件源，形如 `urn:agent-bridge:device:<deviceId>` */
+  source: string;
+  /** 事件类型，形如 `dev.agent-bridge.task_log.v1` */
+  type: string;
+  /** RFC 3339 时间戳 */
+  time: string;
+  datacontenttype?: 'application/json';
+  /** 主体：任务场景恒为 taskId */
+  subject?: string;
+  /** 扩展属性：单调序号，便于平台检测空洞 */
+  seq?: number;
+  data: T;
+}
+
+/** 把一条上行报文包成 CloudEvents 1.0 信封（纯函数，便于单测） */
+export function toCloudEvent(
+  msg: ClientMessage,
+  source: string,
+  seq: number,
+  at: Date = new Date(),
+): CloudEvent {
+  const type = `dev.agent-bridge.${msg.type}.v1`;
+  const subject = 'taskId' in msg ? String(msg['taskId']) : undefined;
+  return {
+    specversion: CLOUD_EVENTS_SPECVERSION,
+    id: `${seq}-${at.getTime()}`,
+    source,
+    type,
+    time: at.toISOString(),
+    datacontenttype: 'application/json',
+    ...(subject ? { subject } : {}),
+    seq,
+    data: msg,
+  };
 }
 
 /** 日志分片上限：平台侧按 4KB 收，避免单帧过大 */

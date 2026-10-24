@@ -10,7 +10,7 @@
  * 丢弃不静默：`drain()` 会在日志前插一条说明性 task_log，平台能看出中间有缺口。
  */
 
-import type { ClientMessage } from './protocol.js';
+import type { ClientMessage } from '../protocol.js';
 
 const MAX_CONTROLS = 200;
 const DEFAULT_MAX_LOG_BYTES = 256 * 1024;
