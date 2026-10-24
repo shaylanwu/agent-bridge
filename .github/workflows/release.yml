@@ -69,6 +69,22 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
       - run: npm ci
+      # 先把 token 自身的问题暴露出来：semantic-release 失败时只会给一句 exit 1，
+      # 分不清是"secret 没传到"、"token 无效"还是"token 没有发布权限"。
+      # 这里只打印 token 长度与它代表的 npm 账号名，不打印 token 本身。
+      - name: npm token 预检
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN 为空 —— 检查 Settings → Secrets and variables → Actions 里是否有名为 NPM_TOKEN 的仓库 secret"
+            exit 1
+          fi
+          echo "token 已传入，长度 ${#NODE_AUTH_TOKEN}"
+          npm whoami || {
+            echo "::error::token 被 npm 拒绝（whoami 失败）—— 多为已过期/被撤销/类型不对"
+            exit 1
+          }
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: semantic-release
         run: npx semantic-release
         env:
