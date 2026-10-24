@@ -484,6 +484,8 @@ test/
 **不要手工打 tag** —— 手工的 `v1.2.3` 会和 semantic-release 抢同一个版本号。
 文档站（`.github/workflows/site.yml`）在每次 `main` 推送后重建，它的版本历史页由**同一个** `CHANGELOG.md`
 在构建期渲染 —— 一处真源，两处呈现。
+有个坑值得知道：用 `GITHUB_TOKEN` 推送的提交**不会**触发新的 workflow，所以 `release.yml` 在最后
+显式 dispatch 一次 `site.yml`；少了这一步，版本历史页会永远落后一个版本。
 
 离线验证发布链路（不需要 token、不联网、不写仓库）：
 

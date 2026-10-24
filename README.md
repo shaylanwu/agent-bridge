@@ -508,6 +508,8 @@ produce a wrong version.
 **Never tag by hand** — a manual `v1.2.3` and a semantic-release tag will fight over the same version number.
 The docs site (`.github/workflows/site.yml`) redeploys on every `main` push, and its changelog page is
 rendered from the same `CHANGELOG.md` at build time — one source of truth, two places it shows up.
+One wrinkle worth knowing: commits pushed with `GITHUB_TOKEN` don't trigger workflows, so `release.yml`
+dispatches `site.yml` explicitly at the end; without that step the changelog page would lag one release behind.
 
 Verify the release toolchain offline (no tokens, no network, nothing written to the repo):
 

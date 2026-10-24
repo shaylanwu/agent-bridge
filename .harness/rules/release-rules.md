@@ -41,11 +41,22 @@ commit（conventional）
                       → @semantic-release/npm 升版本 + 发布 npm
                       → @semantic-release/github 建 Release
                       → @semantic-release/git 提交 CHANGELOG/package.json 回 main
-                           └─ site.yml → 渲染版本历史页 → 部署 Pages
+                           ⚠️ 该提交**不会**触发任何 workflow（GITHUB_TOKEN 防递归）
+                 └─ 最后一步：显式 dispatch site.yml → 渲染版本历史页 → 部署 Pages
 ```
 
 **版本号只由提交信息决定**：`feat` 升 minor、`fix` 升 patch、`feat!` / `BREAKING CHANGE:` 升 major，
 `docs`/`chore`/`test`/`refactor`/`style`/`ci`/`build` 不发布（没有可发的内容时 workflow 什么都不做）。
+
+### 踩过的坑（照抄配置时别再踩）
+
+| 现象 | 真因 |
+| --- | --- |
+| `npm error 401 Unauthorized ... /-/whoami` | `actions/setup-node` 在仓库根生成的 `.npmrc` 是 `_authToken=${NODE_AUTH_TOKEN}`（**字面量，运行时展开**），项目级 `.npmrc` 优先级高于 `@semantic-release/npm` 写的用户级 —— 只注入 `NPM_TOKEN` 会展开成空串。**两个变量都要给**。 |
+| 整个 workflow 停在 `action_required`，0 个 job 执行 | 用了 `${{ toJSON(secrets) }}` 调试。序列化整个 secrets 上下文会被 GitHub 判为可疑操作并拦下。 |
+| 发布成功但版本历史页不更新 | `@semantic-release/git` 的提交由 `GITHUB_TOKEN` 推送，**不触发新 workflow**（防递归），所以要在 release 末尾显式 dispatch `site.yml`。 |
+| npm 上多出一个 `0.0.0-stage` 空壳版本 | `@semantic-release/npm` 的权限探针（`_npmUser` 是自己、无 scripts/files）。不影响 `latest`，不必删。 |
+| 手工打了 `v0.1.0` 之外的 tag | tag 由 semantic-release 生成；手工 tag 会与它抢版本号。唯一例外是接入时补的历史基线 tag（需审批）。 |
 
 ## 1. 发布前置条件（缺一不可）
 

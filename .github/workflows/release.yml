@@ -28,6 +28,7 @@ permissions:
   issues: write
   pull-requests: write
   id-token: write # npm provenance
+  actions: write # 发布完显式触发 site.yml（见最后一步的说明）
 
 jobs:
   verify:
@@ -131,3 +132,21 @@ jobs:
           # 关掉 husky：这一步会由 @semantic-release/git 自动生成 `chore(release): x.y.z` 提交，
           # 没必要再过一遍 commit-msg 钩子（本地提交才需要拦）
           HUSKY: '0'
+      # ⚠️ 必须显式触发站点：@semantic-release/git 推回 `chore(release): x.y.z` 用的是 GITHUB_TOKEN，
+      #    而 **GITHUB_TOKEN 推送的提交不会触发新的 workflow**（GitHub 防递归机制，实测该提交的 run 数为 0）。
+      #    少了这一步，"发布完 → 版本历史页出现新版本"这条链就断了，页面会一直停在上一版。
+      - name: 触发站点重建
+        run: |
+          code=$(curl -s -o /tmp/dispatch.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/site.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "dispatch site.yml → HTTP ${code}"
+          if [ "$code" != "204" ]; then
+            cat /tmp/dispatch.json || true
+            echo "::error::触发 site.yml 失败（HTTP ${code}）"
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
