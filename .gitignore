@@ -3,6 +3,9 @@ dist/
 *.tgz
 .DS_Store
 
+# ---------- 站点（site/ 独立工作区） ----------
+site/.astro/
+
 # ---------- Harness 运行时目录（审计/备份，不入库） ----------
 .harness/work/
 

@@ -22,8 +22,10 @@ const notes = [];
 const fail = (m) => failures.push(m);
 
 const protocol = read('/src/protocol.ts');
-const cli = read('/src/cli.ts');
-const config = read('/src/config.ts');
+// 命令注册表已迁到 src/cli/dispatch.ts（2026-10-23 入口瘦身），两处一起扫
+const cli = `${read('/src/cli.ts')}\n${read('/src/cli/dispatch.ts')}`;
+// 目录分层后（2026-10-23）配置在 src/infra/ 下
+const config = read('/src/infra/config.ts');
 const readmes = [
   { name: 'README.md', text: read('/README.md') },
   { name: 'README.zh-CN.md', text: read('/README.zh-CN.md') },
@@ -39,6 +41,21 @@ for (const { name, text } of readmes) {
   if (missing.length) fail(`${name} 缺协议消息类型：${missing.join(', ')}`);
 }
 notes.push(`协议消息类型 ${uniqueWire.length} 个：${uniqueWire.join(', ')}`);
+
+// ---------- 1b. 能力清单必须被文档记载（第三方靠它降级） ----------
+const capBlock = /PROTOCOL_CAPABILITIES\s*=\s*\[([\s\S]*?)\]\s*as const/.exec(protocol);
+const capabilities = capBlock
+  ? [...new Set([...capBlock[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]))]
+  : [];
+if (capabilities.length === 0) {
+  fail('protocol.ts 解析不出 PROTOCOL_CAPABILITIES（能力协商是第三方降级依据）');
+} else {
+  for (const { name, text } of readmes) {
+    const missing = capabilities.filter((c) => !text.includes(c));
+    if (missing.length) fail(`${name} 未记载能力：${missing.join(', ')}`);
+  }
+  notes.push(`能力清单 ${capabilities.length} 个：${capabilities.join(', ')}`);
+}
 
 // ---------- 2. run_task 示例必须带 args ----------
 /** 代码块里可能并列多个 JSON 对象（逐行一个），先整体解析，失败再逐行 */
@@ -86,9 +103,13 @@ for (const { name, text } of readmes) {
 }
 
 // ---------- 3. CLI 命令覆盖（对外命令清单固定，防止悄悄加/删命令） ----------
-const EXPECTED_CMDS = ['connect', 'status', 'logout', 'daemon'];
+const EXPECTED_CMDS = ['connect', 'serve', 'status', 'logout', 'services', 'daemon'];
 for (const c of EXPECTED_CMDS) {
-  if (!new RegExp(`cmd === '${c}'`).test(cli)) fail(`src/cli.ts 未实现命令 ${c}（README 有记载）`);
+  // 既认 `cmd === 'x'`（老式 if 链），也认命令表里的 `'x': cmdX`
+  const registered =
+    new RegExp(`cmd === '${c}'`).test(cli) ||
+    new RegExp(`(?:['"])?${c}(?:['"])?\\s*:\\s*cmd`).test(cli);
+  if (!registered) fail(`src/cli/ 未注册命令 ${c}（README 有记载）`);
 }
 for (const { name, text } of readmes) {
   const missing = EXPECTED_CMDS.filter((c) => !text.includes(c));
@@ -114,6 +135,23 @@ if (/join\(home\(\),\s*'\.bridge'\)/.test(config)) {
 for (const { name, text } of readmes) {
   if (!text.includes('.agent-bridge')) fail(`${name} 未记录配置路径 .agent-bridge/config.toml`);
 }
+
+// ---------- 6. 本地控制面：契约端点必须被两份 README 记载 ----------
+const cpPath = '/contracts/openapi.control-plane.yaml';
+let cpPaths = [];
+try {
+  const cp = read(cpPath);
+  // YAML 的 path key 形如 `  /v1/tasks/{id}:cancel:`（两个空格缩进 + 行尾冒号）
+  cpPaths = [...cp.matchAll(/^ {2}(\/v1\/\S+):$/gm)].map((m) => m[1]);
+} catch {
+  fail(`读不到 ${cpPath}（README 已记载控制面，契约必须存在）`);
+}
+if (cpPaths.length < 8) fail(`${cpPath} 只解析出 ${cpPaths.length} 个端点（疑似结构变更）`);
+for (const { name, text } of readmes) {
+  const missing = cpPaths.filter((p) => !text.includes(p));
+  if (missing.length) fail(`${name} 未记载控制面端点：${missing.join(', ')}`);
+}
+notes.push(`控制面端点 ${cpPaths.length} 个：${cpPaths.join(', ')}`);
 
 // ---------- 输出 ----------
 for (const n of notes) console.log(`  ℹ️  ${n}`);

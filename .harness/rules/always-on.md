@@ -41,9 +41,34 @@ version: 1.0.0
 
 - ⛔ 平台只能执行**适配器白名单内**的 CLI（`AGENTS` 表）。未知 `agentType` 必须本地拒绝，不得降级到「试试看能不能跑」。
 - ⛔ 禁止把平台下发的参数拼成 shell 字符串。参数一律字符串数组传给 `spawn`；唯一例外是 Windows `.cmd`/`.bat` 垫片，且只能经 `win-exec.ts` 的 `buildWinCommandLine()`。
-- ⛔ `shell: true` 只允许出现在两个已知位置：`src/runner.ts`（shim 分支）、`src/agent-adapters.ts`（版本探测）。新增第三处即违规（`protocol-boundary-check` 会拦）。
+- ⛔ `shell: true` 只允许出现在两个已知位置：`src/core/task-supervisor.ts`（shim 分支）、`src/adapters/agent-adapters.ts`（版本探测）。新增第三处即违规（`protocol-boundary-check` 会拦）。
+- ⛔ 监听端口只允许出现在 `src/infra/auth.ts`（授权期回环回调）与预留的 `src/transport/control-plane.ts`。
+  后者放行**不是无条件**：必须同时满足「只绑 `127.0.0.1` / `::1`」「有 `enabled` 开关且默认关闭」「不返回 CORS 头」，
+  三者缺一 `protocol-boundary-check` 即失败。除此之外任何 `listen(` 一律违规。
 - ⛔ `cwd` 必须存在且是目录，并落在允许范围内；平台下发的 `env` 不得用于注入影响解释器行为的变量（`NODE_OPTIONS` / `PATH` / `LD_PRELOAD` / `PATHEXT`）。
 - ⛔ 每个任务必须有超时；取消走 `SIGTERM` → 2s → `SIGKILL`，不得直接 `SIGKILL`。
+
+## 4.5 分层与唯一出口（架构红线）
+
+- 源码分层：`src/core/`（领域）居中，`src/transport/`（对外传输）、`src/adapters/`（CLI 适配）、
+  `src/infra/`（本机基础设施）是三种边缘；`src/app/`（用例编排）把"边缘 ↔ 领域"的编排收在中间层；
+  `src/cli/`（参数·渲染·帮助·分发）与 `src/commands/`（命令实现）是面向终端的最外圈。
+  根目录只留 `cli.ts`（入口）、`protocol.ts`（wire 契约）、`runner.ts`（v1 兼容包装）。
+- 依赖方向只能**从外圈指向核心**：
+  `cli.ts → cli/ → commands/ → app/ → { core, transport, adapters, infra }`；
+  `core` 不得 import `transport`；`protocol.ts` 不得 import 任何 `src/` 模块。
+- ⛔ `src/cli.ts` 只做 `argv → dispatch()` 一件事（含顶层错误兜底）。命令实现、终端渲染、
+  参数解析、业务编排**一律不许写进入口文件**（2026-10-23 入口 548 行 → 31 行）。
+  新命令 = 在 `src/commands/` 加文件 + 在 `src/cli/dispatch.ts` 的 `COMMANDS` 表加一行。
+- ⛔ `src/app/` 层不得直接 `console.*`：输出一律走注入的 `SessionLog`（`app/session-log.ts`）。
+  否则本地控制面板复用同一段编排时会被 stdout 绑死，单测也会吐噪音。
+- ⛔ 目录嵌套不超过一层（`src/a/b.ts` 为止）：`protocol-boundary-check` 的"导入逃逸 src"
+  规则按 `../../` 前缀判定，深目录会产生误报。
+- ⛔ 调度状态（并发计数、队列、超时定时器）必须是 `TaskSupervisor` 的**实例字段**，
+  禁止模块级 `let`（`protocol-boundary-check` 会告警）—— 模块级单例会让用例互相污染。
+- ⛔ 上行报文只能经 `src/core/emitter.ts` 的 `Emitter.emit()` 发出：终态幂等、日志脱敏、审计旁路、
+  CloudEvents 信封只在这里实现一遍。新增能力时**禁止**另开一条出口。
+- 新增能力 = 加一个 `capabilities` 字符串 + 同步两份 README + `contracts/*.yaml`。
 
 ## 5. 文档-实现零漂移
 

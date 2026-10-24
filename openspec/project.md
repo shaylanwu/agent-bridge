@@ -23,14 +23,18 @@ DeepSeek Harness、Gemini CLI、opencode 等 11 个）通过一条**出站 WebSo
 | 模块 | 职责 | 风险级别 |
 | --- | --- | --- |
 | `src/protocol.ts` | wire 类型 + 运行期校验 + 4KB 分片 | **high**（第三方契约） |
-| `src/runner.ts` | 任务生命周期：白名单、spawn、超时、取消 | **high**（安全边界） |
-| `src/auth.ts` | PKCE 回环授权 + 设备码兜底 | **high**（凭据） |
-| `src/bridge-client.ts` | WS 传输：鉴权、心跳、退避、离线队列 | medium |
-| `src/config.ts` | `~/.agent-bridge/config.toml` 读写（0600）+ 脱敏 | medium |
-| `src/scan.ts` | 探测调度 + 30s 缓存 | medium |
-| `src/agent-adapters.ts` | 11 个适配器表 + 二进制解析 + 版本/凭据探测 | medium |
-| `src/win-exec.ts` | Windows `.cmd` 垫片引号规则 | medium |
-| `src/cli.ts` | 命令入口（connect / status / logout / daemon） | medium |
+| `src/core/task-supervisor.ts` | 任务生命周期：白名单、spawn、超时、取消（`src/runner.ts` 是 v1 兼容包装） | **high**（安全边界） |
+| `src/infra/auth.ts` | PKCE 回环授权 + 设备码兜底 | **high**（凭据） |
+| `src/transport/bridge-client.ts` | WS 传输：鉴权、心跳、退避、离线队列 | medium |
+| `src/infra/config.ts` | `~/.agent-bridge/config.toml` 读写（0600）+ 脱敏 | medium |
+| `src/core/scan.ts` | 探测调度 + 30s 缓存 | medium |
+| `src/adapters/agent-adapters.ts` | 11 个适配器表 + 二进制解析 + 版本/凭据探测 | medium |
+| `src/adapters/win-exec.ts` | Windows `.cmd` 垫片引号规则 | medium |
+| `src/app/session.ts` | 平台会话：初值上报、指令路由、在跑任务表 | medium |
+| `src/app/task-dispatch.ts` | `run_task` / `cancel_task` 编排（鉴权 → 拉起 → 回传） | medium |
+| `src/app/service-gate.ts` | 服务身份校验 + 审计（P0-8） | medium |
+| `src/cli.ts` | **只做** `argv → cli/dispatch.ts` 分发与顶层错误兜底 | medium |
+| `src/cli/` + `src/commands/` | CLI 支撑件（参数/渲染/帮助/注册表）+ 一个命令一个文件 | medium |
 
 ## 关键约定（提案必须遵守）
 

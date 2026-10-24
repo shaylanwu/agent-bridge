@@ -2,7 +2,7 @@
 name: protocol-contract-rules
 description: bridge↔平台 wire 契约的演进规则：字段必填性、版本策略、兼容窗口、平台侧对接面。
 priority: P1
-applies_to: ['src/protocol.ts', 'src/bridge-client.ts', 'src/runner.ts', 'README.md', 'README.zh-CN.md']
+applies_to: ['src/protocol.ts', 'src/transport/bridge-client.ts', 'src/runner.ts', 'README.md', 'README.zh-CN.md']
 enforced_by:
   - scripts/doc-contract-check.mjs
   - hooks/post-change-gate.sh
@@ -58,7 +58,7 @@ version: 1.0.0
 | `WS /api/bridge/ws?deviceId=` | 长连接（`Authorization: Bearer <device_token>`） |
 
 - 吊销语义：WS close code `4401` / `4403`，bridge 收到即停止重连。⛔ 不得改用 `1008` 等标准码表达吊销（会被当临时故障无限重试）。
-- 端点数与路径由 `src/auth.ts` / `src/bridge-client.ts` 硬编码；改动必须同步 README.zh-CN「对接」章节与本文件。
+- 端点数与路径由 `src/infra/auth.ts` / `src/transport/bridge-client.ts` 硬编码；改动必须同步 README.zh-CN「对接」章节与本文件。
 
 ## 6. 已知未落地项（不得在文档中写成"已支持"）
 

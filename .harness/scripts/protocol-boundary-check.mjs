@@ -64,14 +64,26 @@ for (const f of files) {
   }
 
   // ---------- 3. shell:true 白名单 ----------
+  // 目录分层后（2026-10-23）路径变化：runner 的调度逻辑已迁入 core/task-supervisor.ts
+  const SHELL_ALLOW = ['src/core/task-supervisor.ts', 'src/adapters/agent-adapters.ts'];
   const shellHits = (f.bare.match(/shell:\s*true/g) ?? []).length;
-  if (shellHits > 0 && !['src/runner.ts', 'src/agent-adapters.ts'].includes(f.rel)) {
-    fail(`${f.rel} 出现 shell:true（只允许 runner.ts / agent-adapters.ts，且一律经 win-exec.ts）`);
+  if (shellHits > 0 && !SHELL_ALLOW.includes(f.rel)) {
+    fail(`${f.rel} 出现 shell:true（只允许 ${SHELL_ALLOW.join(' / ')}，且一律经 win-exec.ts）`);
   }
 
-  // ---------- 4. 只绑回环 ----------
-  if (/listen\([^)]*(0\.0\.0\.0|['"]::['"])/.test(f.bare)) fail(`${f.rel} 绑定非回环地址（只允许 127.0.0.1）`);
-  if (/listen\(/.test(f.bare) && f.rel !== 'src/auth.ts') fail(`${f.rel} 监听端口（唯一允许监听的是 src/auth.ts 的 127.0.0.1 回调）`);
+  // ---------- 4. 只绑回环 + 监听白名单 ----------
+  // 白名单第二条为**预留**：本地回环控制面（openspec/changes/add-local-control-plane）。
+  // 放行不是无条件 —— 它必须同时满足「绑回环」与「默认关闭」，缺一即失败。
+  const LISTEN_ALLOW = ['src/infra/auth.ts', 'src/transport/control-plane.ts'];
+  if (/listen\([^)]*(0\.0\.0\.0|['"]::['"])/.test(f.bare)) fail(`${f.rel} 绑定非回环地址（只允许 127.0.0.1 / ::1）`);
+  if (/listen\(/.test(f.bare) && !LISTEN_ALLOW.includes(f.rel)) {
+    fail(`${f.rel} 监听端口（只允许 ${LISTEN_ALLOW.join(' / ')}）`);
+  }
+  if (f.rel === 'src/transport/control-plane.ts') {
+    if (!/127\.0\.0\.1|::1/.test(f.bare)) fail(`${f.rel} 未绑定回环地址（控制面必须只绑 127.0.0.1 / ::1）`);
+    if (!/enabled/.test(f.bare)) fail(`${f.rel} 缺少 enabled 开关（控制面必须默认关闭）`);
+    if (/Access-Control-Allow-Origin/.test(f.bare)) fail(`${f.rel} 不得返回 CORS 头（防网页侧探测本机控制面）`);
+  }
 
   // ---------- 5. token 脱敏 ----------
   for (const m of f.bare.matchAll(/console\.(log|error|warn)\([^\n]*/g)) {
@@ -82,8 +94,9 @@ for (const f of files) {
   }
 
   // ---------- 6. 凭据文件不读内容 ----------
-  if (f.rel === 'src/agent-adapters.ts' && /readFileSync/.test(f.bare)) {
-    fail('src/agent-adapters.ts 出现 readFileSync（凭据只允许 existsSync 判存在）');
+  // 目录分层后（2026-10-23）路径变化：适配器在 src/adapters/ 下（此规则曾因路径失效而形同虚设）
+  if (f.rel === 'src/adapters/agent-adapters.ts' && /readFileSync/.test(f.bare)) {
+    fail('src/adapters/agent-adapters.ts 出现 readFileSync（凭据只允许 existsSync 判存在）');
   }
   if (/readFileSync\([^)]*(\.credentials|auth\.json|oauth_creds|\.codex|\.claude|\.gemini)/.test(f.bare)) {
     fail(`${f.rel} 试图读取凭据文件内容`);
@@ -96,14 +109,20 @@ for (const f of files) {
 }
 
 // ---------- 警告项 ----------
-const runner = files.find((f) => f.rel === 'src/runner.ts');
-if (runner) {
-  if (/\{\s*\.\.\.process\.env,\s*\.\.\.\(?req\.env/.test(runner.code) && !/NODE_OPTIONS/.test(runner.code)) {
-    warn('runner.ts 直接合并平台 env（未剔除 NODE_OPTIONS/PATH 等敏感变量）——见 protocol-contract-rules.md §6');
+// 调度逻辑在 core/task-supervisor.ts（runner.ts 已是 v1 兼容包装）
+const supervisor = files.find((f) => f.rel === 'src/core/task-supervisor.ts');
+if (supervisor) {
+  if (/\{\s*\.\.\.process\.env,\s*\.\.\.\(?req\.env/.test(supervisor.code) && !/NODE_OPTIONS/.test(supervisor.code)) {
+    warn('core/task-supervisor.ts 直接合并平台 env（未剔除 NODE_OPTIONS/PATH 等敏感变量）——见 protocol-contract-rules.md §6');
   }
-  if (!/maxConcurrent|concurrency|MAX_TASKS/.test(runner.code)) {
-    warn('runner.ts 无并发任务上限（平台可同时下发多个任务）');
+  if (!/maxConcurrent|MAX_TASKS|this\.maxTasks/.test(supervisor.code)) {
+    warn('core/task-supervisor.ts 无并发任务上限（平台可同时下发多个任务）');
   }
+  if (/^(let|var)\s+runningTasks/m.test(supervisor.code)) {
+    warn('core/task-supervisor.ts 出现模块级调度状态（应内聚为 TaskSupervisor 实例字段）');
+  }
+} else {
+  warn('找不到 src/core/task-supervisor.ts（调度领域对象缺失）');
 }
 
 // ---------- 输出 ----------

@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-`agent-bridge-service`：把本机已安装的 AI 编码 CLI（11 个）通过一条**出站 WebSocket** 接给远程编排平台。
+`agent-bridge-service`：把本机已安装的 AI 编码 CLI（12 个）通过一条**出站 WebSocket** 接给远程编排平台。
 不需要入站端口、不需要反向穿透，API Key 始终留在本机。
 
 **重要认知：本仓库只有系统的一半。** 平台侧是第三方实现，按两份 README 的协议表与
@@ -21,10 +21,16 @@
 | 模块 | 职责 | 风险 |
 | --- | --- | --- |
 | `src/protocol.ts` | wire 类型 + 运行期校验 + 4KB 分片 | **high**（第三方契约） |
-| `src/runner.ts` | 任务生命周期：白名单、spawn、超时、取消 | **high**（spawn 安全） |
-| `src/auth.ts` | PKCE 回环授权 + 设备码 | **high**（凭据） |
-| `src/bridge-client.ts` | WS 传输：鉴权、心跳、退避 | medium |
-| `src/config.ts` / `src/scan.ts` / `src/agent-adapters.ts` / `src/win-exec.ts` / `src/cli.ts` | 见 `openspec/project.md` | medium |
+| `src/core/task-supervisor.ts` | 任务生命周期：白名单、spawn、超时、取消（`src/runner.ts` 是其 v1 兼容包装） | **high**（spawn 安全） |
+| `src/infra/auth.ts` | PKCE 回环授权 + 设备码 | **high**（凭据） |
+| `src/transport/bridge-client.ts` | WS 传输：鉴权、心跳、退避 | medium |
+| `src/app/`（session / task-dispatch / service-gate） | 用例编排：会话、指令路由、服务身份校验 | medium |
+| `src/cli.ts` → `src/cli/` → `src/commands/` | 入口（只做分发）/ CLI 支撑件 / 命令实现 | medium |
+| `src/infra/config.ts` / `src/core/scan.ts` / `src/adapters/agent-adapters.ts` / `src/adapters/win-exec.ts` | 见 `openspec/project.md` | medium |
+
+依赖方向只能**从外圈指向核心**：
+`cli.ts → cli/(参数·渲染·帮助·分发) → commands/ → app/ → { core, transport, adapters, infra }`。
+⛔ 入口文件不许承载业务逻辑；`src/app/` 不许直接 `console.*`（输出走 `SessionLog`）。详见 `.harness/rules/always-on.md` §4.5。
 
 ## 标准命令
 

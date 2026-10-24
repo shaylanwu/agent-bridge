@@ -85,6 +85,12 @@ if MATCH "src/protocol.ts"; then
   fi
 fi
 
+# ---------- 4.5 契约门禁（AsyncAPI / OpenAPI 与代码零漂移） ----------
+if MATCH "src/protocol.ts" || MATCH "src/core/errors.ts" || MATCH "contracts/*" || MATCH "scripts/gen-contracts.mjs"; then
+  echo "== 契约门禁 =="
+  run "契约-代码一致性 (contracts:check)" npm run contracts:check
+fi
+
 # ---------- 5. OpenSpec 提案门禁 ----------
 if MATCH "openspec/changes/*"; then
   echo "== OpenSpec 提案门禁 =="
