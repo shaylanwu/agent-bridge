@@ -1,0 +1,319 @@
+openapi: 3.1.0
+info:
+  title: agent-bridge local control plane
+  version: '1.0.0'
+  summary: Loopback-only HTTP surface for other programs on the same machine.
+  description: |
+    An optional extension: `agent-bridge serve <platformUrl> --port=8787`.
+
+    It is OFF by default (`[control_plane] enabled = true` to turn it on) and binds loopback only,
+    so it is not an inbound network surface. Its audience is **other programs on this machine**
+    (IDE extensions, scripts, MCP servers, CI runners) — remote platforms keep using the outbound
+    WebSocket described by `asyncapi-3.0.yaml`; this is a separate channel.
+
+    Rules enforced by the harness (`npm run arch:check`): loopback bind only, an `enabled` switch that
+    defaults to off, and no CORS headers ever. Every route except `/v1/health` requires a scoped Bearer
+    token (`abs_<kid>_<secret>`) issued by `agent-bridge services issue`.
+
+    Errors are RFC 9457 `application/problem+json` and carry the same controlled `code` enum as the
+    wire protocol (`src/core/errors.ts`), so clients branch on `code`, never on prose.
+servers:
+  - url: 'http://127.0.0.1:8787'
+    description: Loopback only (never 0.0.0.0)
+security:
+  - bearerAuth: []
+tags:
+  - name: device
+  - name: tasks
+paths:
+  /v1/health:
+    get:
+      tags: [device]
+      summary: Liveness / readiness / version
+      description: The only route that needs no token — safe for container and CI probes.
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  version: { type: string }
+                  ready: { type: boolean }
+                  controlPlane:
+                    type: object
+                    properties:
+                      host: { type: string }
+                      port: { type: integer }
+                      requireToken: { type: boolean }
+                  tasks:
+                    type: object
+                    properties:
+                      tracked: { type: integer }
+                required: [status, version, ready]
+  /v1/capabilities:
+    get:
+      tags: [device]
+      summary: Capabilities and endpoint index (same source as hello.capabilities)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capabilities:
+                    type: array
+                    items: { type: string }
+                  protocolVersion: { type: integer }
+                  scopes:
+                    type: array
+                    items: { type: string }
+                  endpoints:
+                    type: array
+                    items: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/agents:
+    get:
+      tags: [device]
+      summary: Installed agents and their credential state (`?fresh=true` to re-probe)
+      parameters:
+        - name: fresh
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items: { $ref: '#/components/schemas/AgentListItem' }
+                  scannedAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/agents:scan:
+    post:
+      tags: [device]
+      summary: Trigger a fresh scan (same as GET /v1/agents?fresh=true)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/tasks:
+    get:
+      tags: [tasks]
+      summary: Task ledger, cursor-paginated (cursor, not offset — the list keeps moving)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/TaskRecord' }
+                  nextCursor: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [tasks]
+      summary: Create a task
+      description: |
+        `Idempotency-Key` makes a retried submission return the same `taskId` instead of running twice.
+        The task goes through the same `TaskSupervisor` as platform tasks, so `max_tasks` covers both
+        channels, and it reports upstream through the same `Emitter`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTask' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/TaskRecord'
+                  - type: object
+                    properties:
+                      events: { type: string }
+        '200':
+          description: Idempotent replay (same Idempotency-Key)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/TaskRecord'
+                  - type: object
+                    properties:
+                      idempotentReplay: { type: boolean, const: true }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/tasks/{id}:
+    get:
+      tags: [tasks]
+      summary: Task state plus terminal artifacts (diff / changedFiles)
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/TaskRecord' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /v1/tasks/{id}/events:
+    get:
+      tags: [tasks]
+      summary: 'SSE stream: log + status events for one task'
+      description: |
+        Late subscribers are backfilled from a bounded ring buffer before live events start.
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/tasks/{id}/diff:
+    get:
+      tags: [tasks]
+      summary: Terminal diff only — the task is never re-run to produce it
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  taskId: { type: string }
+                  diff: { type: string }
+                  changedFiles:
+                    type: array
+                    items: { type: string }
+                  diffTruncated: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/tasks/{id}:cancel:
+    post:
+      tags: [tasks]
+      summary: Cancel a task (idempotent; already-settled tasks return 200 with alreadySettled)
+      description: |
+        Only tasks created through this channel can be cancelled here — tasks dispatched by the remote
+        platform are owned by that session (409). Cancellation is SIGTERM, then SIGKILL after 2 s.
+      parameters: [{ $ref: '#/components/parameters/TaskId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/TaskRecord'
+                  - type: object
+                    properties:
+                      alreadySettled: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Scoped service token: abs_<kid>_<secret> (agent-bridge services issue)'
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing / invalid / expired token
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Forbidden:
+      description: Token valid but the required scope is missing
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Problem:
+      description: RFC 9457 problem details
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          description: Same controlled enum as the wire protocol (src/core/errors.ts)
+      required: [type, title, status, code]
+    AgentListItem:
+      type: object
+      properties:
+        kind: { type: string }
+        display: { type: string }
+        status: { type: string, enum: [ready, installed_no_cred, not_installed] }
+        version: { type: [string, 'null'] }
+        path: { type: [string, 'null'] }
+        installedButBroken: { type: boolean }
+    CreateTask:
+      type: object
+      properties:
+        agentType: { type: string }
+        cwd: { type: string }
+        prompt: { type: string }
+        args:
+          type: array
+          items: { type: string }
+        timeoutMs: { type: integer }
+        captureDiff: { type: boolean }
+        requestedBy: { type: string }
+        purpose: { type: string }
+      required: [agentType, cwd]
+    TaskRecord:
+      type: object
+      properties:
+        taskId: { type: string }
+        agentType: { type: string }
+        cwd: { type: string }
+        state:
+          type: string
+          enum: [running, success, failed, cancelled, timeout]
+        phase: { type: string, enum: [queued, running] }
+        queuePosition: { type: integer }
+        exitCode: { type: integer }
+        error: { type: string }
+        errorCode: { type: string }
+        diff: { type: string }
+        changedFiles:
+          type: array
+          items: { type: string }
+        diffTruncated: { type: boolean }
+        requestedBy: { type: string }
+        purpose: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      required: [taskId, agentType, cwd, state]

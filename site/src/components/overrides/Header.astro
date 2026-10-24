@@ -1,0 +1,284 @@
+---
+/**
+ * 覆盖 Starlight Header（v2：内容居中版）
+ *
+ * 布局口径对齐 Vue 官网 / VitePress：
+ *   - 顶栏底色与下边框仍然整条通栏，但**内容**装进居中容器（max-width 1376px），
+ *     不再贴着屏幕左右边缘铺开；
+ *   - 左区 = logo + 16px + 搜索（搜索紧贴 logo，不再被拉伸到内容列）；
+ *   - 右区 = 一级菜单 → 竖分隔线 → 语言 → 主题 → GitHub；
+ *   - 窄屏（<50rem）：右区收起，搜索退化为图标并靠右，其后是菜单按钮。
+ *     带侧栏的页面已有 Starlight 自带的汉堡按钮（固定在最右），
+ *     所以这里只在**没有侧栏的页面（首页/splash）**再补一个，并弹出一级菜单面板。
+ */
+import config from 'virtual:starlight/user-config';
+
+import LanguageSelect from 'virtual:starlight/components/LanguageSelect';
+import Search from 'virtual:starlight/components/Search';
+import SiteTitle from 'virtual:starlight/components/SiteTitle';
+import SocialIcons from 'virtual:starlight/components/SocialIcons';
+import ThemeSelect from 'virtual:starlight/components/ThemeSelect';
+import NavMenu from './NavMenu.astro';
+
+const shouldRenderSearch =
+  config.pagefind || config.components.Search !== '@astrojs/starlight/components/Search.astro';
+
+// 有侧栏 → 窄屏下用 Starlight 自带的侧栏汉堡；没有侧栏（首页等 splash）→ 这里补一个菜单按钮
+const { hasSidebar } = Astro.locals.starlightRoute;
+const showMobileNav = !hasSidebar;
+const mobileNavId = 'ab-mobile-nav';
+---
+
+<div class="header-shell">
+  <div class="header">
+    <div class="title-wrapper sl-flex">
+      <SiteTitle />
+    </div>
+    {
+      shouldRenderSearch && (
+        <div class="search-slot sl-flex print:hidden">
+          <Search />
+        </div>
+      )
+    }
+    {/* 右区顺序：一级菜单 → 竖线 → 主题 → GitHub → 语言（语言在最右，
+        与移动菜单页脚 .mobile-preferences 的 order 保持一致） */}
+    <div class="sl-hidden md:sl-flex print:hidden right-group">
+      <NavMenu />
+      <span class="nav-divider" aria-hidden="true"></span>
+      <ThemeSelect />
+      <div class="social-icons sl-flex">
+        <SocialIcons />
+      </div>
+      <LanguageSelect />
+    </div>
+    {
+      showMobileNav && (
+        <button
+          type="button"
+          popovertarget={mobileNavId}
+          class="ab-menu-btn sl-flex md:sl-hidden print:hidden"
+          aria-label={Astro.locals.t('menuButton.accessibleLabel')}
+        >
+          <svg
+            class="icon-open"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+          <svg
+            class="icon-close"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+      )
+    }
+  </div>
+
+  {
+    showMobileNav && (
+      <div id={mobileNavId} popover class="ab-mobile-nav">
+        <nav class="ab-mobile-nav-inner" aria-label="Sections">
+          <NavMenu variant="panel" />
+          {/* 与 Starlight 的 MobileMenuFooter 同结构同 class（含顺序）：
+              带侧栏页面的侧栏菜单页脚也是这一份，样式统一在 custom.css 里一条规则说了算 */}
+          <div class="mobile-preferences sl-flex">
+            <div class="social-icons">
+              <SocialIcons />
+            </div>
+            <ThemeSelect />
+            <LanguageSelect />
+          </div>
+        </nav>
+      </div>
+    )
+  }
+</div>
+
+<style>
+  @layer starlight.core {
+    /* 居中容器：与正文容器同宽（--ab-page-width 定义在 custom.css 的版面骨子里，
+       = 左栏 18.75rem × 2 + 正文 46rem + 正文左右内边距 1.5rem × 2 = 1384px），
+       窄屏用 Starlight 的横向内边距。
+       height:100% + 自身 flex 居中：窄屏搜索按钮高 2.5rem，比顶栏内容盒（2rem）高，
+       交给父级居中后上下各溢出 2px —— 这样内容中心才落在顶栏中线（28px），
+       与 Starlight 那个 position:fixed、按中线定位的汉堡按钮严丝合缝对齐。 */
+    .header-shell {
+      width: 100%;
+      max-width: var(--ab-page-width, 86.5rem);
+      height: 100%;
+      margin-inline: auto;
+      padding-inline: var(--sl-nav-pad-x);
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+    }
+
+    .header {
+      display: flex;
+      flex: 1 1 auto;
+      gap: 0;
+      justify-content: space-between;
+      align-items: center;
+      height: 100%;
+    }
+
+    .title-wrapper {
+      /* Prevent long titles overflowing and covering the search and menu buttons on narrow viewports. */
+      overflow: clip;
+      /* Avoid clipping focus ring around link inside title wrapper. */
+      padding: 0.25rem;
+      margin: -0.25rem;
+      min-width: 0;
+      flex: 0 1 auto;
+    }
+
+    /* 搜索紧贴 logo：16px（title-wrapper 的 4px 内边距被负外边距抵消，所以这里精确等于视觉间距） */
+    .search-slot {
+      margin-inline-start: 1rem;
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+
+    .right-group {
+      margin-inline-start: auto;
+      gap: 0.625rem;
+      align-items: center;
+    }
+
+    /* 默认 social-icons 带尾部竖线，改由 nav-divider 承担分隔 */
+    .social-icons::after {
+      content: none;
+    }
+
+    .nav-divider {
+      width: 1px;
+      height: 1.25rem;
+      background: var(--sl-color-hairline-light);
+    }
+
+    /* 窄屏菜单按钮（仅无侧栏页面） */
+    .ab-menu-btn {
+      flex: 0 0 auto;
+      width: 2rem;
+      height: 2rem;
+      padding: 0;
+      margin-inline-start: 0.5rem;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--sl-color-gray-2);
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background-color 0.12s ease-out, color 0.12s ease-out;
+    }
+
+    .ab-menu-btn:hover {
+      background: var(--sl-color-gray-7);
+      color: var(--sl-color-gray-1);
+    }
+
+    /* 图标 24px（与侧栏那份 .sl-menu-button 同尺寸）；按钮盒子仍是 2rem ——
+       改盒子会破坏 Starlight 那条 position:fixed + 按 --sl-menu-button-size 算的垂直居中 */
+    .ab-menu-btn svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    :global(:root:not([data-theme='light'])) .ab-menu-btn:hover {
+      background: var(--sl-color-gray-6);
+    }
+
+    .ab-menu-btn .icon-close,
+    .header-shell:has(> .ab-mobile-nav:popover-open) .icon-open {
+      display: none;
+    }
+
+    .header-shell:has(> .ab-mobile-nav:popover-open) .icon-close {
+      display: block;
+    }
+
+    /* 移动端一级菜单面板：顶栏下沿起，整幅铺开 */
+    .ab-mobile-nav {
+      position: fixed;
+      inset: var(--sl-nav-height) 0 0 0;
+      width: 100%;
+      max-width: 100%;
+      height: auto;
+      max-height: none;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: var(--sl-color-bg);
+      color: var(--sl-color-text);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .ab-mobile-nav-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      padding: 0.75rem var(--sl-nav-pad-x) 1.5rem;
+    }
+
+    .ab-mobile-nav :global(.sl-nav-item) {
+      font-size: 0.9375rem;
+      padding: 0.625rem 0.625rem;
+      border-radius: 8px;
+    }
+
+    /* 页脚（GitHub / 主题 / 中英切换）不在这里写样式：
+       与带侧栏页面的侧栏菜单页脚共用 custom.css 里的 .mobile-preferences 一套规则 */
+
+    @media (min-width: 50rem) {
+      .ab-mobile-nav {
+        display: none;
+      }
+    }
+
+    /* 窄屏：搜索靠右（图标态），其后是菜单按钮 */
+    @media (max-width: 49.99rem) {
+      .nav-divider {
+        display: none;
+      }
+
+      .search-slot {
+        margin-inline-start: auto;
+      }
+
+      /* 有侧栏时给 Starlight 固定定位的汉堡按钮留出位置（它贴在最右侧 16px 处） */
+      :global(:root[data-has-sidebar]) .header-shell {
+        padding-inline-end: calc(var(--sl-nav-pad-x) + 2.5rem);
+      }
+    }
+  }
+</style>
+
+<style is:global>
+  @layer starlight.core {
+    /* 仅在窄屏锁滚动：宽屏下（面板 display:none）若还锁着，用户会以为页面卡死 */
+    @media (max-width: 49.99rem) {
+      body:has(#ab-mobile-nav:popover-open) {
+        overflow: hidden;
+      }
+    }
+  }
+</style>

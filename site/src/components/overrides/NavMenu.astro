@@ -1,0 +1,64 @@
+---
+/**
+ * 顶栏一级菜单（覆盖 Starlight Header 时注入）：
+ * 五个入口与侧栏分组同名同源，当前页所在分组主色高亮。
+ * 宽屏（≥50rem）在顶栏横排；窄屏由 Header 的菜单按钮弹出 panel 变体（纵向列表）。
+ */
+interface Props {
+  /** bar = 顶栏横排（默认）；panel = 窄屏菜单面板里的纵向列表 */
+  variant?: 'bar' | 'panel';
+}
+
+const { variant = 'bar' } = Astro.props;
+
+const locale = Astro.locals.starlightRoute.locale ?? 'en';
+const base = `/agent-bridge/${locale}`;
+
+interface Group {
+  key: string;
+  href: string;
+  match: string[];
+}
+
+const groups: Group[] = [
+  { key: 'start', href: `${base}/quickstart/`, match: ['/quickstart', '/cli', '/architecture'] },
+  { key: 'protocol', href: `${base}/protocol/overview/`, match: ['/protocol'] },
+  { key: 'integrate', href: `${base}/integrate/platform/`, match: ['/integrate'] },
+  { key: 'api', href: `${base}/api/reference/`, match: ['/api'] },
+  { key: 'changelog', href: `${base}/changelog/`, match: ['/changelog'] },
+];
+
+const labels: Record<string, Record<string, string>> = {
+  en: {
+    start: 'Get started',
+    protocol: 'Protocol',
+    integrate: 'Integrate',
+    api: 'API reference',
+    changelog: 'Changelog',
+  },
+  'zh-cn': {
+    start: '开始使用',
+    protocol: '协议',
+    integrate: '对接指南',
+    api: 'API 参考',
+    changelog: '版本历史',
+  },
+};
+
+const path = Astro.url.pathname;
+const active = groups.find((g) => g.match.some((m) => path.includes(m)))?.key;
+---
+
+<nav class:list={['sl-nav-menu', { 'sl-nav-menu--panel': variant === 'panel' }]} aria-label="Sections">
+  {
+    groups.map((g) => (
+      <a
+        href={g.href}
+        class:list={['sl-nav-item', { on: g.key === active }]}
+        aria-current={g.key === active ? 'true' : undefined}
+      >
+        {labels[locale]?.[g.key] ?? labels.en[g.key]}
+      </a>
+    ))
+  }
+</nav>

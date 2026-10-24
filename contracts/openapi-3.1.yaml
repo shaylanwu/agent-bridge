@@ -1,0 +1,171 @@
+openapi: 3.1.0
+info:
+  title: agent-bridge platform HTTP contract
+  version: '1.0.0'
+  summary: 想驱动 agent-bridge 的平台必须实现的 HTTP 端点
+  description: |
+    这一份不是 agent-bridge 自己提供的接口，而是 **agent-bridge 作为客户端会去调用的接口**。
+    任何第三方系统只要实现这四个端点，就能成为一台"编排平台"：用户在自己机器上执行
+    `agent-bridge connect <你的地址>`，即可把本机 AI 编码 CLI 交给你调度。
+
+    桥接方向请配合 `contracts/asyncapi-3.0.yaml`（WebSocket 通道）一起读：
+    HTTP 只负责**绑定设备**，任务下发与事件回传全走那条出站 WebSocket。
+
+    错误响应建议统一为 RFC 9457（application/problem+json），bridge 侧只会把
+    HTTP 状态码与响应体前 200 字符用于报错文案，不解析特定字段。
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://platform.example.com
+    description: 平台根地址（bridge 用 `connect` 的第一个参数）
+security: []
+tags:
+  - name: binding
+    description: 设备绑定（授权码 / 设备码）
+paths:
+  /bridge/authorize:
+    get:
+      tags: [binding]
+      summary: 浏览器授权页（用户在此确认绑定）
+      description: |
+        bridge 拼出该 URL 后调用系统默认浏览器打开。页面需要复用用户已有的登录态，
+        确认后把 `code` 302 回 `redirect_uri`。
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          schema: { type: string, const: agent-bridge }
+        - name: code_challenge
+          in: query
+          required: true
+          description: base64url(sha256(verifier))，无填充
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema: { type: string, const: S256 }
+        - name: redirect_uri
+          in: query
+          required: true
+          description: '回环地址，形如 http://127.0.0.1:<随机端口>/callback'
+          schema: { type: string, format: uri }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '302':
+          description: 用户确认后重定向回 redirect_uri，带 code 与 state
+          headers:
+            Location:
+              description: '{redirect_uri}?code=...&state=...'
+              schema: { type: string, format: uri }
+        '200':
+          description: 直接渲染一个确认页面（由页面自行提交后重定向）
+  /api/bridge/token:
+    post:
+      tags: [binding]
+      summary: 用授权码换取 device_token（PKCE S256）
+      description: |
+        bridge 拿到 `code` 后调用。**必须校验 `code_verifier` 满足 S256**：
+        base64url(sha256(code_verifier)) === 之前下发的 code_challenge。
+        平台侧只保存 `device_token` 的 SHA-256，不明文存储。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, code_verifier, redirect_uri, client_id]
+              properties:
+                code: { type: string }
+                code_verifier: { type: string }
+                redirect_uri: { type: string, format: uri }
+                client_id: { type: string, const: agent-bridge }
+      responses:
+        '200':
+          description: 换取成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_token, device_id]
+                properties:
+                  device_token:
+                    type: string
+                    description: 后续 WS 握手的 Bearer 凭据；bridge 只落 0600 文件
+                  device_id: { type: string, description: '形如 bd_9f1c…' }
+                  refresh_token:
+                    type: string
+                    description: 可选。当前 bridge 会保存但尚未使用（未实现自动续期）
+        '400':
+          description: code / verifier 校验失败
+        '404':
+          description: 平台未实现该端点（bridge 会提示"平台配套接口未上线"）
+  /api/bridge/device-code:
+    post:
+      tags: [binding]
+      summary: 申请设备码（无浏览器 / SSH 场景）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string, const: agent-bridge }
+      responses:
+        '200':
+          description: 返回给用户的验证码与确认页
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_code, user_code, verification_uri]
+                properties:
+                  device_code: { type: string, description: bridge 轮询用的凭据 }
+                  user_code: { type: string, description: 展示给用户的短码 }
+                  verification_uri: { type: string, format: uri }
+                  interval: { type: integer, default: 5, description: 轮询间隔（秒） }
+                  expires_in: { type: integer, default: 600 }
+        '404':
+          description: 平台未实现该端点
+  /api/bridge/device-token:
+    post:
+      tags: [binding]
+      summary: 轮询设备码换取结果
+      description: |
+        用户尚未确认时返回 4xx（bridge 会按 `interval` 继续轮询直到 `expires_in`）；
+        确认后返回与 `/api/bridge/token` 相同的结构。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_code, client_id]
+              properties:
+                device_code: { type: string }
+                client_id: { type: string, const: agent-bridge }
+      responses:
+        '200':
+          description: 已确认
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_token, device_id]
+                properties:
+                  device_token: { type: string }
+                  device_id: { type: string }
+                  refresh_token: { type: string }
+        '403':
+          description: 等待用户确认（bridge 继续轮询）
+        '428':
+          description: 尚未确认（bridge 继续轮询）
+        '404':
+          description: 平台未实现该端点
+components:
+  schemas: {}

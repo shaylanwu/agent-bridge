@@ -1,0 +1,1267 @@
+/**
+ * agent-bridge 文档站主题（v3.1：对齐 Vue 官网气质 —— 居中 hero、无边框特性、软卡片、
+ * 深色代码块、克制留白）
+ *
+ * 只改 Starlight 暴露的 CSS 变量与少量结构样式，不碰组件逻辑：
+ * 契约、生成器、i18n 结构与搜索索引方式都不受影响。
+ *
+ * 变量口径（Starlight 0.42）：
+ *   亮色下 --sl-color-black 是页面底色、--sl-color-white 是墨色（两者在暗色下互换）
+ *   --sl-color-gray-1 最深 → gray-6/7 最浅
+ */
+
+/* ── 1. 字体 ─────────────────────────────────────────────────────── */
+
+:root {
+  --sl-font: 'Inter', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'Menlo',
+    'Consolas', monospace;
+  --sl-content-width: 46rem;
+  --sl-line-height: 1.7;
+}
+
+/* ── 2. 亮色 token ───────────────────────────────────────────────── */
+
+:root[data-theme='light'] {
+  --sl-color-white: hsl(216, 22%, 13%);
+  --sl-color-gray-1: hsl(216, 22%, 13%);
+  --sl-color-gray-2: hsl(214, 18%, 28%);
+  --sl-color-gray-3: hsl(214, 14%, 49%);
+  --sl-color-gray-4: hsl(213, 7%, 64%);
+  --sl-color-gray-5: hsl(210, 13%, 88%);
+  --sl-color-gray-6: hsl(210, 9%, 96%);
+  --sl-color-gray-7: hsl(210, 15%, 97%);
+  --sl-color-black: hsl(0, 0%, 100%);
+
+  --sl-color-accent: hsl(164, 76%, 37%);
+  --sl-color-accent-high: hsl(164, 80%, 27%);
+  --sl-color-accent-low: hsl(158, 35%, 93%);
+
+  --sl-color-bg: hsl(0, 0%, 100%);
+  --sl-color-bg-nav: hsl(0, 0%, 100%);
+  --sl-color-bg-sidebar: hsl(0, 0%, 100%);
+  --sl-color-bg-inline-code: hsl(158, 30%, 95%);
+  --sl-color-hairline-light: hsl(210, 9%, 96%);
+  --sl-color-hairline: hsl(210, 13%, 90%);
+  --sl-color-text: var(--sl-color-gray-2);
+  --sl-color-text-accent: var(--sl-color-accent-high);
+}
+
+/* ── 3. 暗色 token（深海军蓝底 + 提亮一档的强调色）────────────────── */
+
+:root:not([data-theme='light']) {
+  --sl-color-white: hsl(214, 51%, 93%);
+  --sl-color-gray-1: hsl(214, 51%, 93%);
+  --sl-color-gray-2: hsl(214, 25%, 78%);
+  --sl-color-gray-3: hsl(215, 13%, 66%);
+  --sl-color-gray-4: hsl(219, 37%, 21%);
+  --sl-color-gray-5: hsl(219, 37%, 21%);
+  --sl-color-gray-6: hsl(219, 44%, 13%);
+  --sl-color-black: hsl(220, 49%, 8%);
+
+  --sl-color-accent: hsl(160, 52%, 51%);
+  --sl-color-accent-high: hsl(156, 57%, 68%);
+  --sl-color-accent-low: hsl(164, 50%, 11%);
+
+  --sl-color-bg: hsl(220, 49%, 8%);
+  --sl-color-bg-nav: hsl(219, 44%, 13%);
+  --sl-color-bg-sidebar: hsl(219, 44%, 13%);
+  --sl-color-bg-inline-code: hsl(164, 50%, 11%);
+  --sl-color-hairline-light: hsl(219, 37%, 21%);
+  --sl-color-hairline: hsl(219, 37%, 21%);
+  --sl-color-text: var(--sl-color-gray-2);
+  --sl-color-text-accent: var(--sl-color-accent-high);
+}
+
+/* ── 3.5 版面骨架：顶栏 / 左栏 / 正文 / 右栏共用同一条中轴 ────────────
+ *
+ * 口径（宽屏三栏，≥72rem）：
+ *   容器宽 = 左栏 + 正文 + 右栏 + 正文左右内边距
+ *          = 18.75rem × 2 + 46rem + 1.5rem × 2 = 86.5rem = 1384px
+ *   容器内：左栏 18.75rem │ 中栏吃剩余 │ 右栏 18.75rem（与左栏等宽）
+ *   顶栏内容容器复用同一个 --ab-page-width，于是容器左沿、左栏分隔线、
+ *   右栏分隔线、容器右沿这四条竖线在顶栏与正文之间逐线对齐；
+ *   左栏文字、正文标题、目录列的左右边缘内缩量都是 1.5rem，也与顶栏 logo 对齐。
+ *   视口窄于容器时 max(0px, …) 归零，容器退化为整幅（与顶栏一致）。
+ *
+ * 两点实现约束：
+ *   1) 留白一律用 50% 而不是 100vw —— 100vw 含滚动条宽度（本机 Windows 差 15px），
+ *      会让左栏与顶栏错开；50% 相对包含块（不含滚动条），与 margin-inline:auto 同源。
+ *   2) 容器宽硬编码 86.5rem 而非 calc(--sl-sidebar-width …) —— 首页 splash 会把
+ *      --sl-content-width 改成 67.5rem，用变量会连带把顶栏内容容器拉宽。
+ */
+:root {
+  --ab-page-width: 86.5rem;
+}
+
+/* 顶栏：内容容器与正文容器同宽（.header-shell 在 Header.astro 内，这里改它的上限） */
+.header-shell {
+  max-width: var(--ab-page-width);
+}
+
+/* 左栏与右栏的内边距跟顶栏一致（顶栏 1.5rem → 侧栏也 1.5rem），
+   这样左栏首字、目录列右缘与顶栏 logo / 右侧图标组落在同一条竖线上 */
+:root {
+  --sl-sidebar-pad-x: var(--sl-nav-pad-x);
+}
+
+@media (min-width: 50em) {
+  /* 左栏：贴容器左沿（而不是视口左沿），宽度仍是一个标准栏宽 */
+  .sidebar-pane {
+    inset-inline-start: max(0px, calc(50% - var(--ab-page-width) / 2));
+    width: var(--sl-sidebar-width);
+  }
+
+  /* 容器外那段留白用固定定位的伪元素补成同样的侧栏底色 ——
+     栏底色因此一路铺到视口左沿、与顶栏连成一体，不会出现「面板悬空」的台阶。
+     （容器窄于视口时 max(0px, …) 归零，什么也不画。） */
+  .sidebar-pane::before {
+    content: '';
+    position: fixed;
+    inset-block: var(--sl-nav-height) 0;
+    inset-inline-start: 0;
+    width: max(0px, calc(50% - var(--ab-page-width) / 2));
+    background: var(--sl-color-bg-sidebar);
+    pointer-events: none;
+  }
+
+  /* 侧栏列表项（a / summary）自带 0.5rem 内边距，栏内边距要减掉这一档，
+     首级文字才与顶栏 logo 的 1.5rem 落在同一条竖线上 */
+  .sidebar-content {
+    padding-inline-start: calc(var(--sl-sidebar-pad-x) - 0.5rem);
+  }
+
+  /* 主框架：左侧让出「容器外留白 + 左栏」，右侧让出「容器外留白」，
+     于是中栏 + 右栏的可用宽正好 = 容器宽 − 左栏宽 */
+  :root[data-has-sidebar] .main-frame {
+    padding-inline-start: calc(
+      var(--sl-sidebar-width) + max(0px, calc(50% - var(--ab-page-width) / 2))
+    );
+    padding-inline-end: max(0px, calc(50% - var(--ab-page-width) / 2));
+  }
+}
+
+@media (min-width: 72rem) {
+  /* 右栏宽度 = 左栏宽度；中栏吃掉剩余空间（= 正文宽 + 左右内边距，恰好不挤不空） */
+  .right-sidebar-container {
+    width: var(--sl-sidebar-width);
+  }
+
+  .main-pane {
+    /* 只在有右栏（有目录）时扣掉右栏宽度；无目录的页面保持 Starlight 的整幅中栏 */
+    --sl-content-margin-inline: auto;
+  }
+
+  :root[data-has-toc] .main-pane {
+    width: calc(100% - var(--sl-sidebar-width));
+  }
+
+  /* 目录列不再按「25% 魔法数」随视口收缩：宽度恒等于栏宽减去两侧内边距 */
+  .right-sidebar-panel .sl-container {
+    max-width: none;
+  }
+}
+
+/* ── 4. 排版：标题不加粗到 700，靠负字距与留白建立层级 ───────────── */
+
+.sl-markdown-content {
+  line-height: var(--sl-line-height);
+}
+
+.sl-markdown-content h1 {
+  font-size: 2.25rem;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  margin-bottom: 0.5rem;
+}
+
+.sl-markdown-content h2 {
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  margin-top: 3rem;
+  padding-top: 0;
+  border-top: none;
+}
+
+.sl-markdown-content h3 {
+  font-size: 1.125rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-top: 2rem;
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+  max-width: 68ch;
+}
+
+.sl-markdown-content a {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--sl-color-accent) 35%, transparent);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.12s ease-out;
+}
+
+.sl-markdown-content a:hover {
+  text-decoration-color: var(--sl-color-accent);
+}
+
+/* 中文：行高放宽、避头尾 */
+:lang(zh),
+:lang(zh-CN) {
+  line-height: 1.8;
+  line-break: strict;
+  letter-spacing: 0.01em;
+}
+
+.sl-markdown-content :lang(zh) p,
+.sl-markdown-content :lang(zh) li {
+  line-height: 1.85;
+  max-width: 42em;
+}
+
+/* 数字等宽，表格/代码块不跳动 */
+.sl-markdown-content table,
+.sl-markdown-content code {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 5. 侧栏：当前项用主色文字 + 500 字重，无灰底色块（Vue 风格）───── */
+
+nav.sidebar a {
+  border-radius: 0;
+  transition: color 0.12s ease-out;
+}
+
+nav.sidebar a:hover {
+  background: transparent;
+  color: var(--sl-color-gray-1);
+}
+
+nav.sidebar a[aria-current='page'],
+nav.sidebar a[aria-current='page']:hover {
+  background: transparent;
+  color: var(--sl-color-text-accent);
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.sidebar-pane .group-label,
+nav.sidebar summary .large {
+  font-size: var(--sl-text-xs);
+  letter-spacing: 0.01em;
+  color: var(--sl-color-gray-3);
+}
+
+/* ── 6. 内容区组件 ───────────────────────────────────────────────── */
+
+/* 行内代码 */
+.sl-markdown-content :not(pre) > code {
+  background: var(--sl-color-bg-inline-code);
+  color: var(--sl-color-text-accent);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+  border: none;
+}
+
+/* 代码块：深色底 + 细描边（亮色页上也是深色 —— 经 expressiveCode.themes 单一深色实现） */
+.expressive-code {
+  border-radius: 10px;
+  border: 1px solid var(--sl-color-hairline-light);
+  overflow: hidden;
+}
+
+/* 表格：极淡分隔线，表头小号冷静 */
+.sl-markdown-content table {
+  border: none;
+  font-size: var(--sl-text-sm);
+}
+
+.sl-markdown-content th {
+  font-size: var(--sl-text-xs);
+  font-weight: 500;
+  color: var(--sl-color-gray-3);
+  border-bottom: 1px solid var(--sl-color-hairline);
+  padding: 0.5rem 0.75rem;
+}
+
+.sl-markdown-content td {
+  border-bottom: 1px solid var(--sl-color-hairline-light);
+  padding: 0.5rem 0.75rem;
+}
+
+/* 提示块：圆角浅底，不用左侧色条 */
+.starlight-aside {
+  border: none;
+  border-radius: 8px;
+  background: var(--sl-color-accent-low);
+  padding: 1rem;
+}
+
+.starlight-aside--note {
+  background: var(--sl-color-blue-low);
+}
+
+.starlight-aside--tip {
+  background: var(--sl-color-green-low);
+}
+
+.starlight-aside--caution {
+  background: var(--sl-color-orange-low);
+}
+
+.starlight-aside--danger {
+  background: var(--sl-color-red-low);
+}
+
+.starlight-aside__title {
+  font-size: var(--sl-text-sm);
+  font-weight: 500;
+}
+
+/* 顶部导航：极淡底边；底色与下边框仍整条通栏，
+   横向内边距交给 Header.astro 里的居中容器（.header-shell，max-width 1376px），
+   否则内容会被 Starlight 的 --sl-nav-pad-x 顶到屏幕边缘。 */
+header.header {
+  border-bottom: 1px solid var(--sl-color-hairline-light);
+  background: var(--sl-color-bg-nav);
+  padding-inline: 0;
+}
+
+/* ── 6.5 顶栏：搜索按钮（Vue 式紧凑）+ 一级菜单 + 语言分段 + 两态主题图标 ── */
+
+/* 窄屏菜单按钮统一成「幽灵图标」：Starlight 原生是深色实心圆，与顶栏其余轻量图标
+   不一致；这里与 Header.astro 里首页自带的 .ab-menu-btn 同款（32px / 悬停浅底）。 */
+.sl-menu-button {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background-color: transparent;
+  color: var(--sl-color-gray-2);
+  box-shadow: none;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+
+.sl-menu-button:hover {
+  background-color: var(--sl-color-gray-7);
+  color: var(--sl-color-gray-1);
+}
+
+.sl-menu-button:has(~ :popover-open) {
+  background-color: var(--sl-color-gray-6);
+}
+
+:root:not([data-theme='light']) .sl-menu-button:hover,
+:root:not([data-theme='light']) .sl-menu-button:has(~ :popover-open) {
+  background-color: var(--sl-color-gray-6);
+}
+
+.sl-menu-button svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* ── 6.6 移动端菜单页脚（两处共用同一套：首页 popover 面板 + 带侧栏页面的侧栏菜单）──
+   Starlight 默认把 GitHub 用 margin-inline-end:auto 顶到最左、主题与中英切换贴最右，
+   且给图标加了上下 1rem 内边距，整行又高又散；这里统一成「三个控件靠左成一组」，
+   与首页面板页脚完全一致（两处都用 .mobile-preferences 这一个 class）。 */
+.mobile-preferences {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.75rem;
+  padding: 0.875rem 0 0;
+  border-top: 1px solid var(--sl-color-hairline-light);
+}
+
+/* 控件行高对齐：去掉 Starlight 的 auto 右边距与上下 1rem 内边距 */
+.mobile-preferences .social-icons {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-inline-end: 0;
+  padding-block: 0;
+}
+
+.mobile-preferences .social-icons:empty {
+  display: none;
+}
+
+/* GitHub 图标本身带 8px 内边距 + 负外边距；这里改成 6px：视觉间距与另两个控件一致，点击区仍有 28px */
+.mobile-preferences .social-icons a {
+  padding: 0.375rem;
+  margin: -0.375rem;
+}
+
+/* 首页菜单面板内部没有父级 gap，分隔线与列表的间距由这条负责 */
+.ab-mobile-nav-inner .mobile-preferences {
+  margin-top: 0.75rem;
+}
+
+/* 视觉顺序与宽屏顶栏右区一致：主题 → GitHub → 语言（语言在最右）。
+   Starlight 的 MobileMenuFooter 与首页面板 DOM 顺序都是「GitHub → 主题 → 语言」，
+   用 order 统一改视觉顺序，两处 DOM 可以保持一致、不必分叉。 */
+.mobile-preferences > .social-icons {
+  order: 2;
+}
+
+.mobile-preferences > starlight-theme-toggle {
+  order: 1;
+}
+
+.mobile-preferences > starlight-lang-segment {
+  order: 3;
+}
+
+/* 搜索按钮：桌面是「搜索 + Ctrl K」的描边胶囊；窄屏退化为纯图标，不要底色/描边
+   （暗色下导航条底色与页面底色不同，窄屏若带底色会显出一个突兀的方块） */
+@media (min-width: 50rem) {
+  site-search button[data-open-modal] {
+    width: 11rem;
+    max-width: 11rem;
+    height: 2.125rem;
+    border-radius: 8px;
+    border-color: var(--sl-color-hairline);
+    background-color: var(--sl-color-bg);
+    transition: border-color 0.12s ease-out;
+  }
+
+  site-search button[data-open-modal]:hover {
+    border-color: var(--sl-color-accent);
+  }
+}
+
+/* 一级菜单：与侧栏分组同名，当前分组主色高亮 */
+.sl-nav-menu {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.sl-nav-item {
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-2);
+  padding: 0.25rem 0.625rem;
+  border-radius: 6px;
+  text-decoration: none;
+  /* 一级菜单永远单行：英文标签比中文长，空间紧时宁可这一档改用搜索图标，也不让它折行 */
+  white-space: nowrap;
+  transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+
+/* 菜单面板变体（窄屏弹出）：纵向排列，条目撑满整行 */
+.sl-nav-menu--panel {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.125rem;
+}
+
+.sl-nav-item:hover {
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-gray-1);
+}
+
+:root[data-theme='light'] .sl-nav-item:hover {
+  background: var(--sl-color-gray-7);
+}
+
+.sl-nav-item.on {
+  color: var(--sl-color-text-accent);
+  font-weight: 500;
+}
+
+/* 顶栏刚铺开到 5 个项目、还没到宽屏的那一档（50~60rem）：
+   语言胶囊变成 4 字（中文/英文）后，英文站的右区（英文菜单最宽）会把一级菜单挤到折行。
+   这一档统一收窄菜单内边距（10→7）并把搜索退化成纯图标，腾出 ~150px；
+   Ctrl K 快捷键照旧可用。 */
+@media (min-width: 50rem) and (max-width: 60rem) {
+  .sl-nav-item {
+    padding-inline: 0.4375rem;
+  }
+
+  site-search button[data-open-modal] {
+    width: 2rem;
+    padding: 0;
+    justify-content: center;
+    border-color: transparent;
+    background-color: transparent;
+  }
+
+  /* Starlight 的脚本用**内联 style** 控制 kbd 的显示，所以这里必须 !important 才压得住 */
+  site-search button[data-open-modal] > span,
+  site-search button[data-open-modal] > kbd {
+    display: none !important;
+  }
+}
+
+/* 窄屏只收起顶栏横排的那一份；菜单面板里的纵向列表（panel 变体）不受影响 */
+@media (max-width: 49.99rem) {
+  .sl-nav-menu:not(.sl-nav-menu--panel) {
+    display: none;
+  }
+}
+
+/* 语言切换：分段胶囊（元素是自定义标签，无 class）。
+   标签随页面语言变：中文页「中文 | 英文」，英文页「CN | EN」—— 见 LanguageSelect.astro */
+starlight-lang-segment {
+  display: inline-flex;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 7px;
+  padding: 2px;
+}
+
+starlight-lang-segment .seg {
+  font-size: var(--sl-text-xs);
+  color: var(--sl-color-gray-3);
+  padding: 0.0625rem 0.4rem;
+  border-radius: 5px;
+  text-decoration: none;
+  transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+
+starlight-lang-segment .seg.cur {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-text-accent);
+  font-weight: 500;
+}
+
+/* 主题切换：两态图标按钮（首次访问跟随系统，点击切亮/暗） */
+
+/* 外层自定义元素默认是 inline，按钮以 inline-flex 参与行内基线对齐，
+   会比分栏里的按钮高出 ~1px；改成 flex 容器后按盒子中线对齐。 */
+starlight-theme-toggle {
+  display: flex;
+  align-items: center;
+}
+
+[data-theme-toggle] {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sl-color-gray-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+
+[data-theme-toggle]:hover {
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-gray-1);
+}
+
+[data-theme-toggle] svg {
+  width: 0.9375rem;
+  height: 0.9375rem;
+}
+
+[data-theme-toggle] .icon-moon {
+  display: none;
+}
+
+:root[data-theme='dark'] [data-theme-toggle] .icon-sun {
+  display: none;
+}
+
+:root[data-theme='dark'] [data-theme-toggle] .icon-moon {
+  display: block;
+}
+
+/* ── 7. 首页（Starlight 内置 hero + 我们的组件）────────────────────── */
+
+/* 标题必须一行：放宽断行限制，字号随视口收缩；窄屏再允许换行 */
+.hero h1 {
+  max-width: none;
+  white-space: nowrap;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  font-size: clamp(1.9rem, 4.6vw, 2.5rem);
+}
+
+@media (max-width: 40rem) {
+  .hero h1 {
+    white-space: normal;
+    font-size: 1.8rem;
+  }
+}
+
+/* 描述宽度与标题严格同宽：由 hero-fit.js 把标题实际宽度写入 tagline 的
+   max-width（纯 CSS 的 fit-content 取"最宽子元素"，无法只认标题） */
+.hero .copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 内置 hero：没有配图时也必须居中（默认 ≥50rem 会切成 7fr/4fr 双栏，右侧空掉）。
+   padding-bottom 0.5rem：hero 与内容区之间有 24px 的固定结构性间隙，
+   8 + 24 = 32px，正好等于下方安装命令的 margin-bottom，上下等距 */
+.hero {
+  grid-template-columns: 1fr !important;
+  padding-block: 3.5rem 0.5rem;
+}
+
+.hero .stack {
+  align-items: center;
+}
+
+.hero .tagline {
+  max-width: none;
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
+
+.hero .actions {
+  gap: 0.75rem;
+}
+
+.hero .actions a {
+  border-radius: 8px;
+  padding: 0.55rem 1.2rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  transition: background-color 0.12s ease-out, border-color 0.12s ease-out,
+    transform 0.12s ease-out;
+}
+
+.hero .actions a.primary {
+  background: var(--sl-color-accent);
+  color: #fff;
+  border: 1px solid transparent;
+}
+
+.hero .actions a.primary:hover {
+  background: color-mix(in srgb, var(--sl-color-accent) 88%, black);
+  transform: translateY(-1px);
+}
+
+/* 次要按钮（variant: secondary / minimal）：中性色系，不占品牌色。
+   两个动作并列时，品牌色只留给唯一的主要动作 —— 否则两个实心绿按钮在视觉上等权。
+   ⛔ Starlight 0.42 的 hero action 默认 variant 就是 primary，第二个按钮必须在
+   index.mdx 里显式写 variant: secondary，否则会长成一个模子。 */
+.hero .actions a.secondary,
+.hero .actions a.minimal {
+  background: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-hairline);
+  color: var(--sl-color-gray-1);
+}
+
+/* hover 用 currentColor 提/压一档：浅色下文字深 → 底色变深，深色下反之，
+   一条规则同时正确，不用分主题写两遍 */
+.hero .actions a.secondary:hover,
+.hero .actions a.minimal:hover {
+  background: color-mix(in srgb, var(--sl-color-gray-1) 6%, var(--sl-color-gray-6));
+  border-color: var(--sl-color-accent);
+  color: var(--sl-color-text-accent);
+  transform: translateY(-1px);
+}
+
+/* 安装命令：水平居中（脱离 markdown 的 p 规则），与上下内容等距 */
+.home-install-wrap {
+  max-width: none;
+  text-align: center;
+  margin: 0 auto 2rem;
+}
+
+.home-install {
+  display: inline-block;
+  font-family: var(--sl-font-mono);
+  font-size: 0.8125rem;
+  color: var(--sl-color-gray-2);
+  background: var(--sl-color-gray-7);
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 8px;
+  padding: 0.5rem 0.9rem;
+}
+
+:root:not([data-theme='light']) .home-install {
+  background: var(--sl-color-gray-6);
+}
+
+/* 出站连接图：图注之下由 Agent 墙承接（方案 B），分隔线移到墙的底部 */
+.home-figure {
+  padding: 0 1.5rem 0.75rem;
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.home-figure-inner {
+  max-width: 34rem;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* 图注：与图、与分隔线等距（上下各 1rem），水平居中且不受 markdown p 规则影响 */
+.home-figure-note {
+  max-width: none;
+  margin: 1rem auto 0;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-3);
+}
+
+.home-node {
+  flex: 1;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  background: var(--sl-color-bg);
+  text-align: left;
+}
+
+.home-node strong {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.home-node span {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-3);
+  margin-top: 0.15rem;
+}
+
+@keyframes outbound-packet {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(84px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .home-packet {
+    animation: outbound-packet 2.4s linear infinite;
+  }
+}
+
+/* 三列特性：无边框，靠留白分栏 */
+.home-features {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3rem;
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+/* 特性列：图标与标题同行（图标在前，留 8px 间距），标题行在列内水平居中 */
+.home-feature {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.home-feature-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.home-feature h3 {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  margin: 0;
+  line-height: 1.4;
+  min-height: 1.4em;
+}
+
+.home-feature p {
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-3);
+  margin: 0;
+  line-height: 1.75;
+  /* 中文两端对齐：左右边缘齐平，与居中的标题行形成对称的块 */
+  text-align: justify;
+  text-justify: inter-ideograph;
+}
+
+.home-icon {
+  display: flex;
+  align-items: center;
+  color: var(--sl-color-accent);
+}
+
+/* Agent 墙：主色小节标题（方案 B —— 颜色/字重/字号与图注三重差异）+ 品牌色图标清单 */
+.home-agents {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 2.5rem;
+  text-align: center;
+  border-bottom: 1px solid var(--sl-color-hairline-light);
+}
+
+.home-agents-heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 1rem 0 10px;
+}
+
+.home-agents-heading span:last-child {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--sl-color-text-accent);
+  letter-spacing: 0.01em;
+}
+
+.home-agents-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--sl-color-accent);
+}
+
+.home-agents ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.875rem 1.75rem;
+  justify-content: center;
+  align-items: center;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.home-agents li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--sl-color-gray-2);
+  transition: color 0.12s ease-out;
+}
+
+.home-agents li:hover {
+  color: var(--sl-color-gray-1);
+}
+
+.home-agent-logo {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 图标资产统一 24×24 画布、内容内缩到 20×20（约 83%）。
+   盒子 22px → 可见内容 ≈18.3px，比 16px 文字略大，视觉不缩水。
+   ⚠️ 图标必须是 .home-agent-logo 下的**顶层** svg —— 不要再套一层 <svg>：
+   内层 svg 不跟随 CSS 缩放到容器尺寸，会按自身 24px 排版而被裁掉右/下各 4px。 */
+.home-agent-logo svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.home-agent-glyph {
+  display: inline-flex;
+}
+
+/* 暗色主题：深色/黑色系 logo 反白（白名单见 AgentWall 的 INVERT_ON_DARK），
+   避免与深底融合；彩色品牌 logo（Claude/Gemini/CodeBuddy 等）不受影响 */
+:root:not([data-theme='light']) .home-agents li[data-invert] .home-agent-logo svg {
+  filter: brightness(0) invert(1);
+}
+
+/* Qoder 官方亮/暗两版图标（同一轮廓：绿内芯不变，外圈白/深两色）：
+   亮色主题显示深外圈版（light），暗色主题显示白外圈版（dark） */
+.qoder-dual {
+  display: inline-flex;
+}
+
+.qoder-dual .qoder-img-light {
+  display: inline-flex;
+}
+
+.qoder-dual .qoder-img-dark {
+  display: none;
+}
+
+:root:not([data-theme='light']) .qoder-dual .qoder-img-light {
+  display: none;
+}
+
+:root:not([data-theme='light']) .qoder-dual .qoder-img-dark {
+  display: inline-flex;
+}
+
+/* 两条路径：浅灰软卡片，列内元素严格对齐（标题同线、描述撑开、链接贴底） */
+.home-paths {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 4.5rem;
+  align-items: stretch;
+}
+
+.home-path {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--sl-color-gray-7);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem 1.5rem;
+}
+
+:root:not([data-theme='light']) .home-path {
+  background: var(--sl-color-gray-6);
+}
+
+.home-path h3 {
+  font-size: 1rem;
+  font-weight: 500;
+  margin: 0 0 0.4rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.home-path p {
+  flex: 1;
+  align-self: stretch;
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-3);
+  margin: 0 0 0.9rem;
+  line-height: 1.65;
+  text-align: left;
+}
+
+.home-path a {
+  margin-top: auto;
+  align-self: center;
+  font-size: 0.875rem;
+  color: var(--sl-color-text-accent);
+  text-decoration: none;
+  line-height: 1.4;
+}
+
+.home-path a:hover {
+  text-decoration: underline;
+}
+
+/* ── 8. 焦点与进度条 ─────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.home-progress {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--sl-color-accent);
+  width: 0;
+  transition: width 0.1s linear;
+}
+
+/* ── 8.5 页脚：站内菜单 + 版权条（2026-10-24）────────────────────
+ *
+ * 版面口径与 §3.5 同源：**横带通栏，带内文字与上方正文同轴**。
+ *   1) 横带用 `50% − 50vw` 从内容列逃逸到整幅宽度（左右外边距等值 ⇒ 横带中心
+ *      与内容列中心重合，nav 居中后左右边缘与上方正文逐线对齐）；
+ *   2) 逃逸多出来的那点宽度（含滚动条宽度差，本机 15px）由 `.content-panel`
+ *      上的 `overflow-x: clip` 收掉 —— 不用 width:100vw（会顶出横向滚动条），
+ *      也不用 overflow:hidden（会创建滚动容器，顶栏 sticky 就废了）；
+ *      文档页里面板本身就止于左栏右沿，于是横带自然铺满「主栏」而不钻到侧栏底下。
+ *   3) 带内 nav / 版权条宽度取 `--sl-content-width + 2 × pad`，再加同样的内边距 ——
+ *      宽屏下内容盒正好等于 .sl-container（与正文左右边缘逐线对齐），
+ *      窄屏下随面板收窄，不会比正文更宽（只写 max-width: content-width 就会宽出 3rem）。
+ *   4) 末端把面板下内边距与 main 的下留白一并吃掉，横带直落页面底部，不露接缝。
+ */
+
+.ab-footer-band {
+  /* 文档页（有侧栏）：吃掉面板的横向内边距 ⇒ 横带正好铺满「主栏」。
+     ⛔ 这里不能用 `50% - 50vw`：800–1152px 区间主栏左边要给侧栏让出 300px，
+     视口宽度的算式会把横带推到页面之外，再被 overflow-x: clip 裁掉，菜单左半截直接消失。 */
+  margin-inline: calc(-1 * var(--sl-content-pad-x));
+  margin-block: 3rem -1.5rem;
+  border-top: 1px solid var(--sl-color-hairline);
+  background: var(--sl-color-gray-7);
+  /* 菜单的「六组一行 / 三列两行」按**横带实际宽度**切换（见下方 @container）：
+     文档页横带只有主栏宽，用视口媒体查询会误判成宽屏。inline-size 只做尺寸 containment，
+     横带是块级、宽度来自父级，不影响它自己的 margin 计算。 */
+  container-type: inline-size;
+}
+
+/* 首页（无侧栏）：内容列在视口里居中，横带直接逃到视口左右沿 */
+:root:not([data-has-sidebar]) .ab-footer-band {
+  margin-inline: calc(50% - 50vw);
+}
+
+/* 横带逃逸的溢出量在这里被裁掉：面板本身已是整幅（首页）或主栏（文档页） */
+.content-panel:has(.ab-footer-band) {
+  overflow-x: clip;
+}
+
+/* 首页（无侧栏）：上方板块自带下留白（.home-paths 的 padding-bottom），
+   横带不再叠一层 3rem，否则页脚与末段之间会空出 100px 以上 */
+:root:not([data-has-sidebar]) .ab-footer-band {
+  margin-block-start: 0;
+}
+
+/* 暗色下灰阶是「越深越浅」的另一套：gray-6 = hsl(219,44%,13%)，比页面底色亮一档 */
+:root:not([data-theme='light']) .ab-footer-band {
+  background: var(--sl-color-gray-6);
+}
+
+/* 页脚贴底：默认 main 有 3vh 下留白，会把横带顶起来露出页面底色 */
+main:has(.ab-footer-band) {
+  padding-bottom: 0;
+}
+
+/* 文档页的元信息行（编辑此页 / 最后更新）：沿用 Starlight 原页脚的字号与间距 */
+.ab-footer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem 3rem;
+  margin-top: 3rem;
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-3);
+}
+
+/* 上一页 / 下一页（Starlight 自带样式）与元信息行的间距；
+   首页没有前后页，容器虽在却是空的 —— 空容器会把 .sl-container 的 `* + *`
+   那条 1.5rem 上间距留在页脚上方，一并收掉 */
+.pagination-links:empty {
+  display: none;
+}
+
+.ab-footer-meta + .pagination-links:not(:empty) {
+  margin-top: 1.5rem;
+}
+
+/* 菜单：6 个分组**直接进网格**（不是「3 列里再塞分组」）——
+ * 同一行的标题天然共用一条网格行，于是各列的分组标题逐行对齐。
+ *
+ * 列宽口径（2026-10-24 用户定）：**两端对齐 + 中间列居中，列宽只包住内容**。
+ *   `minmax(0,1fr) auto minmax(0,1fr)`：中间列取内容宽、左右两列等分剩余空间
+ *   ⇒ 中间列的盒子中心恒等于内容区中心（换成 `justify-content: space-between`
+ *   只能做到「间隙相等」，中间列会随左右列宽不等而偏）。
+ *   三个 `justify-self` 把盒子钉在 起点 / 中点 / 终点，盒子宽 = 内容宽，不拉伸。
+ *
+ * 列数不写死（2026-10-24 第二轮）：**放得下就六组一行，放不下才换成 3 列 × 2 行**。
+ *   一行态用「6 条内容宽轨道 + justify-content: space-between」，间隙自动均分；
+ *   什么时候切由容器查询（横带宽度）决定，不写死在视口上 —— 文档页的横带只有主栏宽，
+ *   视口媒体查询会在那里误判。阈值 48rem 是「最长的英文标签也放得下」的下限：
+ *   en 六组内容 + 5 个最小间隙 ≈ 695px，48rem − 两侧内边距 = 736px。
+ *   ⛔ 别改成 flex-wrap：那样换行点是「刚好放不下」的位置，会出现 5+1 / 4+2 这种歪行。 */
+.ab-footer-nav {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 2.5rem 2rem;
+  max-width: calc(var(--sl-content-width) + 2 * var(--sl-content-pad-x));
+  margin-inline: auto;
+  padding: 3rem var(--sl-content-pad-x) 2.5rem;
+  box-sizing: border-box;
+}
+
+.ab-footer-group {
+  min-width: 0;
+  justify-self: start;
+}
+
+/* 3 列：第 2 列居中、第 3 列贴右沿（第 1 列默认贴左沿） */
+.ab-footer-group:nth-child(3n + 2) {
+  justify-self: center;
+}
+
+.ab-footer-group:nth-child(3n) {
+  justify-self: end;
+}
+
+/* 一行态：六条内容宽轨道 + 两端对齐（间隙由 space-between 均分） */
+@container (min-width: 48rem) {
+  .ab-footer-nav {
+    grid-template-columns: repeat(6, auto);
+    justify-content: space-between;
+  }
+
+  /* 一行时不再需要「居中 / 贴右」，否则盒子会被挤到轨道里的非起点位置 */
+  .ab-footer-group,
+  .ab-footer-group:nth-child(3n + 2),
+  .ab-footer-group:nth-child(3n) {
+    justify-self: start;
+  }
+}
+
+.ab-footer-title {
+  margin: 0 0 0.625rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+  /* --sl-color-white 是「墨色」：亮色下近黑、暗色下近白，正是分组标题要的对比 */
+  color: var(--sl-color-white);
+}
+
+.ab-footer-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ab-footer-links a {
+  display: inline-block;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--sl-color-gray-3);
+  text-decoration: none;
+  transition: color 0.12s ease-out;
+  /* 窄屏换行时优先在空格处断（「WebSocket / 连接」），必要时才在词内断
+     —— keep-all 管中文不在词语中间断，anywhere 兜住超长单词 */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.ab-footer-links a:hover {
+  color: var(--sl-color-white);
+}
+
+/* 版权条：整条分隔线通栏，文字居中；两行各自限宽，避免整行铺满后不好读 */
+.ab-footer-legal {
+  border-top: 1px solid var(--sl-color-hairline);
+  padding: 1.5rem var(--sl-content-pad-x) 2rem;
+  text-align: center;
+}
+
+.ab-footer-copy,
+.ab-footer-note {
+  max-width: 46rem;
+  margin-inline: auto;
+  text-align: center;
+}
+
+.ab-footer-copy {
+  margin-block: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--sl-color-gray-2);
+  /* 手机宽度下这行会换行：balance 让两行长度接近，不在末行只留一两个字；
+     keep-all 让中文在词内不断行（否则「贡献者」会被拆成「贡」「献者」） */
+  text-wrap: balance;
+  word-break: keep-all;
+}
+
+.ab-footer-note {
+  margin-block: 0.5rem 0;
+  font-size: 0.75rem;
+  line-height: 1.7;
+  color: var(--sl-color-gray-3);
+  /* 说明句较长：两行时让两行等长，别在末行只剩两三个词
+     （balance 在多行时按行数均摊；浏览器不支持时退回普通换行） */
+  text-wrap: balance;
+}
+
+/* 窄屏：**大于 20rem（320px）一律保持一行三列**，只在 ≤20rem 掉到两列。
+   ⛔ 别把三列的门槛设在 50rem / 36rem 那种「看起来安全」的位置：760px 下每列还有 220px、
+   375px 下仍有 ~100px，过早降列会让「一行三列」在平板与手机上白白消失（用户两次反馈）。
+   窄屏靠**收紧列间距 + 允许标签换行**换空间，字号不变。
+   ≤20rem 掉两列时改成**按列填**（3 行 × 2 列），阅读顺序仍是「文档/协议/API 参考」再
+   「关于/对接/资源」，而不是按行填出来的「文档|协议 / API|关于」那种错位。 */
+@media (max-width: 36rem) {
+  .ab-footer-nav {
+    gap: 2.25rem 1rem;
+    padding-block: 2.5rem 2rem;
+  }
+
+  .ab-footer-legal {
+    padding-block: 1.25rem 1.75rem;
+  }
+}
+
+@media (max-width: 26rem) {
+  /* 手机宽度：列宽只有 ~100px，字号降半档（14 → 13px）才能让「WebSocket 连接」
+     这类最长标签在 375 起仍然一行放得下；三列布局保持不变。 */
+  .ab-footer-title,
+  .ab-footer-links a {
+    font-size: 0.8125rem;
+  }
+}
+
+@media (max-width: 20rem) {
+  /* 两列：6 个分组按列填（3 行 × 2 列），左列贴左沿、右列贴右沿 —— 同样是两端对齐 */
+  .ab-footer-nav {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: repeat(3, auto);
+    grid-auto-flow: column;
+    gap: 2rem 1.25rem;
+  }
+
+  .ab-footer-group,
+  .ab-footer-group:nth-child(3n + 2),
+  .ab-footer-group:nth-child(3n) {
+    justify-self: start;
+  }
+
+  /* 按列填时第 4–6 个落在右列 */
+  .ab-footer-group:nth-child(n + 4) {
+    justify-self: end;
+  }
+}
+
+/* ── 9. 窄屏 ─────────────────────────────────────────────────────── */
+
+@media (max-width: 50rem) {
+  .hero {
+    padding-block: 2.5rem 1rem;
+  }
+
+  .home-features {
+    grid-template-columns: 1fr;
+    gap: 1.75rem;
+    padding-bottom: 3rem;
+  }
+
+  .home-paths {
+    grid-template-columns: 1fr;
+    padding-bottom: 3.5rem;
+  }
+
+  .home-figure-inner {
+    flex-direction: column;
+    gap: 0.5rem;
+    /* 纵向排列时也要两栏等宽：center 会让每张卡片按自身文案收缩，出现一大一小 */
+    align-items: stretch;
+  }
+
+  /* 中间那条箭头仍是横向图标，只居中、不随卡片拉伸 */
+  .home-figure-inner > svg {
+    align-self: center;
+  }
+
+  .sl-markdown-content h1 {
+    font-size: 1.75rem;
+  }
+}

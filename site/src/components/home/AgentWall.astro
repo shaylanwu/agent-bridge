@@ -1,0 +1,91 @@
+---
+/**
+ * Agent 墙：把支持的 11 个 AI Agent（官方品牌图标 + 名称）列在首页。
+ *
+ * 图标由 sync-contracts.mjs 从主包 assets/agent-icons/ 同步到 src/assets/agents/，
+ * 内联渲染以保留各家官方品牌色（与官网一致）；站点不维护第二份图标。
+ * 名称与 src/adapters/agent-adapters.ts 的 display 同源 —— site-check 会比对两边清单。
+ */
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+interface Props {
+  title: string;
+}
+const { title } = Astro.props;
+
+const NAMES: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini CLI',
+  'grok-cli': 'Grok CLI',
+  opencode: 'opencode',
+  'ds-harness': 'DeepSeek Harness',
+  'kimi-code': 'Kimi Code',
+  'minimax-code': 'MiniMax Code',
+  'mimo-code': 'Mimo Code',
+  'codebuddy-cli': 'CodeBuddy CLI',
+  'qoder-cli': 'Qoder CLI',
+  'trae-cli': 'Trae CLI',
+};
+
+// 注意：不能用 import.meta.url 推路径 —— 静态构建时组件代码跑在 dist/.prerender/ 里，
+// 相对路径会解析到 dist/assets/agents（ENOENT）。构建与 dev 的 cwd 都是 site 根，用 process.cwd()。
+const dir = join(process.cwd(), 'src/assets/agents');
+
+/** 深色/黑色系 logo：暗色主题下反白显示（其余品牌彩色 logo 在暗底上本就清晰）。
+ *  注意 qoder-cli 不在名单里 —— 官方有亮/暗两版（白外圈绿内芯 / 深外圈绿内芯），站点按主题切换显示。 */
+const INVERT_ON_DARK = new Set(['codex', 'grok-cli', 'opencode', 'mimo-code']);
+
+/** Qoder 官方有亮/暗两版图标：站点按主题切换显示；light 版不作为独立 agent 列出 */
+const hasDual = (kind) => kind === 'qoder-cli';
+
+const items = readdirSync(dir)
+  .filter((f) => f.endsWith('.svg') && !f.endsWith('-light.svg'))
+  .map((f) => {
+    const kind = f.replace('.svg', '');
+    const lightSvg = hasDual(kind)
+      ? readFileSync(join(dir, `${kind}-light.svg`), 'utf8')
+      : null;
+    return {
+      kind,
+      name: NAMES[kind] ?? kind,
+      svg: readFileSync(join(dir, f), 'utf8'),
+      lightSvg,
+      invert: INVERT_ON_DARK.has(kind),
+    };
+  })
+  .sort((a, b) => {
+    const order = Object.keys(NAMES);
+    return order.indexOf(a.kind) - order.indexOf(b.kind);
+  });
+---
+
+<section class="home-agents not-content">
+  <h2 class="home-agents-heading">
+    <span class="home-agents-mark" aria-hidden="true"></span>
+    <span>{title}</span>
+  </h2>
+  <ul>
+    {
+      items.map((item) => (
+        <li data-invert={item.invert ? '' : undefined}>
+          <span class="home-agent-logo" aria-hidden="true">
+            {item.lightSvg ? (
+              <span class="qoder-dual">
+                <span class="qoder-img-light" set:html={item.lightSvg} />
+                <span class="qoder-img-dark" set:html={item.svg} />
+              </span>
+            ) : (
+              /* ⛔ 不要写成 <svg set:html={item.svg} /> —— 那会在外层再套一个 <svg>，
+                 内层 svg 不跟随 CSS 缩放到容器尺寸（按自身 24px 排版），
+                 右/下各 4px 会被外层视口裁掉（opencode 的右边框就这么被切没了）。 */
+              <span class="home-agent-glyph" set:html={item.svg} />
+            )}
+          </span>
+          <span class="home-agent-name">{item.name}</span>
+        </li>
+      ))
+    }
+  </ul>
+</section>

@@ -1,0 +1,29 @@
+---
+/**
+ * 两条对接路径：用 1px 分隔线分栏，而不是两张并排卡片 ——
+ * 分栏线本身就是分隔，不需要再画边框。
+ */
+interface Path {
+  title: string;
+  text: string;
+  link: { text: string; href: string };
+}
+interface Props {
+  left: Path;
+  right: Path;
+}
+const { left, right } = Astro.props;
+---
+
+<section class="home-paths not-content">
+  <div class="home-path">
+    <h3>{left.title}</h3>
+    <p>{left.text}</p>
+    <a href={left.link.href}>{left.link.text}</a>
+  </div>
+  <div class="home-path">
+    <h3>{right.title}</h3>
+    <p>{right.text}</p>
+    <a href={right.link.href}>{right.link.text}</a>
+  </div>
+</section>

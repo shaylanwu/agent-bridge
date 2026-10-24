@@ -1,0 +1,24 @@
+{
+  "name": "agent-bridge-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Docs site for Agent Bridge Service (not published to npm; the main package never depends on it)",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "node scripts/sync-contracts.mjs && node scripts/build.mjs",
+    "preview": "astro preview",
+    "check": "node scripts/site-check.mjs",
+    "gen:changelog": "node scripts/gen-changelog.mjs",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.7.4",
+    "@astrojs/starlight": "^0.42.6",
+    "astro": "^7.4.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

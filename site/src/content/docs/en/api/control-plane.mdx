@@ -1,0 +1,19 @@
+---
+title: Local control plane (interactive)
+description: Try the loopback control plane endpoints live. Off by default in the real bridge.
+sidebar:
+  order: 3
+---
+
+import ApiReference from '../../../../components/ApiReference.astro';
+
+The optional loopback control plane: for **programs on the same machine** (IDE extensions, scripts,
+MCP servers, CI steps). Off by default, loopback only, token required, no CORS headers — see
+[For local programs](/agent-bridge/en/integrate/local) before you enable it.
+
+Prefer [Local control plane endpoints](/agent-bridge/en/api/control-plane-reference) when you want
+to search or deep-link: this viewer renders client-side and is invisible to the site search index.
+
+<ApiReference spec="/agent-bridge/openapi.control-plane.yaml" />
+
+Download the contract: [`/openapi.control-plane.yaml`](/agent-bridge/openapi.control-plane.yaml).

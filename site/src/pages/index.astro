@@ -1,0 +1,25 @@
+---
+/**
+ * 根路径重定向页（dist/index.html）：
+ * 站点带 base /agent-bridge，没有这一页时访问根路径（本地 / 或部署后 /agent-bridge/）会 404。
+ * 按浏览器语言跳转：中文系 → zh-cn，其余 → en；JS 被禁用时 meta refresh 兜底到英文版。
+ */
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex" />
+    <meta http-equiv="refresh" content="0;url=/agent-bridge/en/" />
+    <title>Agent Bridge Service</title>
+    <script is:inline>
+      var lang = (navigator.language || 'en').toLowerCase();
+      var target = lang.indexOf('zh') === 0 ? '/agent-bridge/zh-cn/' : '/agent-bridge/en/';
+      location.replace(target);
+    </script>
+  </head>
+  <body>
+    <p><a href="/agent-bridge/en/">Agent Bridge Service docs</a></p>
+  </body>
+</html>

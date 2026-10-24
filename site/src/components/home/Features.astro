@@ -1,0 +1,42 @@
+---
+/**
+ * 三列特性区：无边框、无底色块，靠留白与列间距分栏。
+ * 图标是真实图形（线框 SVG，1.6 描边），不是占位方块 —— 没有内容的东西不放。
+ */
+interface Item {
+  icon: 'contract' | 'key' | 'terminal';
+  title: string;
+  text: string;
+}
+interface Props {
+  items: Item[];
+}
+const { items } = Astro.props;
+
+const ICONS: Record<Item['icon'], string> = {
+  // 文档 + 对勾：协议即契约
+  contract:
+    '<path d="M7 4h7l4 4v12H7z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10.5 13.2l2.3 2.3 4.3-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+  // 钥匙：scoped 服务令牌
+  key: '<circle cx="8" cy="14" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 11.7L18.5 5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M15.5 7.8l2.3 1.7M13.2 9.6l1.8 1.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+  // 终端窗口：本地回环控制面
+  terminal:
+    '<rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 10.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 15.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+};
+---
+
+<section class="home-features not-content">
+  {
+    items.map((item) => (
+      <div class="home-feature">
+        <div class="home-feature-head">
+          <span class="home-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" set:html={ICONS[item.icon]} />
+          </span>
+          <h3>{item.title}</h3>
+        </div>
+        <p>{item.text}</p>
+      </div>
+    ))
+  }
+</section>

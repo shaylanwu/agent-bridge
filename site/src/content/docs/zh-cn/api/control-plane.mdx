@@ -1,0 +1,19 @@
+---
+title: 本地控制面（交互式）
+description: 在线试本地回环控制面的端点。真实 Agent Bridge Service 里默认是关闭的。
+sidebar:
+  order: 3
+---
+
+import ApiReference from '../../../../components/ApiReference.astro';
+
+可选的本地回环控制面，服务**同机程序**（IDE 插件、脚本、MCP server、CI 步骤）。
+默认关闭、只绑回环、需要令牌、不返回 CORS 头 —— 开启前请先读
+[本机程序对接](/agent-bridge/zh-cn/integrate/local)。
+
+需要搜索或深链到某个端点时，请用[本地控制面端点](/agent-bridge/zh-cn/api/control-plane-reference)：
+本页是客户端渲染，站内搜索索引不到。
+
+<ApiReference spec="/agent-bridge/openapi.control-plane.yaml" />
+
+下载契约：[`/openapi.control-plane.yaml`](/agent-bridge/openapi.control-plane.yaml)。

@@ -1,0 +1,24 @@
+---
+/**
+ * 首页 hero：居中大标题 + 一行副标题 + 双按钮 + 安装命令。
+ * 中英两版共用本组件，文案由 index.mdx 传入（一处组件、两处文案）。
+ */
+interface Props {
+  title: string;
+  tagline: string;
+  primary: { text: string; href: string };
+  secondary: { text: string; href: string };
+  install: string;
+}
+const { title, tagline, primary, secondary, install } = Astro.props;
+---
+
+<section class="home-hero">
+  <h1>{title}</h1>
+  <p>{tagline}</p>
+  <div class="home-cta">
+    <a class="home-btn home-btn-primary" href={primary.href}>{primary.text}</a>
+    <a class="home-btn home-btn-ghost" href={secondary.href}>{secondary.text}</a>
+  </div>
+  <code class="home-install">{install}</code>
+</section>

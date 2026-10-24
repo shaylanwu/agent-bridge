@@ -1,0 +1,260 @@
+asyncapi: 3.0.0
+info:
+  title: agent-bridge WebSocket protocol
+  version: '1.0.0'
+  summary: 设备与编排平台之间的单条出站长连
+  description: |
+    **方向固定**：bridge 主动连出（`wss://<platform>/api/bridge/ws?deviceId=<id>`），
+    平台**永不**向设备发起入站连接 —— 这是桥能穿 NAT、且不暴露任何入站端口的原因。
+
+    握手：`Authorization: Bearer <device_token>`。
+    心跳：bridge 每 15s 发一次 WS `ping`，另支持应用层 `ping` / `pong`。
+    退避：断线后 1s→2s→…→30s 指数退避重连；`4401` / `4403` 表示凭据被吊销，**不再重连**。
+    补发：断线期间的上行报文进有界缓冲（日志 256KB，控制类 200 条），重连后按序补发。
+
+    版本规则：**新增可选字段 = 协议版本不变**（当前 PROTOCOL_VERSION = 1）；
+    语义变更或新增必填字段 = 版本 +1。能力差异一律通过 `hello.capabilities` 协商，
+    而不是猜 CLI 版本号。
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  platform:
+    host: platform.example.com:443
+    protocol: wss
+    pathname: /api/bridge/ws
+    description: 由平台提供；bridge 侧只会用 wss（明文 ws 仅用于本地联调）
+channels:
+  upstream:
+    title: bridge → platform
+    description: 设备上报的握手信息、工具清单与任务事件
+    messages:
+      hello:
+        name: hello
+        title: 握手
+        contentType: application/json
+        payload:
+          type: object
+          required: [type, protocolVersion, deviceId, cliVersion, platform, hostname]
+          properties:
+            type: { type: string, const: hello }
+            protocolVersion: { type: integer, const: 1 }
+            deviceId:
+              type: string
+              description: 解析不到时为空串，平台须按 Bearer 反查设备
+            cliVersion: { type: string }
+            platform: { type: string, examples: [win32, darwin, linux] }
+            hostname: { type: string }
+            capabilities:
+              type: array
+              description: |
+                可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
+                scan-progress / cloud-events。
+              items: { type: string }
+      agent_list:
+        name: agent_list
+        title: 本机工具清单（首连终态）
+        payload:
+          type: object
+          required: [type, agents, scannedAt]
+          properties:
+            type: { type: string, const: agent_list }
+            agents: { type: array, items: { $ref: '#/components/schemas/AgentListItem' } }
+            scannedAt: { type: string, format: date-time }
+      scan_progress:
+        name: scan_progress
+        title: 扫描增量（流式）
+        payload:
+          type: object
+          required: [type, items, scannedAt, done]
+          properties:
+            type: { type: string, const: scan_progress }
+            requestId: { type: string }
+            items: { type: array, items: { $ref: '#/components/schemas/AgentListItem' } }
+            scannedAt: { type: string, format: date-time }
+            done: { type: boolean }
+      scan_result:
+        name: scan_result
+        title: 扫描终态（响应 scan 指令）
+        payload:
+          type: object
+          required: [type, agents, scannedAt]
+          properties:
+            type: { type: string, const: scan_result }
+            requestId: { type: string }
+            agents: { type: array, items: { $ref: '#/components/schemas/AgentListItem' } }
+            scannedAt: { type: string, format: date-time }
+      task_log:
+        name: task_log
+        title: 任务输出分片
+        description: |
+          每片 ≤ 4096 字节（按 UTF-8 且不切断多字节字符）。
+          bridge 侧会对正文做脱敏（家目录 → `~`，≥64 位长串折叠）。
+        payload:
+          type: object
+          required: [type, taskId, stream, data, isAnsi]
+          properties:
+            type: { type: string, const: task_log }
+            taskId: { type: string }
+            stream: { type: string, enum: [stdout, stderr] }
+            data: { type: string }
+            isAnsi: { type: boolean, description: 当前恒为 true（ANSI 解析未实现） }
+      task_status:
+        name: task_status
+        title: 任务状态与终态产物
+        description: |
+          任务进入终态后，bridge **不会再发**该 task 的任何 `task_log`（终态幂等）。
+          排队中的任务 status 仍为 `running`，额外给出 `phase: queued` 与 `queuePosition`
+          （这是为了不让老平台收到未知状态值）。
+        payload:
+          type: object
+          required: [type, taskId, status]
+          properties:
+            type: { type: string, const: task_status }
+            taskId: { type: string }
+            status: { type: string, enum: [running, success, failed, cancelled, timeout] }
+            exitCode: { type: integer }
+            error: { type: string, description: 人类可读文案，可直接展示 }
+            errorCode:
+              type: string
+              description: 受控错误码，用于程序化分支（见 components/schemas/ErrorCode）
+            phase: { type: string, enum: [queued, running] }
+            queuePosition: { type: integer, minimum: 1 }
+            diff:
+              type: string
+              description: unified diff，仅当 `run_task.captureDiff` 为 true 时出现
+            changedFiles:
+              type: array
+              items: { type: string }
+              description: 仓库相对路径，上限 500 条
+            diffTruncated: { type: boolean }
+            requestedBy:
+              type: string
+              description: 回显调用方身份，供平台落 requested_by 审计
+      pong:
+        name: pong
+        title: 应用层心跳响应
+        payload:
+          type: object
+          required: [type, at]
+          properties:
+            type: { type: string, const: pong }
+            at: { type: integer, format: int64 }
+  downstream:
+    title: platform → bridge
+    description: 平台下发的指令。bridge 对每条指令都做形状校验，非法即忽略并记日志
+    messages:
+      run_task:
+        name: run_task
+        title: 下发任务
+        payload:
+          type: object
+          required: [type, taskId, agentType, cwd, args]
+          properties:
+            type: { type: string, const: run_task }
+            taskId: { type: string }
+            agentType: { type: string, description: 必须是白名单内的 kind，否则本地拒绝 }
+            cwd: { type: string, description: 设备上的绝对路径，须落在 allowed_cwd（若配置）内 }
+            args:
+              type: array
+              items: { type: string }
+              description: 参数数组（不经 shell）。传空数组表示用适配器的默认模板
+            prompt: { type: string }
+            timeoutMs:
+              type: integer
+              description: 从**入队**开始计时，缺省 10 分钟
+            allowInteractive: { type: boolean }
+            captureDiff: { type: boolean, description: 终态回传 unified diff（P0-6） }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64, examples: [repair, test, free] }
+            serviceToken:
+              type: string
+              maxLength: 256
+              description: scoped 服务令牌 `abs_<kid>_<secret>`；一旦携带必须校验通过
+      cancel_task:
+        name: cancel_task
+        title: 取消任务
+        description: 若携带 serviceToken，需具备 `task:cancel` scope（持有 task:create 不足以取消）
+        payload:
+          type: object
+          required: [type, taskId]
+          properties:
+            type: { type: string, const: cancel_task }
+            taskId: { type: string }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
+      scan:
+        name: scan
+        title: 重新探测本机工具
+        payload:
+          type: object
+          required: [type]
+          properties:
+            type: { type: string, const: scan }
+            requestId: { type: string, description: 会原样带回 scan_progress / scan_result }
+      ping:
+        name: ping
+        title: 应用层心跳
+        payload:
+          type: object
+          required: [type]
+          properties:
+            type: { type: string, const: ping }
+            at: { type: integer, format: int64 }
+operations:
+  onUpstream:
+    title: 平台接收上行事件
+    action: receive
+    channel: { $ref: '#/channels/upstream' }
+    messages:
+      - $ref: '#/channels/upstream/messages/hello'
+      - $ref: '#/channels/upstream/messages/agent_list'
+      - $ref: '#/channels/upstream/messages/scan_progress'
+      - $ref: '#/channels/upstream/messages/scan_result'
+      - $ref: '#/channels/upstream/messages/task_log'
+      - $ref: '#/channels/upstream/messages/task_status'
+      - $ref: '#/channels/upstream/messages/pong'
+  onDownstream:
+    title: 平台下发指令
+    action: send
+    channel: { $ref: '#/channels/downstream' }
+    messages:
+      - $ref: '#/channels/downstream/messages/run_task'
+      - $ref: '#/channels/downstream/messages/cancel_task'
+      - $ref: '#/channels/downstream/messages/scan'
+      - $ref: '#/channels/downstream/messages/ping'
+components:
+  schemas:
+    AgentListItem:
+      type: object
+      required: [kind, display, status, capability]
+      properties:
+        kind: { type: string, examples: [claude-code, codex] }
+        display: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [not_installed, installed_no_cred, ready] }
+        path: { type: string, description: 命中的可执行文件路径，便于排查 }
+        credentialSource: { type: string, examples: ['env:OPENAI_API_KEY', 'file:~/.codex/auth.json'] }
+        capability: { type: string, enum: [non_interactive, interactive_only] }
+        installedButBroken: { type: boolean }
+        logo: { type: string, description: 'data:image/svg+xml;base64,… 24×24 单色；按 kind 缓存' }
+    ErrorCode:
+      type: string
+      description: 受控错误码（与 src/core/errors.ts 的 BRIDGE_ERROR_CODES 同源）
+      enum:
+        - protocol_incompatible
+        - tool_not_installed
+        - tool_no_credentials
+        - tool_broken
+        - cwd_missing
+        - cwd_not_allowed
+        - device_busy
+        - timeout
+        - cancelled
+        - agent_error
+        - internal
+        - unauthorized
+        - invalid_token
+        - token_expired
+        - insufficient_scope

@@ -1,0 +1,65 @@
+---
+title: 将本地 AI Agent 交给任意平台调度
+description: 一条出站 WebSocket，把本机 AI Agent 接入远程编排平台 —— 不开入站端口，不改防火墙。
+template: splash
+hero:
+  title: 将本地 AI Agent 交给任意平台调度
+  tagline: 一条出站 WebSocket。不开入站端口、不改防火墙，在开发者自己的机器上调度 12 个 AI Agent，输出实时回传。
+  actions:
+    - text: 快速开始
+      link: /agent-bridge/zh-cn/quickstart
+      variant: primary
+    - text: 如何工作
+      link: /agent-bridge/zh-cn/architecture
+      variant: secondary
+---
+
+import OutboundFigure from '../../../components/home/OutboundFigure.astro';
+import Features from '../../../components/home/Features.astro';
+import AgentWall from '../../../components/home/AgentWall.astro';
+import Paths from '../../../components/home/Paths.astro';
+
+<div class="home-install-wrap">
+  <code class="home-install">npm install -g agent-bridge-service</code>
+</div>
+
+<OutboundFigure
+  from={{ title: '开发者的机器', note: '12 个 AI Agent · 凭据留在本机' }}
+  to={{ title: '你的平台', note: '下发任务 · 接收事件' }}
+  note="设备主动向外拨 WSS，入站方向没有任何监听端口。"
+/>
+
+<AgentWall title="支持的 AI Agent" />
+
+<Features
+  items={[
+    {
+      icon: 'contract',
+      title: '协议即契约',
+      text: '11 个消息类型、5 个可协商能力、15 个受控错误码 —— 全部由机器可读契约生成，不靠散文维持。',
+    },
+    {
+      icon: 'key',
+      title: '最小权限',
+      text: 'scoped 服务令牌让后端服务代用户下发任务；可轮换、可吊销、带审计。',
+    },
+    {
+      icon: 'terminal',
+      title: '可选控制面',
+      text: '同机程序可通过回环接口驱动本地 agent；默认关闭，只绑 127.0.0.1。',
+    },
+  ]}
+/>
+
+<Paths
+  left={{
+    title: '我在做远端平台',
+    text: '实现 4 个 HTTP 端点并说这套 WebSocket 协议，用户在自己机器上 connect 到你的地址。',
+    link: { text: '平台方清单 →', href: '/agent-bridge/zh-cn/integrate/platform' },
+  }}
+  right={{
+    title: '我在写本机程序',
+    text: '从 IDE 插件、脚本、MCP server 或 CI 步骤驱动这台机器上的 agent。',
+    link: { text: '本机程序清单 →', href: '/agent-bridge/zh-cn/integrate/local' },
+  }}
+/>

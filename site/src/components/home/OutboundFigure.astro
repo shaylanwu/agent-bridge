@@ -1,0 +1,40 @@
+---
+/**
+ * 出站连接图 —— 全站唯一的动效，且它解释的是产品机制本身：
+ * 设备主动向外拨，入站方向没有任何监听端口。
+ * 系统开启"减弱动效"时自动停止（见 custom.css 的 prefers-reduced-motion）。
+ */
+interface Props {
+  from: { title: string; note: string };
+  to: { title: string; note: string };
+  note: string;
+  label?: string;
+}
+const { from, to, note, label = 'WSS' } = Astro.props;
+---
+
+<section class="home-figure not-content">
+  <div class="home-figure-inner">
+    <div class="home-node">
+      <strong>{from.title}</strong>
+      <span>{from.note}</span>
+    </div>
+    <svg
+      width="104"
+      height="26"
+      viewBox="0 0 104 26"
+      role="img"
+      aria-label={label}
+      style="flex:none"
+    >
+      <path d="M2 13h90" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" fill="none" />
+      <path d="M86 8l7 5-7 5" stroke="var(--sl-color-accent)" stroke-width="1.5" fill="none" />
+      <circle class="home-packet" cx="10" cy="13" r="3" fill="var(--sl-color-accent)" />
+    </svg>
+    <div class="home-node">
+      <strong>{to.title}</strong>
+      <span>{to.note}</span>
+    </div>
+  </div>
+  <div class="home-figure-note">{note}</div>
+</section>

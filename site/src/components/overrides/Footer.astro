@@ -1,0 +1,209 @@
+---
+/**
+ * 覆盖 Starlight Footer：站内页脚（菜单 + 版权声明）
+ *
+ * 结构（自上而下）：
+ *   1. 文档页的元信息行（编辑此页 / 最后更新）+ 上一页下一页 —— 只在文档页出现；
+ *      首页（带 hero 的 splash）不放「编辑此页」：那是文档页的贡献入口，不是展示页元素。
+ *   2. 页脚横带 `.ab-footer-band`：上边框 + 淡底色，**通栏**（`50% - 50vw` 逃逸，
+ *      溢出量由 `.content-panel` 的 `overflow-x: clip` 收掉），内部再用
+ *      `--sl-content-width` 居中约束 —— 菜单左右边缘与上方正文逐线对齐（custom.css §8.5）。
+ *      菜单是 **6 个分组直接进网格**（不是「3 列、每列再塞分组」）：
+ *      宽屏 3 列 × 2 行时，同一行的三个标题天然落在同一条水平线上；窄屏 2 列时用
+ *      `grid-auto-flow: column` 改成按列填，读起来仍是「文档/协议/API」「关于/对接/资源」。
+ *   3. 版权条：`border-top` 分隔、居中、两行（版权行 + 免责/授权说明）。
+ *
+ * 文案双语：与站点 locale 同源，en / zh-cn 各一份，避免中英混排。
+ * ⛔ 项目显示名统一为 **Agent Bridge Service**（命令、包名、配置路径、`client_id` 值不在此列）。
+ */
+import config from 'virtual:starlight/user-config';
+
+import EditLink from 'virtual:starlight/components/EditLink';
+import LastUpdated from 'virtual:starlight/components/LastUpdated';
+import Pagination from 'virtual:starlight/components/Pagination';
+
+const { locale, entry } = Astro.locals.starlightRoute;
+const lang = locale ?? 'en';
+const base = `/agent-bridge/${locale}`;
+
+/** 首页（带 hero 的 splash 页）：不放文档页的贡献入口 */
+const isHome = Boolean(entry.data.hero);
+
+/** 仓库地址从站点配置的社交链接取，避免与 astro.config.mjs 两处维护 */
+const repo =
+  config.social?.find((s) => s.icon === 'github')?.href ??
+  'https://github.com/shaylanwu/agent-bridge';
+
+interface FooterLink {
+  label: string;
+  href: string;
+}
+interface FooterGroup {
+  title: string;
+  links: FooterLink[];
+}
+
+/** 分组按「先行后列」排列：前 3 个是宽屏第一行，后 3 个是第二行 */
+const NAV: Record<string, FooterGroup[]> = {
+  en: [
+    {
+      title: 'Docs',
+      links: [
+        { label: 'Quick start', href: `${base}/quickstart/` },
+        { label: 'CLI reference', href: `${base}/cli/` },
+        { label: 'Architecture', href: `${base}/architecture/` },
+      ],
+    },
+    {
+      title: 'Protocol',
+      links: [
+        { label: 'Overview', href: `${base}/protocol/overview/` },
+        { label: 'Message types', href: `${base}/protocol/messages/` },
+        { label: 'WebSocket', href: `${base}/protocol/websocket/` },
+      ],
+    },
+    {
+      title: 'API reference',
+      links: [
+        { label: 'Overview', href: `${base}/api/` },
+        { label: 'Endpoints', href: `${base}/api/reference/` },
+        { label: 'Control plane', href: `${base}/api/control-plane/` },
+        {
+          label: 'Control plane endpoints',
+          href: `${base}/api/control-plane-reference/`,
+        },
+      ],
+    },
+    {
+      title: 'About',
+      links: [
+        { label: 'Changelog', href: `${base}/changelog/` },
+        { label: 'License', href: `${repo}/blob/main/LICENSE` },
+        { label: 'Issues', href: `${repo}/issues` },
+      ],
+    },
+    {
+      title: 'Integrate',
+      links: [
+        { label: 'Platform side', href: `${base}/integrate/platform/` },
+        { label: 'Local machine', href: `${base}/integrate/local/` },
+      ],
+    },
+    {
+      title: 'Resources',
+      links: [
+        { label: 'GitHub', href: repo },
+        { label: 'llms.txt', href: '/agent-bridge/llms.txt' },
+      ],
+    },
+  ],
+  'zh-cn': [
+    {
+      title: '文档',
+      links: [
+        { label: '快速上手', href: `${base}/quickstart/` },
+        { label: 'CLI 命令', href: `${base}/cli/` },
+        { label: '架构设计', href: `${base}/architecture/` },
+      ],
+    },
+    {
+      title: '协议',
+      links: [
+        { label: '协议概览', href: `${base}/protocol/overview/` },
+        { label: '消息类型', href: `${base}/protocol/messages/` },
+        { label: 'WebSocket 连接', href: `${base}/protocol/websocket/` },
+      ],
+    },
+    {
+      title: 'API 参考',
+      links: [
+        { label: 'API 总览', href: `${base}/api/` },
+        { label: '端点参考', href: `${base}/api/reference/` },
+        { label: '控制面', href: `${base}/api/control-plane/` },
+        { label: '控制面端点', href: `${base}/api/control-plane-reference/` },
+      ],
+    },
+    {
+      title: '关于',
+      links: [
+        { label: '版本历史', href: `${base}/changelog/` },
+        { label: '许可证', href: `${repo}/blob/main/LICENSE` },
+        { label: '问题反馈', href: `${repo}/issues` },
+      ],
+    },
+    {
+      title: '对接',
+      links: [
+        { label: '平台侧对接', href: `${base}/integrate/platform/` },
+        { label: '本机接入', href: `${base}/integrate/local/` },
+      ],
+    },
+    {
+      title: '资源',
+      links: [
+        { label: 'GitHub 仓库', href: repo },
+        { label: 'llms.txt', href: '/agent-bridge/llms.txt' },
+      ],
+    },
+  ],
+};
+
+const groups = NAV[lang] ?? NAV.en;
+
+const copy: Record<string, { nav: string; copyright: string; note: string }> = {
+  en: {
+    nav: 'Site map',
+    copyright: `© ${new Date().getFullYear()} Agent Bridge Service contributors · Released under the MIT license`,
+    note: 'Documentation and site source are open. Agent Bridge Service is an independent project and is not affiliated with the AI Agent vendors listed on this site.',
+  },
+  'zh-cn': {
+    nav: '站点导航',
+    copyright: `© ${new Date().getFullYear()} Agent Bridge Service 贡献者 · 以 MIT 许可协议发布`,
+    note: '文档与站点源码均已开源。Agent Bridge Service 是独立项目，与站内列出的各 AI Agent 厂商没有隶属关系。',
+  },
+};
+
+const text = copy[lang] ?? copy.en;
+const isExternal = (href: string) => /^https?:\/\//.test(href);
+---
+
+{
+  !isHome && (
+    <div class="ab-footer-meta sl-flex">
+      <EditLink />
+      <LastUpdated />
+    </div>
+  )
+}
+
+<Pagination />
+
+<footer class="ab-footer-band">
+  <nav class="ab-footer-nav" aria-label={text.nav}>
+    {
+      groups.map((group) => (
+        <div class="ab-footer-group">
+          <h2 class="ab-footer-title">{group.title}</h2>
+          <ul class="ab-footer-links">
+            {group.links.map((link) => (
+              <li>
+                <a
+                  href={link.href}
+                  target={isExternal(link.href) ? '_blank' : undefined}
+                  rel={isExternal(link.href) ? 'noreferrer noopener' : undefined}
+                >
+                  {link.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))
+    }
+  </nav>
+
+  <div class="ab-footer-legal">
+    <p class="ab-footer-copy">{text.copyright}</p>
+    <p class="ab-footer-note">{text.note}</p>
+  </div>
+</footer>

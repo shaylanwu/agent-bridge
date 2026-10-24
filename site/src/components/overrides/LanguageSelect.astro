@@ -1,0 +1,51 @@
+---
+/**
+ * 语言切换（覆盖 Starlight 的下拉选择框）：分段胶囊按钮。
+ * 当前语言主色浅底高亮，点击另一半切到对应语言的同一页面。
+ * 只有两个 locale（en / zh-cn），不需要通用下拉 —— 路径自行换算。
+ *
+ * 标签随**当前页面语言**变化（不是固定「中 | En」）：
+ *   中文页面 → 「中文」「英文」
+ *   英文页面 → 「CN」「EN」
+ */
+const BASE = '/agent-bridge';
+
+const codes = ['zh-cn', 'en'] as const;
+type Code = (typeof codes)[number];
+
+const labels: Record<Code, Record<Code, string>> = {
+  'zh-cn': { 'zh-cn': '中文', en: '英文' },
+  en: { 'zh-cn': 'CN', en: 'EN' },
+};
+
+function localizedPathname(target: Code): string {
+  let p = Astro.url.pathname;
+  if (p.startsWith(BASE)) p = p.slice(BASE.length) || '/';
+  // 去掉现有 locale 前缀（任意一个）
+  for (const code of codes) {
+    const pre = `/${code}`;
+    if (p === pre || p.startsWith(`${pre}/`)) {
+      p = p.slice(pre.length) || '/';
+      break;
+    }
+  }
+  return `${BASE}/${target}${p === '/' ? '/' : p}`;
+}
+
+const current: Code = (Astro.locals.starlightRoute.locale as Code) ?? 'en';
+---
+
+<starlight-lang-segment aria-label={Astro.locals.t('languageSelect.accessibleLabel')}>
+  {
+    codes.map((code) => (
+      <a
+        href={localizedPathname(code)}
+        class:list={['seg', { cur: code === current }]}
+        aria-current={code === current ? 'true' : undefined}
+        hreflang={code}
+      >
+        {labels[current][code]}
+      </a>
+    ))
+  }
+</starlight-lang-segment>

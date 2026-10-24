@@ -1,0 +1,151 @@
+---
+/**
+ * 交互式 API 浏览器（Scalar，CDN 加载，站点零新增依赖）
+ *
+ * 主题：站点用 Starlight 自带的亮/暗/跟随系统（localStorage `starlight-theme`，
+ * 解析后的值落在 `document.documentElement.dataset.theme`）。Scalar 是客户端渲染的第三方组件，
+ * 不会自己跟随，所以这里做三件事：
+ *   1. 首次挂载按当前站点主题决定 `darkMode`；
+ *   2. 监听 `data-theme` 变化（用户手切 / auto 跟随系统都会触发）→ 重建；
+ *   3. 也直接监听 `prefers-color-scheme`（双保险，覆盖 data-theme 未变的场景）。
+ * 并隐藏 Scalar 自带的主题开关 —— 主题由站点统一掌管，不出现两个互相打架的切换器。
+ *
+ * 定位：这一页负责"能试请求"，不负责"能被搜索"——
+ * 客户端渲染的内容 Pagefind 索引不到，可搜索的那一半是
+ * `api/reference.md` 与 `api/control-plane-reference.md`（构建期静态生成）。
+ */
+interface Props {
+  /** public/ 下的契约路径，如 /agent-bridge/openapi-3.1.yaml */
+  spec: string;
+}
+const { spec } = Astro.props;
+---
+
+<div class="scalar-host not-content" data-spec={spec}>
+  <p class="scalar-loading">
+    Loading the interactive API viewer… If it does not appear, the CDN is unreachable —
+    the full reference is always available on the static pages linked above.
+  </p>
+</div>
+
+<script>
+  const CDN = 'https://cdn.jsdelivr.net/npm/@scalar/api-reference@latest';
+
+  /** @type {number | undefined} */
+  let timer: number | undefined;
+  /** @type {boolean | undefined} 上一次应用的模式，用于避免重复重建 */
+  let lastDark: boolean | undefined;
+
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+
+  /** Scalar 由 CDN 注入全局，这里做局部类型断言，避免污染全局 Window 类型 */
+  type ScalarApi = {
+    createApiReference: (el: HTMLElement, cfg: Record<string, unknown>) => unknown;
+  };
+  const w = window as Window & { Scalar?: ScalarApi };
+
+  /** 站点当前是否处于暗色：data-theme 是 Starlight 解析后的 light/dark */
+  function prefersDark(): boolean {
+    const t = document.documentElement.dataset.theme;
+    if (t === 'dark') return true;
+    if (t === 'light') return false;
+    return mq.matches;
+  }
+
+  function ensureScalar(cb: (ok: boolean) => void): void {
+    if (typeof w.Scalar?.createApiReference === 'function') {
+      cb(true);
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = CDN;
+    s.onload = () => cb(typeof w.Scalar?.createApiReference === 'function');
+    s.onerror = () => cb(false);
+    document.head.appendChild(s);
+  }
+
+  function mount(force = false): void {
+    const el = document.querySelector<HTMLElement>('.scalar-host');
+    if (!el) return;
+    const dark = prefersDark();
+    if (!force && dark === lastDark && el.dataset.mounted === '1') return;
+
+    ensureScalar((ok) => {
+      if (!ok) {
+        el.innerHTML =
+          '<p>Could not load the interactive viewer (CDN unreachable). Use the static reference pages — they are fully searchable.</p>';
+        return;
+      }
+      el.dataset.mounted = '1';
+      lastDark = dark;
+      // Scalar 没有可靠的 destroy：清空后重建，主题随之更新
+      el.replaceChildren();
+      // Scalar 注入的样式里有一条 `body { background-color: var(--scalar-background-1) }`，
+      // 而 Starlight 恰好给 <body> 加 dark-mode / light-mode 类 —— 正好撞上 Scalar 的同名
+      // 主题类（.dark-mode { --scalar-background-1: #0f0f0f }）：整页底色被拽离站点 token，
+      // 交互页就成了"一块异色面板贴在页面上"（静态页没这问题——该规则随挂载才注入）。
+      // 所以两件事一起做：
+      //   1. `html body`（特异性 0-0-2，压过 Scalar 的 body 0-0-1，与注入顺序无关）
+      //      把整页底色还给站点 token；
+      //   2. 面板 / 内嵌侧栏 / 描边全部改引站点 token，两个主题下与静态页浑然一色。
+      const customCss = [
+        'html body {',
+        '  background-color: var(--sl-color-bg);',
+        '}',
+        '.scalar-app,',
+        '.scalar-api-reference__header {',
+        '  --scalar-background-1: var(--sl-color-bg);',
+        `  --scalar-background-2: var(--sl-color-gray-${dark ? '6' : '7'});`,
+        `  --scalar-background-3: ${dark ? '#0e1728' : '#fafbfc'};`,
+        '  --scalar-sidebar-background-1: var(--sl-color-bg-sidebar);',
+        '  --scalar-border-color: var(--sl-color-hairline);',
+        '}',
+      ].join('\n');
+      w.Scalar?.createApiReference(el, {
+        url: el.dataset.spec,
+        darkMode: dark,
+        // 主题归站点管，不要出现第二个切换器
+        hideDarkModeToggle: true,
+        hideDownloadButton: false,
+        searchHotKey: '/',
+        customCss,
+      });
+    });
+  }
+
+  /** 系统主题可能在短时间内连发事件，节流后再重建（Scalar 渲染较重） */
+  function schedule(force = false): void {
+    if (timer) clearTimeout(timer);
+    timer = window.setTimeout(() => mount(force), 60);
+  }
+
+  mount(true);
+
+  const g = window as unknown as { __abScalarThemeBound?: boolean };
+  if (!g.__abScalarThemeBound) {
+    g.__abScalarThemeBound = true;
+
+    // 用户手切主题 / auto 跟随系统 —— Starlight 都会更新 data-theme
+    new MutationObserver(() => schedule()).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    // 双保险：直接听系统
+    mq.addEventListener('change', () => schedule());
+    // 视图切换后 DOM 换了，强制重建
+    document.addEventListener('astro:after-swap', () => {
+      lastDark = undefined;
+      schedule(true);
+    });
+  }
+</script>
+
+<style>
+  .scalar-host {
+    min-height: 12rem;
+    margin: 1.5rem 0;
+  }
+  .scalar-loading {
+    opacity: 0.7;
+  }
+</style>

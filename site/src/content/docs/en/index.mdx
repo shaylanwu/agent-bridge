@@ -1,0 +1,65 @@
+---
+title: Local AI agents, any platform.
+description: Give a platform remote control of the AI agents on this machine, over one outbound WebSocket — no inbound ports, no firewall changes.
+template: splash
+hero:
+  title: Local AI agents, any platform.
+  tagline: One outbound WebSocket. No inbound ports, no firewall changes — orchestrate 12 AI agents on that machine and stream their output back.
+  actions:
+    - text: Quickstart
+      link: /agent-bridge/en/quickstart
+      variant: primary
+    - text: How it works
+      link: /agent-bridge/en/architecture
+      variant: secondary
+---
+
+import OutboundFigure from '../../../components/home/OutboundFigure.astro';
+import Features from '../../../components/home/Features.astro';
+import AgentWall from '../../../components/home/AgentWall.astro';
+import Paths from '../../../components/home/Paths.astro';
+
+<div class="home-install-wrap">
+  <code class="home-install">npm install -g agent-bridge-service</code>
+</div>
+
+<OutboundFigure
+  from={{ title: "Developer's machine", note: '12 AI agents · credentials stay local' }}
+  to={{ title: 'Your platform', note: 'dispatch tasks · receive events' }}
+  note="The device dials out over WSS. Nothing listens for inbound traffic."
+/>
+
+<AgentWall title="Supported AI agents" />
+
+<Features
+  items={[
+    {
+      icon: 'contract',
+      title: 'A contract, not prose',
+      text: '11 message types, 5 negotiable capabilities, 15 controlled error codes — all rendered from machine-readable contracts.',
+    },
+    {
+      icon: 'key',
+      title: 'Least privilege',
+      text: 'Scoped service tokens let a backend dispatch on behalf of a user. Rotatable, revocable, audited.',
+    },
+    {
+      icon: 'terminal',
+      title: 'Optional control plane',
+      text: 'Programs on the same machine can drive local agents over loopback. Off by default, binds 127.0.0.1 only.',
+    },
+  ]}
+/>
+
+<Paths
+  left={{
+    title: 'I am building a remote platform',
+    text: 'Implement 4 HTTP endpoints and speak the WebSocket protocol; users run connect against your URL.',
+    link: { text: 'Platform checklist →', href: '/agent-bridge/en/integrate/platform' },
+  }}
+  right={{
+    title: 'I am writing a local program',
+    text: 'Drive the agents on this machine from an IDE extension, script, MCP server or CI step.',
+    link: { text: 'Local checklist →', href: '/agent-bridge/en/integrate/local' },
+  }}
+/>
