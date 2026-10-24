@@ -23,6 +23,13 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url));
 const require = createRequire(join(ROOT, 'package.json'));
 const { WebSocketServer } = require('ws');
 
+// 期望工具数从适配器注册表读，不在断言里写死：新增适配器后写死的数字会让冒烟假红
+// （2026-10-24 实测：断言写 11、注册表已 12，冒烟挂在这条上，与代码无关）。
+const { AGENTS } = await import(
+  new URL('../../../../dist/adapters/agent-adapters.js', import.meta.url).href
+);
+const EXPECTED_AGENTS = AGENTS.length;
+
 const argv = process.argv.slice(2);
 const argOf = (name, def) => {
   const i = argv.indexOf(name);
@@ -69,7 +76,11 @@ wss.on('connection', (ws) => {
     }
     if (m.type === 'pong') record('ping → pong 往返', true);
     if (m.type === 'agent_list') {
-      record('agent_list 上报 11 个工具', m.agents?.length === 11, `n=${m.agents?.length}`);
+      record(
+        `agent_list 上报 ${EXPECTED_AGENTS} 个工具`,
+        m.agents?.length === EXPECTED_AGENTS,
+        `n=${m.agents?.length}`,
+      );
       ws.send(JSON.stringify({ type: 'scan', requestId: 'r1' }));
     }
     if (m.type === 'scan_result') {
