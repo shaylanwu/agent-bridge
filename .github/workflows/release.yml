@@ -101,8 +101,14 @@ jobs:
           WHO=$(npm whoami 2>/dev/null || echo '?')
           TFA=$(npm profile get 2>/dev/null | grep -i "two-factor" | head -1 | tr -s ' ' || true)
           echo "::notice::npm whoami=${WHO}${TFA:+；${TFA}}"
-          # 传给下一步（GITHUB_ENV 的值会被日志掩码处理）
-          echo "NPM_TOKEN=${TOKEN}" >> "$GITHUB_ENV"
+          # 传给下一步：两个变量都要写。
+          # ⚠️ setup-node 会在仓库根生成 .npmrc，内容是 `_authToken=${NODE_AUTH_TOKEN}`（运行时展开），
+          #    而项目级 .npmrc 优先级高于 @semantic-release/npm 写的用户级 .npmrc ——
+          #    只给 NPM_TOKEN 会展开成空串，npm 直接 401（就是之前一直失败的原因）。
+          {
+            echo "NPM_TOKEN=${TOKEN}"
+            echo "NODE_AUTH_TOKEN=${TOKEN}"
+          } >> "$GITHUB_ENV"
         env:
           C1: ${{ secrets.AGENT_BRIDGE_NPM_TOKEN }}
           C2: ${{ secrets.NPM_TOKEN }}
