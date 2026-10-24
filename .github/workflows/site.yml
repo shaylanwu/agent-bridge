@@ -1,0 +1,81 @@
+name: site
+
+# 文档站构建与部署（GitHub Pages）。
+#
+# 触发：main 上的任意提交 —— 包括 semantic-release 写完 CHANGELOG 后推回来的
+# `chore(release): x.y.z`。所以"发布一个新版本"到"版本历史页出现这个版本"之间没有人：
+#   release.yml → 改 CHANGELOG.md → 推回 main → 本 workflow → 重新渲染 /changelog/
+#
+# 前置（一次性，仓库设置里做）：Settings → Pages → Source = "GitHub Actions"。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只部署一版；新提交直接顶掉还在跑的那次（站点构建是幂等的）
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: check → build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            site/package-lock.json
+
+      # 只装站点依赖：site-check 用的 yaml、构建用的 astro / starlight、索引用的 pagefind 都在 site/
+      - run: npm ci --prefix site
+
+      # 防漂移先行（快）：命令/契约/生成页新鲜度、i18n 对等、版本历史页 ↔ CHANGELOG.md。
+      # 放在 build 之前是有意的 —— 生成页落后时这里直接给一句人话，比构建到一半再炸好定位。
+      - run: npm run site:check
+
+      - run: npm run site:build
+
+      # 产物自检：不看退出码，直接查关键页面有没有落盘（构建"看似成功但少页"是常见事故）
+      - name: 产物自检
+        shell: bash
+        run: |
+          missing=0
+          for p in index.html \
+                   en/index.html zh-cn/index.html \
+                   en/changelog/index.html zh-cn/changelog/index.html \
+                   en/api/reference/index.html \
+                   pagefind/pagefind.js; do
+            if [ -f "site/dist/$p" ]; then
+              echo "ok   $p"
+            else
+              echo "::error::缺少产物 site/dist/$p"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    name: deploy → GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,42 +1,79 @@
 name: release
 
-# 这个文件在 monorepo 里是「惰性」的（GitHub 只读仓库根的 .github/workflows），
-# 但通过 `git subtree split -P apps/agent-bridge` 拆成独立仓库后，它就变成了
-# 独立仓库的发布流水线：打 v* tag 时自动校验版本并发布到 npm。
+# 语义发布（semantic-release）：版本号由**提交信息**决定，不由人决定。
+#
+#   feat: …            → minor
+#   fix: …             → patch
+#   feat!: … / BREAKING CHANGE: → major（协议破坏性变更，需人工审批后合入）
+#   docs/chore/test/…  → 不发布（没有可发的内容时这个 workflow 什么都不做）
+#
+# 一次运行的完整动作：升 package.json 版本 → 写回 CHANGELOG.md → 打 v<version> tag
+# → 建 GitHub Release → 发布 npm。站点（site.yml）随后重新构建，版本历史页读的就是同一个
+# CHANGELOG.md —— 一处真源两处呈现，不存在"发布了但历史没更新"。
+#
+# ⛔ 不要再手工 `git tag vX.Y.Z`：tag 由这里生成，手工 tag 会和 semantic-release 抢版本号。
+# ⛔ 触发分支只有 main —— develop 上随便提交都不会发布。
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
   workflow_dispatch:
 
+# 发布不能并发：两个 job 同时算版本会打出两个 tag
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # 打 tag、提交 CHANGELOG、建 GitHub Release
+  issues: write
+  pull-requests: write
+  id-token: write # npm provenance
+
 jobs:
-  publish:
+  verify:
+    name: verify (typecheck + test + boundaries)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # npm provenance
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # 冒烟：CI 机器上多数 AI CLI 未安装，只验证命令能跑通、输出仍是合法 JSON
+      - run: node dist/cli.js status --json
+      # 发布前的边界校验（都是纯 node 脚本，跨平台）：协议唯一真源 / 文档与实现一致 / 契约与代码一致
+      - run: npm run arch:check
+      - run: npm run doc:check
+      - run: npm run contracts:check
+
+  release:
+    name: semantic-release
+    needs: verify
+    # fork 里没有 NPM_TOKEN / GITHUB_TOKEN 的写权限，跑起来只会失败刷屏
+    if: github.repository == 'shaylanwu/agent-bridge'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 必须全历史 + 全 tag：semantic-release 靠它找上一个版本、算这次该升哪一位
+          fetch-depth: 0
+          # 用 PAT 之外的方式提交回 CHANGELOG 时，push 由 @semantic-release/git 完成
+          persist-credentials: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      # 冒烟：真扫一遍（CI 机器上多数工具未装，只验证命令能跑通、输出合法 JSON）
-      - run: node dist/cli.js status --json
-      - name: guard tag == package.json version
-        shell: bash
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          ver="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$ver" ]; then
-            echo "::error::tag (v$tag) 与 package.json version ($ver) 不一致"
-            exit 1
-          fi
-      - run: npm publish --access public --provenance
+      - name: semantic-release
+        run: npx semantic-release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # 关掉 husky：这一步会由 @semantic-release/git 自动生成 `chore(release): x.y.z` 提交，
+          # 没必要再过一遍 commit-msg 钩子（本地提交才需要拦）
+          HUSKY: '0'

@@ -1,15 +1,19 @@
 # agent-bridge-service
 
-Bridge the AI coding CLIs installed on your machine to a remote orchestration platform — over a single
+Give a remote orchestration platform control of the AI agents installed on your machine — over a single
 outbound WebSocket. No inbound ports, no reverse tunnels, no API keys leaving the host.
 
 **English** · [简体中文](README.zh-CN.md)
+
+📚 **Documentation site (EN / 中文, with full-text search): <https://shaylanwu.github.io/agent-bridge/>**
+— protocol reference, CLI reference, and two integration guides (platform builders / local programs).
+Built from the same machine-readable contracts, so it cannot drift from the code.
 
 ---
 
 ## Overview
 
-AI coding CLIs (Claude Code, Codex, Gemini CLI and friends) live on developers' laptops. A web platform
+AI coding agents (Claude Code, Codex, Gemini CLI and friends) live on developers' laptops. A web platform
 cannot inspect them: browsers are sandboxed and have no access to `PATH`, executable files or credential
 stores. And a platform hosted elsewhere cannot reach a laptop behind NAT.
 
@@ -27,7 +31,7 @@ small JSON protocol over HTTP + WebSocket.
 
 ## Features
 
-- **11 built-in adapters** — Claude Code, Codex, DeepSeek Harness, Gemini CLI, opencode, Mimo Code,
+- **12 built-in adapters** — Claude Code, CodeBuddy CLI, Codex, DeepSeek Harness, Gemini CLI, opencode, Mimo Code,
   Qoder CLI, Grok CLI, Kimi Code, MiniMax Code, Trae CLI.
 - **Three-state probing** — `ready` / `installed without credentials` / `not installed`, plus a
   `broken` flag when a binary exists but cannot execute (`--version` fails).
@@ -80,6 +84,12 @@ agent-bridge status --json --fresh     # --fresh bypasses the 30 s cache
 
 # Remove the local device credentials
 agent-bridge logout
+
+# Issue a scoped service token for an external system / backend service (P0-8)
+agent-bridge services issue --label=repair-orchestrator --scopes=task:create,task:cancel --ttl-days=90
+agent-bridge services list
+agent-bridge services rotate svc_9f1c2a --grace-hours=24   # rotate: old token stays valid for 24h
+agent-bridge services revoke svc_9f1c2a
 ```
 
 > `agent-bridge daemon` is **not implemented yet** (Phase 3). Until it lands, keep `connect` running in the
@@ -134,6 +144,14 @@ task fail immediately (`任务队列已满（并发 N，排队 M）`). `timeoutM
 never sit in the queue for hours and then run for ten more minutes. `AGENT_BRIDGE_MAX_TASKS` /
 `AGENT_BRIDGE_MAX_QUEUE` override the file (handy for CI).
 
+Whether a finished task carries a diff, and whether a service token is mandatory:
+
+```toml
+diff_default = false          # true = capture even when the platform did not ask for it
+diff_max_bytes = 262144       # cap for the diff text (default 256 KB); AGENT_BRIDGE_DIFF_MAX_BYTES overrides
+require_service_token = false # true = reject any task without a valid service token (off by default for compatibility)
+```
+
 ## Security boundaries
 
 | Concern                | Behaviour                                                                              |
@@ -143,14 +161,19 @@ never sit in the queue for hours and then run for ten more minutes. `AGENT_BRIDG
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
 | Env from the platform  | **Not accepted**: any `env` inside `run_task` is ignored; children always run with the bridge's own environment. |
 | Concurrency            | `max_tasks` (default 3) run at once; the rest queue FIFO up to `max_queue` (default 32), then fail. `timeoutMs` counts from queueing. |
+| Local control plane     | Optional extension, **off by default**; when enabled it binds loopback only, requires a scoped Bearer token, and never sends CORS headers. |
+| Diff capture           | One `git diff` per task, only when `captureDiff` is set; untracked paths are restored afterwards. Nothing is committed and the index is left as it was. |
+| Service identity       | Service tokens are stored as SHA-256 only and checked per scope; `cancel_task` needs `task:cancel`, holding `task:create` is not enough. |
 | Where it runs          | `cwd` must exist and be a directory; `allowed_cwd` (optional) confines it further.     |
 | Runaway processes      | Every task has a timeout; cancel sends `SIGTERM`, then `SIGKILL` after 2 s.            |
 | Transport              | `wss://` only; handshake authenticated with `Authorization: Bearer <device_token>`.    |
 | Token storage          | `0600` file in the user's home; the platform stores only a SHA-256 hash.               |
+| Audit trail            | `~/.agent-bridge/audit.jsonl` (`0600`, one JSON per line): id / scope / action / outcome only — never tokens or credentials. |
 | Revocation             | A revoked device is rejected on the next handshake (`4401`/`4403`, no reconnect loop). |
 
-The bridge holds no privileges beyond the OS user that started it, and it never opens a listening port
-except the short-lived `127.0.0.1` callback used during authorization.
+The bridge holds no privileges beyond the OS user that started it, and it opens **no inbound port**: the only
+listeners are the short-lived `127.0.0.1` callback used during authorization and — if you explicitly enable it —
+the loopback control plane, which is bound to `127.0.0.1` and never reaches the network.
 
 ## Architecture
 
@@ -170,15 +193,45 @@ except the short-lived `127.0.0.1` callback used during authorization.
 
 | Module                  | Responsibility                                                                        |
 | ----------------------- | ------------------------------------------------------------------------------------- |
-| `src/cli.ts`            | Command surface (`connect` / `status` / `logout` / `daemon`), wiring, terminal output |
-| `src/auth.ts`           | Localhost callback server, PKCE S256, token exchange, device-code fallback            |
-| `src/config.ts`         | `config.toml` read/write with `0600`, token redaction                                 |
-| `src/bridge-client.ts`  | WebSocket client: handshake auth, heartbeat, backoff, offline queue                   |
-| `src/scan.ts`           | Probe orchestration with a 30 s cache                                                 |
-| `src/agent-adapters.ts` | Adapter table, binary resolution, version and credential probing                      |
-| `src/runner.ts`         | Task lifecycle: validation, spawn, log chunking, cancel, timeout                      |
-| `src/win-exec.ts`       | Correct quoting for Windows `.cmd` / `.bat` shims                                     |
-| `src/protocol.ts`       | Wire types, runtime validation, 4 KB log chunking                                     |
+The source tree is layered. Dependencies point **inwards only**:
+
+```
+cli.ts → cli/ (flags · render · help · dispatch) → commands/ (one file per command)
+       → app/ (use-case orchestration) → { core, transport, adapters, infra }
+```
+
+`core` (domain) sits in the middle; `transport` / `adapters` / `infra` are the three edges; only the entry point
+and the wire contract stay at the root. `src/cli.ts` contains **no business logic** — it forwards argv to
+`cli/dispatch.ts` and nothing else (548 → 31 lines on 2026-10-23).
+
+| Module                       | Responsibility                                                                     |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| `src/cli.ts`                 | Entry point only: `argv → dispatch()` + top-level error guard                       |
+| `src/cli/dispatch.ts`        | Command registry (`COMMANDS`) — add a command here, not in the entry file          |
+| `src/cli/render.ts`          | Terminal rendering: colors, tables, `out.{info,ok,warn,error}`                       |
+| `src/cli/flags.ts`           | Flag parsing (`--k=v`, `--flag`, positional)                                        |
+| `src/cli/help.ts` / `meta.ts`| Help text / package version read from `package.json`                                |
+| `src/commands/*.ts`          | One file per command; thin: parse flags → call `app/` → print                       |
+| `src/app/session.ts`         | Platform session: initial report, command routing, live task table                 |
+| `src/app/task-dispatch.ts`   | `run_task` / `cancel_task` orchestration (gate → spawn → upstream)                  |
+| `src/app/service-gate.ts`    | Service identity authorization + audit (P0-8)                                       |
+| `src/protocol.ts`            | Wire contract — the single source of truth (wire types are only defined here)       |
+| `src/runner.ts`              | v1 compatibility shim; new code should import `src/core/task-supervisor.ts`          |
+| `src/core/errors.ts`         | Controlled error-code enum + `BridgeError`                                          |
+| `src/core/redact.ts`         | Log redaction (home directory → `~`, long base64/hex runs folded)                    |
+| `src/core/emitter.ts`        | **Single upstream exit**: idempotency, redaction, audit, CloudEvents envelope        |
+| `src/core/task-supervisor.ts`| Task scheduling as an instantiable domain object (concurrency, queue, cancel)        |
+| `src/core/scan.ts`           | Probe orchestration with a 30 s cache                                               |
+| `src/transport/bridge-client.ts` | Outbound WebSocket: handshake auth, heartbeat, backoff, offline queue            |
+| `src/transport/outbox.ts`    | Bounded replay buffer for disconnects                                               |
+| `src/adapters/agent-adapters.ts` | Adapter table, binary resolution, version and credential probing                |
+| `src/adapters/win-exec.ts`   | Correct quoting for Windows `.cmd` / `.bat` shims                                    |
+| `src/adapters/agent-logos.ts`| Brand icons as base64 data URIs                                                      |
+| `src/infra/config.ts`        | `config.toml` read/write with `0600`, token redaction                                |
+| `src/infra/auth.ts`          | Localhost callback server, PKCE S256, token exchange, device-code fallback           |
+| `src/infra/git.ts`           | Worktree diff capture (read-only, bounded, never fails a task)                       |
+| `src/infra/service-token.ts` | Scoped service tokens: issue / verify / rotate / revoke, SHA-256 only                |
+| `src/infra/audit.ts`         | Audit trail (`audit.jsonl`, one JSON per line, redacted)                             |
 
 Protocol (JSON over one connection):
 
@@ -186,6 +239,145 @@ Protocol (JSON over one connection):
 | ----------------- | ----------------------------------------------------------------------- |
 | bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `pong` |
 | platform → bridge | `run_task`, `cancel_task`, `scan`, `ping`                               |
+
+### Capability negotiation (`hello.capabilities`)
+
+`hello` carries `capabilities: string[]`, the **optional** features this device supports. A third-party platform
+should degrade on this list rather than guessing from a CLI version:
+
+| capability       | Meaning                                                                   |
+| ---------------- | ------------------------------------------------------------------------- |
+| `diff`           | Supports `run_task.captureDiff` and a unified diff on the terminal status  |
+| `service-token`  | Supports scoped service tokens plus `requestedBy` / `purpose` passthrough  |
+| `queue`          | Tasks beyond the concurrency limit queue instead of being rejected         |
+| `scan-progress`  | Streams `scan_progress` while probing                                      |
+| `cloud-events`   | Can wrap upstream messages in a CloudEvents 1.0 envelope (CNCF standard)    |
+
+Evolution rule: a new optional field keeps the protocol version; a semantic change or a new required field bumps it.
+
+### Diff capture (P0-6)
+
+When `run_task` carries `captureDiff: true`, the bridge takes one diff of `cwd` when the task **settles**
+(success / failed / cancelled / timeout) and ships it with `task_status`:
+
+```json
+{ "type": "run_task", "taskId": "bt_7f3a", "agentType": "codex", "cwd": "/Users/me/work/api", "args": [], "prompt": "fix the failing login test", "captureDiff": true }
+```
+
+```json
+{ "type": "task_status", "taskId": "bt_7f3a", "status": "success", "exitCode": 0, "changedFiles": ["src/login.ts"], "diffTruncated": false }
+```
+
+Constraints: a non-git directory yields an empty diff **without an error**; text beyond `diff_max_bytes`
+(default 256 KB) is cut on a **line boundary** with `diffTruncated: true`; untracked files are `git add -N`-ed
+for the duration of the capture and `git reset -q`-ed right after — **nothing is committed, the worktree is
+untouched, and no intent-to-add entry is left behind**.
+
+### Service identity and scopes (P0-8)
+
+Any external system (orchestrator backend, CI, IDE plugin) can call the task capabilities with a scoped service
+token. Tokens look like `abs_<kid>_<secret>`; only the SHA-256 of `secret` is stored locally and comparison is
+constant-time:
+
+| scope          | Allows                            |
+| -------------- | --------------------------------- |
+| `task:create`  | sending `run_task`                |
+| `task:cancel`  | sending `cancel_task`             |
+| `task:read`    | reading task / scan results       |
+| `device:read`  | reading the local tool list (`scan`) |
+
+`run_task` / `cancel_task` may carry `requestedBy` (≤128 chars), `purpose` (≤64 chars) and `serviceToken`;
+the bridge **echoes `requestedBy` on the terminal `task_status`** so the platform can persist `requested_by`.
+
+Compatibility: with no token registered locally and `require_service_token = false`, behaviour is identical to
+v1. **But if a message carries a token, it must verify** — there is no "present but skipped" path.
+
+> **Checklist for the platform side** (auth on `/api/bridge/*` lives in the platform repo, not here):
+> 1. accept a service token on `POST /api/bridge/tasks`, `GET /api/bridge/tasks/:id` and
+>    `POST /api/bridge/tasks/:id/cancel`, alongside the user token branch;
+> 2. bind each service token to a project / user scope and answer 403 on cross-tenant access;
+> 3. pass `requestedBy` through when sending `run_task`, and persist the echoed `requested_by` on
+>    `bridge_task_runs`.
+
+### Controlled error codes
+
+`task_status.error` is a human-readable string (render it directly). `task_status.errorCode` is the
+**controlled** code for programmatic branching, so a platform never has to match on prose:
+
+| Code | Meaning |
+| --- | --- |
+| `tool_not_installed` | Kind unknown or the binary is missing on this host |
+| `tool_no_credentials` | Installed but no credentials present |
+| `tool_broken` | Installed but `--version` fails |
+| `cwd_missing` / `cwd_not_allowed` | Working directory absent, or outside `allowed_cwd` |
+| `device_busy` | Concurrency limit and queue both full |
+| `timeout` / `cancelled` | Timed out (including while queued) / cancelled |
+| `agent_error` | Non-zero CLI exit, or the process failed to start |
+| `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | Service-token failures |
+| `protocol_incompatible` / `internal` | Version mismatch / bridge-side fault |
+
+The enum lives in `src/core/errors.ts` and is mirrored by `contracts/asyncapi-3.0.yaml`; `npm run contracts:check`
+fails if the two drift.
+
+### Queueing semantics
+
+Tasks beyond the concurrency limit queue instead of failing. To stay v1-compatible the `status` value stays
+`running`; queued tasks additionally carry `phase: 'queued'` and `queuePosition` (1-based). A platform that
+ignores both still behaves exactly as before. `timeoutMs` is measured **from queueing**, so a task can never
+wait for hours and then run for ten more minutes.
+
+### Machine-readable contracts
+
+Prose drifts; contracts are checked in CI.
+
+| File | Describes |
+| --- | --- |
+| `contracts/asyncapi-3.0.yaml` | The WebSocket channel (both directions, every message, error codes) |
+| `contracts/openapi-3.1.yaml` | The HTTP endpoints **a platform must implement** to drive this bridge |
+| `llms.txt` | Entry points for AI clients |
+
+`npm run contracts:check` verifies every wire type, capability, error code and platform endpoint in the code
+is actually documented — drift fails the build.
+
+### Local control plane (optional, off by default)
+
+`agent-bridge serve <platformUrl> [--port=8787]` is `connect` **plus** a loopback-only HTTP control plane.
+It exists for **other programs on this machine** — IDE extensions, scripts, MCP servers, CI runners.
+Remote platforms keep using the outbound WebSocket; this is a separate channel, not a replacement.
+
+| Rule | Value |
+| --- | --- |
+| Bind | `127.0.0.1` / `::1` only — a non-loopback host is rejected at startup |
+| Default | **off**. Enable with `[control_plane] enabled = true` in `config.toml`, or `--port` for this run only |
+| Auth | scoped Bearer (`abs_<kid>_<secret>`, the same tokens as P0-8); `/v1/health` is the only open route |
+| CORS | never sent — a browser script cannot call it silently |
+| Scheduling | tasks go through the same `TaskSupervisor`, so `max_tasks` covers both channels |
+| Upstream | control-plane tasks report through the same `Emitter`, so the platform view never half-disappears |
+
+| Method | Path | Scope |
+| --- | --- | --- |
+| GET | `/v1/health` | — (liveness/readiness/version) |
+| GET | `/v1/capabilities` | `device:read` |
+| GET | `/v1/agents` | `device:read` |
+| POST | `/v1/agents:scan` | `device:read` |
+| POST | `/v1/tasks` | `task:create` |
+| GET | `/v1/tasks` | `task:read` (cursor-paginated) |
+| GET | `/v1/tasks/{id}` | `task:read` |
+| POST | `/v1/tasks/{id}:cancel` | `task:cancel` (idempotent) |
+| GET | `/v1/tasks/{id}/events` | `task:read` (SSE: log + status) |
+| GET | `/v1/tasks/{id}/diff` | `task:read` (artifact only, task is not re-run) |
+
+```bash
+agent-bridge services issue --label=vscode --scopes=task:create,task:read
+curl --noproxy '*' -H "Authorization: Bearer abs_…" http://127.0.0.1:8787/v1/agents
+curl --noproxy '*' -H "Authorization: Bearer abs_…" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"agentType":"codex","cwd":"/work/api","prompt":"fix the failing login test","captureDiff":true}' \
+  http://127.0.0.1:8787/v1/tasks
+```
+
+Errors are RFC 9457 `application/problem+json` carrying the same `code` enum as the wire protocol, so a
+client branches on `code` instead of matching prose. `Idempotency-Key` makes a retried `POST /v1/tasks` return
+the same `taskId` instead of running twice. Contract: `contracts/openapi.control-plane.yaml`.
 
 ### Live scan progress and brand icons
 
@@ -196,9 +388,10 @@ connect, or `scan_result` carrying the same `requestId` when answering `scan`). 
 `scan_progress` still gets the complete list.
 
 Every item carries what a card needs: `display` (name), `version`, `status`, and `logo` — a
-`data:image/svg+xml;base64,…` 24×24 monochrome SVG taken from the official brand marks in
-`assets/agent-icons/<kind>.svg`. The same logos repeat in each message (~64 KB for all 11), so cache them by
-`kind` rather than re-parsing every frame. A missing asset just omits the field.
+`data:image/svg+xml;base64,…` SVG on a uniform 24×24 canvas (artwork inset to 20×20, official brand colours
+kept) taken from the brand marks in `assets/agent-icons/<kind>.svg`. The same logos repeat in each message
+(~70 KB for all 12), so cache them by `kind` rather than re-parsing every frame. A missing asset just omits
+the field.
 
 ### Logs while the socket is down
 
@@ -277,22 +470,51 @@ Project layout:
 
 ```
 src/
-  cli.ts               command surface
-  auth.ts              authorization flows
-  config.ts            local persistence
-  bridge-client.ts     websocket transport
-  scan.ts              probe orchestration
-  agent-adapters.ts    adapter table + probing
-  runner.ts            task execution
-  win-exec.ts          windows shim quoting
-  protocol.ts          wire protocol
+  cli.ts               entry point — argv → cli/dispatch.ts, nothing else
+  protocol.ts          wire contract (single source of truth)
+  runner.ts            v1 compatibility shim → core/task-supervisor.ts
+  cli/                  flags · terminal rendering · help · command registry
+  commands/             one file per command (connect/status/logout/services/daemon)
+  app/                  use-case orchestration: session · task dispatch · service gate
+  core/                 domain: scheduling · upstream emitter · redaction · errors · scan
+  transport/            outbound WebSocket + bounded offline replay
+  adapters/             12 CLI adapters · Windows shim quoting · brand icons
+  infra/                config · auth · git diff · service tokens · audit
 test/
   bridge.test.ts       unit tests
 ```
 
-Adding an adapter: append one entry to `AGENTS` in `src/agent-adapters.ts` (binary name, display name,
+Adding an adapter: append one entry to `AGENTS` in `src/adapters/agent-adapters.ts` (binary name, display name,
 capability, task argument template, credential signals). No transport or scheduling changes are needed.
+
+### Releasing
+
+Version numbers are decided by commit messages, not by hand. Merge a
+[Conventional Commit](https://www.conventionalcommits.org/) into `main` and
+[`.github/workflows/release.yml`](./.github/workflows/release.yml) does the rest:
+
+| Commit | Bump |
+| --- | --- |
+| `feat: …` | minor |
+| `fix: …` | patch |
+| `feat!: …` / `BREAKING CHANGE:` | major — needs approval, and `PROTOCOL_VERSION` must be bumped in the same commit |
+| `docs` `chore` `test` `refactor` `style` `ci` `build` | no release at all |
+
+semantic-release then bumps `package.json`, writes `CHANGELOG.md`, tags `v<version>`, opens the GitHub Release
+and publishes to npm. It needs two repository secrets: `NPM_TOKEN` (npm automation token) and the default
+`GITHUB_TOKEN`. `commit-msg` runs commitlint locally, so a malformed message is rejected before it can
+produce a wrong version.
+
+**Never tag by hand** — a manual `v1.2.3` and a semantic-release tag will fight over the same version number.
+The docs site (`.github/workflows/site.yml`) redeploys on every `main` push, and its changelog page is
+rendered from the same `CHANGELOG.md` at build time — one source of truth, two places it shows up.
+
+Verify the release toolchain offline (no tokens, no network, nothing written to the repo):
+
+```bash
+node scripts/verify-release.mjs   # runs notes generation + CHANGELOG writing against the real v0.1.0..HEAD commits
+```
 
 ## License
 
-Apache-2.0
+MIT — see [LICENSE](./LICENSE).
