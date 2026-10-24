@@ -76,7 +76,14 @@ jobs:
       - name: npm token 预检
         run: |
           if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::AGENT_BRIDGE_NPM_TOKEN 为空 —— 需要仓库级 secret（Settings → Secrets and variables → Actions → Secrets → New repository secret），不是 environment secret"
+            # 把"本 job 实际能看见哪些 secret 名"写进 annotation（只列名字，不打印值）：
+            # 名字里有空格/不可见字符时，GitHub UI 上看不出来，但引用就会解析成空。
+            NAMES=$(node -e '
+              const s = JSON.parse(process.env.SECRETS_JSON || "{}");
+              const keys = Object.keys(s);
+              process.stdout.write(keys.length ? keys.map((k) => "[" + k + "]").join("  ") : "(一个都没有)");
+            ')
+            echo "::error::AGENT_BRIDGE_NPM_TOKEN 解析为空。本 job 可见的 secret: ${NAMES}"
             exit 1
           fi
           echo "token 已传入，长度 ${#NODE_AUTH_TOKEN}"
@@ -86,6 +93,7 @@ jobs:
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.AGENT_BRIDGE_NPM_TOKEN }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
       - name: semantic-release
         run: npx semantic-release
         env:
