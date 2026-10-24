@@ -96,13 +96,30 @@ jobs:
             echo "::error::token 被 npm 拒绝（whoami 失败）—— 多为已过期/被撤销/类型不对"
             exit 1
           }
+          # 把身份与 2FA 模式写成 notice（能在 check-run annotation 里读到，便于定位
+          # "token 有效但发不出去"这类权限问题：auth-and-writes 下的 classic token 必然 EOTP）
+          WHO=$(npm whoami 2>/dev/null || echo '?')
+          TFA=$(npm profile get 2>/dev/null | grep -i "two-factor" | head -1 | tr -s ' ' || true)
+          echo "::notice::npm whoami=${WHO}${TFA:+；${TFA}}"
           # 传给下一步（GITHUB_ENV 的值会被日志掩码处理）
           echo "NPM_TOKEN=${TOKEN}" >> "$GITHUB_ENV"
         env:
           C1: ${{ secrets.AGENT_BRIDGE_NPM_TOKEN }}
           C2: ${{ secrets.NPM_TOKEN }}
       - name: semantic-release
-        run: npx semantic-release
+        run: |
+          set +e
+          npx semantic-release > /tmp/semrel.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/semrel.log
+          if [ "$status" -ne 0 ]; then
+            # 把最相关的错误行提成 annotation：没有 PAT 也能从 check-run 里直接读出原因
+            grep -iE "npm (error|ERR!)|EOTP|E401|E403|E404|ENEEDAUTH|denied|forbidden|not authorized|402 " /tmp/semrel.log \
+              | head -6 | while IFS= read -r line; do echo "::error::${line}"; done
+            echo "::error::semantic-release 退出码 ${status}（以上为最相关的错误行，完整日志见本步骤输出）"
+            exit "$status"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 关掉 husky：这一步会由 @semantic-release/git 自动生成 `chore(release): x.y.z` 提交，
