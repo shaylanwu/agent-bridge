@@ -478,7 +478,7 @@ test/
 | `docs` `chore` `test` `refactor` `style` `ci` `build` | 完全不发布 |
 
 随后 semantic-release 升 `package.json` 版本、写回 `CHANGELOG.md`、打 `v<version>` tag、创建 GitHub Release
-并发布到 npm。它需要两个仓库 secret：`NPM_TOKEN`（npm automation token）与默认的 `GITHUB_TOKEN`。
+并发布到 npm。它需要两个仓库 secret：`AGENT_BRIDGE_NPM_TOKEN`（npm automation token）与默认的 `GITHUB_TOKEN`。
 本地 `commit-msg` 会先跑 commitlint —— 写错的提交信息在产生错误版本号之前就被拦下。
 
 **不要手工打 tag** —— 手工的 `v1.2.3` 会和 semantic-release 抢同一个版本号。

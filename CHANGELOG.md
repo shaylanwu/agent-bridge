@@ -13,7 +13,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `.github/workflows/release.yml` run semantic-release on every push to `main` (`feat` → minor,
   `fix` → patch, `feat!` / `BREAKING CHANGE:` → major, everything else publishes nothing): it bumps
   `package.json`, writes `CHANGELOG.md`, tags `v*`, opens the GitHub Release and publishes to npm.
-  Needs two repository secrets — `NPM_TOKEN` and the default `GITHUB_TOKEN` — and **takes over tagging**:
+  Needs two repository secrets — `AGENT_BRIDGE_NPM_TOKEN` and the default `GITHUB_TOKEN` — and **takes over tagging**:
   a hand-made `v*` tag now collides with it. `commitlint` + `husky` reject non-conventional commit
   messages locally, and `.github/workflows/site.yml` builds and deploys the docs site to GitHub Pages on
   the same push. The site's changelog page is now rendered from `CHANGELOG.md` at build time

@@ -501,7 +501,7 @@ Version numbers are decided by commit messages, not by hand. Merge a
 | `docs` `chore` `test` `refactor` `style` `ci` `build` | no release at all |
 
 semantic-release then bumps `package.json`, writes `CHANGELOG.md`, tags `v<version>`, opens the GitHub Release
-and publishes to npm. It needs two repository secrets: `NPM_TOKEN` (npm automation token) and the default
+and publishes to npm. It needs two repository secrets: `AGENT_BRIDGE_NPM_TOKEN` (npm automation token) and the default
 `GITHUB_TOKEN`. `commit-msg` runs commitlint locally, so a malformed message is rejected before it can
 produce a wrong version.
 

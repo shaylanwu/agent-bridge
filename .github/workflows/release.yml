@@ -72,10 +72,11 @@ jobs:
       # 先把 token 自身的问题暴露出来：semantic-release 失败时只会给一句 exit 1，
       # 分不清是"secret 没传到"、"token 无效"还是"token 没有发布权限"。
       # 这里只打印 token 长度与它代表的 npm 账号名，不打印 token 本身。
+      # secret 名固定为 AGENT_BRIDGE_NPM_TOKEN（仓库级，不是 environment 级）。
       - name: npm token 预检
         run: |
           if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::NPM_TOKEN 为空 —— 检查 Settings → Secrets and variables → Actions 里是否有名为 NPM_TOKEN 的仓库 secret"
+            echo "::error::AGENT_BRIDGE_NPM_TOKEN 为空 —— 需要仓库级 secret（Settings → Secrets and variables → Actions → Secrets → New repository secret），不是 environment secret"
             exit 1
           fi
           echo "token 已传入，长度 ${#NODE_AUTH_TOKEN}"
@@ -84,12 +85,12 @@ jobs:
             exit 1
           }
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.AGENT_BRIDGE_NPM_TOKEN }}
       - name: semantic-release
         run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.AGENT_BRIDGE_NPM_TOKEN }}
           # 关掉 husky：这一步会由 @semantic-release/git 自动生成 `chore(release): x.y.z` 提交，
           # 没必要再过一遍 commit-msg 钩子（本地提交才需要拦）
           HUSKY: '0'

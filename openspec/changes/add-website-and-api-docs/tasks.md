@@ -59,7 +59,7 @@
       —— changelog 写入改用 `scripts/semantic-release-changelog.mjs`：现成的
       `@semantic-release/changelog@7` 只能把新版本**前插**（`# Changelog` 会落到版本段下面），
       preset 用 `angular`（`conventionalcommits` 当前主版本要求比 semantic-release 25 更新的 writer）
-- [x] 5.4 `.github/workflows/release.yml`（NPM_TOKEN / GITHUB_TOKEN）：改为 `push: main` 触发
+- [x] 5.4 `.github/workflows/release.yml`（`AGENT_BRIDGE_NPM_TOKEN` / `GITHUB_TOKEN`）：改为 `push: main` 触发
       semantic-release（verify job 先跑 typecheck/test/build/smoke + arch/doc/contracts 三道机检）；
       原「tag 触发手工发布」已取消 —— 两种方式并存会双发
 - [x] 5.5 `.github/workflows/site.yml`（pre-build 跑 `site:check` → 构建 → 产物自检 → Pages）
