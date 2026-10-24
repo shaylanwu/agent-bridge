@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3](https://github.com/shaylanwu/agent-bridge/compare/v0.2.2...v0.2.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **auth:** 修复 Windows 下经 cmd start 打开授权页会截断 & 之后的参数 ([d4227c4](https://github.com/shaylanwu/agent-bridge/commit/d4227c44d62ab23e9c4785804ea089dfb9f50714))
+* **site:** 先 build 再 check，避免版本历史页滞后挡住部署 ([d0486f5](https://github.com/shaylanwu/agent-bridge/commit/d0486f5d5b1037b70220909bd150b9b29459c81e))
+
 ## [0.2.2](https://github.com/shaylanwu/agent-bridge/compare/v0.2.1...v0.2.2) (2026-10-24)
 
 
