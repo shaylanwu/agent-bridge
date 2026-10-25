@@ -18,7 +18,7 @@ export type TurnStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelle
 export type InteractionKind = 'permission' | 'form' | 'auth-url';
 export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DEFAULT_TENANT = 'default';
 
 export class SessionStoreError extends Error {
@@ -113,6 +113,27 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+export type ArtifactTransferState = 'uploading' | 'committed' | 'aborted';
+
+export interface ArtifactTransferRecord {
+  tenantId: string;
+  transferId: string;
+  sessionId: string;
+  operationId: string;
+  artifactId: string;
+  direction: 'upload' | 'download';
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  chunkSize: number;
+  nextOffset: number;
+  tempPath?: string;
+  state: ArtifactTransferState;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SessionSnapshot {
   session: SessionRecord;
   turns: TurnRecord[];
@@ -182,6 +203,25 @@ interface InteractionRow {
   result_seq: number | null;
   result_payload: string | null;
   created_at: string;
+}
+
+interface ArtifactTransferRow {
+  tenant_id: string;
+  transfer_id: string;
+  session_id: string;
+  operation_id: string;
+  artifact_id: string;
+  direction: 'upload' | 'download';
+  name: string;
+  mime_type: string;
+  size: number;
+  sha256: string;
+  chunk_size: number;
+  next_offset: number;
+  temp_path: string | null;
+  state: ArtifactTransferState;
+  created_at: string;
+  updated_at: string;
 }
 
 interface ArtifactRow {
@@ -274,6 +314,27 @@ function toInteraction(row: InteractionRow): InteractionRecord {
   };
 }
 
+function toTransfer(row: ArtifactTransferRow): ArtifactTransferRecord {
+  return {
+    tenantId: row.tenant_id,
+    transferId: row.transfer_id,
+    sessionId: row.session_id,
+    operationId: row.operation_id,
+    artifactId: row.artifact_id,
+    direction: row.direction,
+    name: row.name,
+    mimeType: row.mime_type,
+    size: row.size,
+    sha256: row.sha256,
+    chunkSize: row.chunk_size,
+    nextOffset: row.next_offset,
+    tempPath: row.temp_path ?? undefined,
+    state: row.state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function toArtifact(row: ArtifactRow): ArtifactRecord {
   return {
     tenantId: row.tenant_id,
@@ -357,6 +418,26 @@ export class SessionStore {
         PRIMARY KEY (tenant_id, session_id, message_id),
         UNIQUE (tenant_id, session_id, event_seq),
         FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS artifact_transfers (
+        tenant_id TEXT NOT NULL,
+        transfer_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        chunk_size INTEGER NOT NULL,
+        next_offset INTEGER NOT NULL,
+        temp_path TEXT,
+        state TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, transfer_id),
+        UNIQUE (tenant_id, session_id, operation_id)
       );
       CREATE TABLE IF NOT EXISTS interactions (
         tenant_id TEXT NOT NULL,
@@ -936,6 +1017,88 @@ export class SessionStore {
         artifact.createdAt,
       );
     return this.getArtifact(artifact.artifactId, artifact.tenantId) ?? artifact;
+  }
+
+  saveTransfer(
+    input: Omit<ArtifactTransferRecord, 'createdAt' | 'updatedAt'> & {
+      createdAt?: string;
+      updatedAt?: string;
+    },
+  ): ArtifactTransferRecord {
+    const tenantId = input.tenantId ?? DEFAULT_TENANT;
+    const at = new Date().toISOString();
+    const record: ArtifactTransferRecord = {
+      ...input,
+      tenantId,
+      createdAt: input.createdAt ?? at,
+      updatedAt: input.updatedAt ?? at,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO artifact_transfers
+           (tenant_id, transfer_id, session_id, operation_id, artifact_id, direction, name, mime_type,
+            size, sha256, chunk_size, next_offset, temp_path, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (tenant_id, transfer_id) DO UPDATE SET
+           next_offset = excluded.next_offset,
+           state = excluded.state,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        record.tenantId,
+        record.transferId,
+        record.sessionId,
+        record.operationId,
+        record.artifactId,
+        record.direction,
+        record.name,
+        record.mimeType,
+        record.size,
+        record.sha256,
+        record.chunkSize,
+        record.nextOffset,
+        record.tempPath ?? null,
+        record.state,
+        record.createdAt,
+        record.updatedAt,
+      );
+    return record;
+  }
+
+  getTransfer(transferId: string, tenantId = DEFAULT_TENANT): ArtifactTransferRecord | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM artifact_transfers WHERE tenant_id = ? AND transfer_id = ?')
+      .get(tenantId, transferId) as ArtifactTransferRow | undefined;
+    return row ? toTransfer(row) : undefined;
+  }
+
+  getTransferByOperation(
+    sessionId: string,
+    operationId: string,
+    tenantId = DEFAULT_TENANT,
+  ): ArtifactTransferRecord | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT * FROM artifact_transfers WHERE tenant_id = ? AND session_id = ? AND operation_id = ?',
+      )
+      .get(tenantId, sessionId, operationId) as ArtifactTransferRow | undefined;
+    return row ? toTransfer(row) : undefined;
+  }
+
+  updateTransferOffset(transferId: string, nextOffset: number, tenantId = DEFAULT_TENANT): void {
+    this.db
+      .prepare(
+        `UPDATE artifact_transfers
+            SET next_offset = ?, updated_at = ?
+          WHERE tenant_id = ? AND transfer_id = ?`,
+      )
+      .run(nextOffset, new Date().toISOString(), tenantId, transferId);
+  }
+
+  deleteTransfer(transferId: string, tenantId = DEFAULT_TENANT): void {
+    this.db
+      .prepare('DELETE FROM artifact_transfers WHERE tenant_id = ? AND transfer_id = ?')
+      .run(tenantId, transferId);
   }
 
   getArtifact(artifactId: string, tenantId = DEFAULT_TENANT): ArtifactRecord | undefined {

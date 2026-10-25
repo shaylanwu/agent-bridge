@@ -75,6 +75,59 @@ describe('ArtifactTransferManager', () => {
     expect(sent.some((m) => m.type === 'task_artifact')).toBe(true);
   });
 
+  it('重启后按 operationId 恢复上传进度', () => {
+    const { dir, store, manager } = setup();
+    const body = Buffer.from('resume me', 'utf8');
+    const whole = sha(body);
+    const first = body.subarray(0, 5);
+    const ready = manager.startUpload({
+      sessionId: 'bt_art',
+      operationId: 'op_resume',
+      name: 'resume.txt',
+      mimeType: 'text/plain',
+      size: body.length,
+      sha256: whole,
+      chunkSize: 5,
+    });
+    manager.writeChunk({
+      transferId: ready.transferId,
+      offset: 0,
+      data: first.toString('base64'),
+      chunkSha256: sha(first),
+    });
+
+    const restarted = new ArtifactTransferManager({
+      store,
+      rootDir: join(dir, 'artifacts'),
+      emit: () => undefined,
+    });
+    const resumed = restarted.startUpload({
+      sessionId: 'bt_art',
+      operationId: 'op_resume',
+      name: 'resume.txt',
+      mimeType: 'text/plain',
+      size: body.length,
+      sha256: whole,
+      chunkSize: 5,
+    });
+    expect(resumed.transferId).toBe(ready.transferId);
+    expect(resumed.nextOffset).toBe(5);
+
+    restarted.writeChunk({
+      transferId: resumed.transferId,
+      offset: 5,
+      data: body.subarray(5).toString('base64'),
+      chunkSha256: sha(body.subarray(5)),
+    });
+    const result = restarted.completeUpload({
+      transferId: resumed.transferId,
+      size: body.length,
+      sha256: whole,
+    });
+    expect(result.committed).toBe(true);
+    expect(store.getTransfer(ready.transferId)).toBeUndefined();
+  });
+
   it('下载按 ready/chunk/ack/result 推送', () => {
     const { manager, sent } = setup();
     const body = Buffer.from('download me', 'utf8');

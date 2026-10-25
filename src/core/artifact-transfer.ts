@@ -103,6 +103,34 @@ export class ArtifactTransferManager {
         };
       }
     }
+    const persisted = this.deps.store.getTransferByOperation(
+      input.sessionId,
+      input.operationId,
+      this.tenant(),
+    );
+    if (persisted?.state === 'uploading' && persisted.tempPath && statSync(persisted.tempPath, { throwIfNoEntry: false })) {
+      const restored: Transfer = {
+        transferId: persisted.transferId,
+        operationId: persisted.operationId,
+        sessionId: persisted.sessionId,
+        artifactId: persisted.artifactId,
+        name: persisted.name,
+        mimeType: persisted.mimeType,
+        size: persisted.size,
+        sha256: persisted.sha256,
+        chunkSize: persisted.chunkSize,
+        nextOffset: persisted.nextOffset,
+        tempPath: persisted.tempPath,
+      };
+      this.transfers.set(restored.transferId, restored);
+      this.byOperation.set(key, restored.transferId);
+      return {
+        transferId: restored.transferId,
+        artifactId: restored.artifactId,
+        nextOffset: restored.nextOffset,
+        chunkSize: restored.chunkSize,
+      };
+    }
     if (!this.deps.store.getSession(input.sessionId)) {
       throw new ArtifactTransferError('session_not_found', `会话不存在：${input.sessionId}`);
     }
@@ -116,7 +144,7 @@ export class ArtifactTransferManager {
     mkdirSync(tempDir, { recursive: true });
     const tempPath = join(tempDir, transferId);
     closeSync(openSync(tempPath, 'w'));
-    this.transfers.set(transferId, {
+    const transfer: Transfer = {
       transferId,
       operationId: input.operationId,
       sessionId: input.sessionId,
@@ -128,8 +156,25 @@ export class ArtifactTransferManager {
       chunkSize,
       nextOffset: 0,
       tempPath,
-    });
+    };
+    this.transfers.set(transferId, transfer);
     this.byOperation.set(key, transferId);
+    this.deps.store.saveTransfer({
+      tenantId: this.tenant(),
+      transferId,
+      sessionId: input.sessionId,
+      operationId: input.operationId,
+      artifactId,
+      direction: 'upload',
+      name: input.name,
+      mimeType: input.mimeType,
+      size: input.size,
+      sha256: transfer.sha256,
+      chunkSize,
+      nextOffset: 0,
+      tempPath,
+      state: 'uploading',
+    });
     return { transferId, artifactId, nextOffset: 0, chunkSize };
   }
 
@@ -139,7 +184,31 @@ export class ArtifactTransferManager {
     data: string;
     chunkSha256: string;
   }): { nextOffset: number } {
-    const transfer = this.transfers.get(input.transferId);
+    let transfer = this.transfers.get(input.transferId);
+    if (!transfer) {
+      const persisted = this.deps.store.getTransfer(input.transferId, this.tenant());
+      if (
+        persisted?.state === 'uploading' &&
+        persisted.tempPath &&
+        statSync(persisted.tempPath, { throwIfNoEntry: false })
+      ) {
+        transfer = {
+          transferId: persisted.transferId,
+          operationId: persisted.operationId,
+          sessionId: persisted.sessionId,
+          artifactId: persisted.artifactId,
+          name: persisted.name,
+          mimeType: persisted.mimeType,
+          size: persisted.size,
+          sha256: persisted.sha256,
+          chunkSize: persisted.chunkSize,
+          nextOffset: persisted.nextOffset,
+          tempPath: persisted.tempPath,
+        };
+        this.transfers.set(transfer.transferId, transfer);
+        this.byOperation.set(`${transfer.sessionId}:${transfer.operationId}`, transfer.transferId);
+      }
+    }
     if (!transfer) throw new ArtifactTransferError('transfer_not_found', '传输不存在或已结束');
     const bytes = Buffer.from(input.data, 'base64');
     if (this.sha256Bytes(bytes) !== input.chunkSha256.toLowerCase()) {
@@ -161,6 +230,7 @@ export class ArtifactTransferManager {
       closeSync(fd);
     }
     transfer.nextOffset += bytes.length;
+    this.deps.store.updateTransferOffset(transfer.transferId, transfer.nextOffset, this.tenant());
     return { nextOffset: transfer.nextOffset };
   }
 
@@ -308,10 +378,12 @@ export class ArtifactTransferManager {
       });
       this.transfers.delete(transfer.transferId);
       this.byOperation.delete(`${transfer.sessionId}:${transfer.operationId}`);
+      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
       return { committed: true, artifactId: artifact.artifactId, eventSeq: event.eventSeq };
     } catch (error) {
       this.transfers.delete(transfer.transferId);
       this.byOperation.delete(`${transfer.sessionId}:${transfer.operationId}`);
+      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
       rmSync(transfer.tempPath, { force: true });
       throw error;
     }
