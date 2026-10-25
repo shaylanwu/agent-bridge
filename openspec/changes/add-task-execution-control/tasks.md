@@ -11,7 +11,9 @@
 > 本地 `/sessions` 会话 UI（列表/快照/SSE/附件下载）已落地；已具备 native session id 持久化与
 > interactive stdin 管道（resume/steer 的底层）。CodeBuddy ACP 已验证：必须用
 > `--serve --acp --port 0`，且启动前删除继承的 `SERVER__PORT`；`initialize` / `session/new` 成功，
-> `session/prompt` 在本沙箱被平台要求登录（Authentication required），ACP 事件桥待实现。
+> `session/prompt` 在本沙箱被平台要求登录（Authentication required）。已实现 CodeBuddy ACP 客户端
+> （initialize/session/new/session/prompt、permission、fs 读写、取消、超时）与 `CODEBUDDY_AUTH_TOKEN`
+> 显式认证门禁；尚未接入 TaskSupervisor/任务事件桥。
 
 ## 1. 决策、标准与安全边界
 
