@@ -365,6 +365,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       maxQueued: o.maxQueued,
       captureDiff: msg.captureDiff === true || o.captureDiffByDefault,
       diffMaxBytes: o.diffMaxBytes,
+      interactive: msg.allowInteractive === true,
     },
     {
       onLog: (stream, data) => {
@@ -411,6 +412,13 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       },
       onPlan: (items) => {
         o.registry.updatePlan(msg.taskId, items);
+      },
+      onSession: (nativeSessionId) => {
+        try {
+          o.store.updateSession(msg.taskId, { nativeSessionId });
+        } catch (error) {
+          o.log('error', `[agent-bridge] 保存 native session id 失败 ${msg.taskId}：${(error as Error).message}`);
+        }
       },
       onStatus: (status, info) => {
         o.registry.updateStatus(msg.taskId, status, info);

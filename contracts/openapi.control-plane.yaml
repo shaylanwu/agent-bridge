@@ -504,6 +504,7 @@ components:
         phase: { type: string, enum: [queued, running, waiting_interaction, waiting_user, settled] }
         agentType: { type: string }
         cwd: { type: string }
+        nativeSessionId: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         closedAt: { type: string, format: date-time }

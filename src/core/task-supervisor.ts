@@ -43,6 +43,8 @@ export interface RunTaskRequest {
   captureDiff?: boolean;
   /** diff 文本上限（字节）；缺省用 git.ts 的 DEFAULT_DIFF_MAX_BYTES */
   diffMaxBytes?: number;
+  /** 打开 stdin 管道（steer / ACP 交互）；默认 false，保持 v1 行为 */
+  interactive?: boolean;
 }
 
 /** 终态附加信息。diff 三个字段只在 captureDiff 开启时出现 */
@@ -69,12 +71,16 @@ export interface TaskHooks {
   onStep?: (step: ParsedStep & { seq: number }) => void;
   /** 待办计划快照（TodoWrite 类工具；每次调用覆盖，items 为空表示无计划能力/未调用） */
   onPlan?: (items: PlanItem[]) => void;
+  /** CLI 事件里首次出现的原生 session/thread/conversation id */
+  onSession?: (nativeSessionId: string) => void;
 }
 
 export interface TaskHandle {
   taskId: string;
   cancel: () => void;
   done: Promise<TaskStatus>;
+  /** 仅 request.interactive=true 且 stdin 可用时存在；写入一行并返回是否成功 */
+  write?: (line: string) => boolean;
 }
 
 /** 显式状态机：settled 是吸收态 */
@@ -255,7 +261,12 @@ export class TaskSupervisor {
     } else {
       hooks.onStatus('running');
     }
-    return { taskId: entry.req.taskId, cancel: () => this.cancelEntry(entry), done: entry.done };
+    return {
+      taskId: entry.req.taskId,
+      cancel: () => this.cancelEntry(entry),
+      done: entry.done,
+      write: (line: string) => this.writeTo(entry, line),
+    };
   }
 
   /** 提交任务：校验 → 排队或立即启动。返回句柄（可取消、可 await 终态） */
@@ -349,7 +360,18 @@ export class TaskSupervisor {
       taskId: req.taskId,
       cancel: () => this.cancelEntry(entry),
       done,
+      write: (line: string) => this.writeTo(entry, line),
     };
+  }
+
+  private writeTo(entry: Entry, line: string): boolean {
+    const stdin = entry.child?.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) return false;
+    try {
+      return stdin.write(line.endsWith('\n') ? line : `${line}\n`);
+    } catch {
+      return false;
+    }
   }
 
   // ---------- 内部 ----------
@@ -369,19 +391,20 @@ export class TaskSupervisor {
 
     // 子进程环境恒为 bridge 自身进程环境：平台**不能**注入环境变量
     const shim = isWinShim(entry.cmd);
+    const stdinMode = entry.req.interactive ? 'pipe' : 'ignore';
     const child: ChildProcess = shim
       ? spawn(buildWinCommandLine(entry.cmd, entry.argv), {
           cwd: entry.req.cwd,
           env: process.env,
           shell: true,
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: [stdinMode, 'pipe', 'pipe'],
         })
       : spawn(entry.cmd, entry.argv, {
           cwd: entry.req.cwd,
           env: process.env,
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: [stdinMode, 'pipe', 'pipe'],
         });
     entry.child = child;
 
@@ -389,8 +412,18 @@ export class TaskSupervisor {
     const stepParser = entry.stepFormat ? createStepParser(entry.stepFormat) : undefined;
     entry.stepParser = stepParser;
 
+    let nativeSessionSeen = false;
     const emit = (stream: 'stdout' | 'stderr', buf: Buffer): void => {
       const text = buf.toString('utf8');
+      if (!nativeSessionSeen && stream === 'stdout' && entry.hooks.onSession) {
+        const match = /"(?:session_id|thread_id|conversation_id)"\s*:\s*"([A-Za-z0-9._:-]{1,200})"/.exec(
+          text,
+        );
+        if (match?.[1]) {
+          nativeSessionSeen = true;
+          entry.hooks.onSession(match[1]);
+        }
+      }
       for (const piece of chunkLog(text)) entry.hooks.onLog(stream, piece);
       if (stepParser && stream === 'stdout' && entry.hooks.onStep) {
         for (const step of stepParser.feed(text)) {

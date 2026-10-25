@@ -18,7 +18,7 @@ export type TurnStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelle
 export type InteractionKind = 'permission' | 'form' | 'auth-url';
 export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const DEFAULT_TENANT = 'default';
 
 export class SessionStoreError extends Error {
@@ -49,6 +49,8 @@ export interface SessionRecord {
   agentType: string;
   cwd: string;
   permissionMode?: string;
+  /** CLI 原生 session/thread/conversation id（用于展示与后续 resume） */
+  nativeSessionId?: string;
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
@@ -154,6 +156,7 @@ interface SessionRow {
   agent_type: string;
   cwd: string;
   permission_mode: string | null;
+  native_session_id: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
@@ -254,6 +257,7 @@ function toSession(row: SessionRow): SessionRecord {
     agentType: row.agent_type,
     cwd: row.cwd,
     permissionMode: row.permission_mode ?? undefined,
+    nativeSessionId: row.native_session_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at ?? undefined,
@@ -377,6 +381,7 @@ export class SessionStore {
         agent_type TEXT NOT NULL,
         cwd TEXT NOT NULL,
         permission_mode TEXT,
+        native_session_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         closed_at TEXT,
@@ -502,6 +507,12 @@ export class SessionStore {
       );
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
+    // v3 -> v4：老库补列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）
+    const columns = this.db.pragma('table_info(sessions)') as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'native_session_id')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN native_session_id TEXT');
+    }
+    return;
   }
 
   close(): void {
@@ -518,6 +529,7 @@ export class SessionStore {
     agentType: string;
     cwd: string;
     permissionMode?: string;
+    nativeSessionId?: string;
     status?: SessionStatus;
     phase?: SessionPhase;
   }): { session: SessionRecord; created: boolean } {
@@ -539,14 +551,15 @@ export class SessionStore {
       agentType: input.agentType,
       cwd: input.cwd,
       permissionMode: input.permissionMode,
+      nativeSessionId: input.nativeSessionId,
       createdAt: at,
       updatedAt: at,
     };
     this.db
       .prepare(
         `INSERT INTO sessions
-           (tenant_id, session_id, context_id, mode, status, phase, agent_type, cwd, permission_mode, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (tenant_id, session_id, context_id, mode, status, phase, agent_type, cwd, permission_mode, native_session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.tenantId,
@@ -558,6 +571,7 @@ export class SessionStore {
         session.agentType,
         session.cwd,
         session.permissionMode ?? null,
+        session.nativeSessionId ?? null,
         session.createdAt,
         session.updatedAt,
       );
@@ -580,7 +594,9 @@ export class SessionStore {
 
   updateSession(
     sessionId: string,
-    patch: Partial<Pick<SessionRecord, 'status' | 'phase' | 'permissionMode' | 'closedAt'>>,
+    patch: Partial<
+      Pick<SessionRecord, 'status' | 'phase' | 'permissionMode' | 'nativeSessionId' | 'closedAt'>
+    >,
     tenantId = DEFAULT_TENANT,
   ): SessionRecord {
     const current = this.getSession(sessionId, tenantId);
@@ -589,13 +605,14 @@ export class SessionStore {
     this.db
       .prepare(
         `UPDATE sessions
-            SET status = ?, phase = ?, permission_mode = ?, closed_at = ?, updated_at = ?
+            SET status = ?, phase = ?, permission_mode = ?, native_session_id = ?, closed_at = ?, updated_at = ?
           WHERE tenant_id = ? AND session_id = ?`,
       )
       .run(
         next.status,
         next.phase,
         next.permissionMode ?? null,
+        next.nativeSessionId ?? null,
         next.closedAt ?? null,
         next.updatedAt,
         tenantId,

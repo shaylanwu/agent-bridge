@@ -330,6 +330,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
       "phase": "queued",
       "agentType": "string",
       "cwd": "string",
+      "nativeSessionId": "string",
       "createdAt": "string",
       "updatedAt": "string",
       "closedAt": "string"
@@ -381,6 +382,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
     "phase": "queued",
     "agentType": "string",
     "cwd": "string",
+    "nativeSessionId": "string",
     "createdAt": "string",
     "updatedAt": "string",
     "closedAt": "string"

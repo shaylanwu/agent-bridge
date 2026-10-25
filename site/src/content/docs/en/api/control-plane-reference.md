@@ -326,6 +326,7 @@ The only route that needs no token — safe for container and CI probes.
       "phase": "queued",
       "agentType": "string",
       "cwd": "string",
+      "nativeSessionId": "string",
       "createdAt": "string",
       "updatedAt": "string",
       "closedAt": "string"
@@ -377,6 +378,7 @@ The only route that needs no token — safe for container and CI probes.
     "phase": "queued",
     "agentType": "string",
     "cwd": "string",
+    "nativeSessionId": "string",
     "createdAt": "string",
     "updatedAt": "string",
     "closedAt": "string"

@@ -42,6 +42,14 @@ describe('SessionStore', () => {
     expect(again.session.contextId).toBe(created.session.contextId);
   });
 
+  it('持久化 native session id，供 resume/展示', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_native', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
+    store.updateSession('bt_native', { nativeSessionId: 'sess_abc123' });
+    expect(store.getSession('bt_native')?.nativeSessionId).toBe('sess_abc123');
+    expect(store.snapshot('bt_native').session.nativeSessionId).toBe('sess_abc123');
+  });
+
   it('eventSeq 单调递增且重复事件幂等', () => {
     const store = open();
     store.createSession({ sessionId: 'bt_2', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });

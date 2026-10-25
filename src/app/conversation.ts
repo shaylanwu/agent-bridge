@@ -213,6 +213,13 @@ export function startConversationTurn(
       });
     },
     onPlan: (items) => deps.registry.updatePlan(sessionId, items),
+    onSession: (nativeSessionId) => {
+      try {
+        deps.store.updateSession(sessionId, { nativeSessionId });
+      } catch (error) {
+        deps.log('error', `[agent-bridge] 保存 native session id 失败 ${sessionId}：${(error as Error).message}`);
+      }
+    },
     onStatus,
   };
 
