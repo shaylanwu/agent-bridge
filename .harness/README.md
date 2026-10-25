@@ -73,7 +73,8 @@
    文档宣称 `allowed_cwd` 可用），不是通用模板；
 3. **两套流程只留一套留痕**：superpowers 的 `writing-plans` 产出直接落进 `openspec/changes/<id>/tasks.md`，不另开 plan.md；
 4. **警告不装绿灯**：协议边界检查把「平台 env 直接并入子进程」「无并发上限」列为 ⚠️ 警告而不是通过 —— 已知缺陷要一直可见；
-5. **贴合现状**：11 个适配器、4 KB 分片、15s 心跳、1s→30s 退避、0600 配置，全部来自真实代码。
+5. **贴合现状**：12 个适配器、4 KB 分片、15s 心跳、1s→30s 退避、0600 配置，全部来自真实代码；
+   1.0.0 起按 Session/Turn + 协议 v1 维护护栏（见 `openspec/changes/add-task-execution-control/`）。
 
 ## 快速命令
 

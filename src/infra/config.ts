@@ -158,6 +158,15 @@ export function stateDir(): string {
   return dirname(configPath());
 }
 
+/**
+ * Session/Turn/Event SQLite 路径。
+ * 默认与配置同目录；`AGENT_BRIDGE_STATE_DB` 仅供测试/运维显式覆盖。
+ */
+export function stateDbPath(): string {
+  const override = process.env['AGENT_BRIDGE_STATE_DB']?.trim();
+  return override ? override : join(stateDir(), 'state.db');
+}
+
 export function configPath(): string {
   if (process.env.AGENT_BRIDGE_CONFIG) return process.env.AGENT_BRIDGE_CONFIG;
   // 三处口径必须一致（README / CHANGELOG / 本文件）：目录名统一 `.agent-bridge`

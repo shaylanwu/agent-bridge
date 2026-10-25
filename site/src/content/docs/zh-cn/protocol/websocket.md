@@ -21,7 +21,7 @@ socket 一打开，设备立即发 `hello`：
 ```json
 {
   "type": "hello",
-  "protocolVersion": 2,
+  "protocolVersion": 1,
   "deviceId": "bd_001122334455",
   "cliVersion": "0.2.3",
   "platform": "darwin",

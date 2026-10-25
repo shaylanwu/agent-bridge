@@ -1,6 +1,8 @@
 # 实施清单：add-task-execution-control
 
-> 状态：方案已于 2026-10-25 人工确认，作为 1.0.0 实施基线。分阶段实施；产品代码尚未开始修改。
+> 状态：方案已于 2026-10-25 人工确认，作为 1.0.0 实施基线。分阶段实施。
+> Phase 1 切片（2026-10-25）：包/协议版本 v1、better-sqlite3、SessionStore（事件幂等/快照/tombstone）、
+> stateDbPath、harness/e2e 版本对齐；未接执行路径与新增 wire 消息。
 
 ## 1. 决策、标准与安全边界
 

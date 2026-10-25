@@ -75,8 +75,8 @@ wss.on('connection', (ws, req) => {
 
     if (m.type === 'hello') {
       record(
-        'hello.protocolVersion = 2 且 deviceId 与 URL query 一致',
-        m.protocolVersion === 2 && m.deviceId === urlDeviceId,
+        'hello.protocolVersion = 1 且 deviceId 与 URL query 一致',
+        m.protocolVersion === 1 && m.deviceId === urlDeviceId,
         `protocolVersion=${m.protocolVersion}, deviceId=${JSON.stringify(m.deviceId)}`,
       );
       ws.send(JSON.stringify({ type: 'ping', at: Date.now() }));

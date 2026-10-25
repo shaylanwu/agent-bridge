@@ -48,7 +48,7 @@ sidebar:
 
 生产环境里真正会踩到的规则：
 
-- **校验协议 v2 身份**：`hello.protocolVersion` 为 `2`；非空 `deviceId` 匹配
+- **校验协议 v1 身份**：`hello.protocolVersion` 为 `1`；非空 `deviceId` 匹配
   `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`，且必须等于 WS URL query。没有空 ID / Bearer 反查降级；
 - **按 `capabilities` 降级，不要按版本号猜。** 没有 `diff` 就别要 diff，也别渲染 diff 面板；
 - **按 `errorCode` 分支，不要按文案。** 见[协议总览](/agent-bridge/zh-cn/protocol/overview#受控错误码)里的 15 个码；

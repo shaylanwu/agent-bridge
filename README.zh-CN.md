@@ -243,7 +243,7 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 | 协议 | 握手要求 | bridge 发布版本 |
 | --- | --- | --- |
-| **v2** | `PROTOCOL_VERSION = 2`（`hello.protocolVersion = 2`）；`deviceId` 为非空稳定 ID，且与 WS URL query 同值 | **下一 major：`≥1.0.0`**（当前包为 `0.2.3`；实际发布版本由 semantic-release 决定） |
+| **v1** | `PROTOCOL_VERSION = 1`（`hello.protocolVersion = 1`）；`deviceId` 为非空稳定 ID，且与 WS URL query 同值 | **1.0.0**（Session/Turn gateway 基线） |
 
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |

@@ -21,7 +21,7 @@ Sent immediately after the WebSocket opens. The platform must implement the hand
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `string` = `hello` | ✓ |  |
-| `protocolVersion` | `integer` = `2` | ✓ |  |
+| `protocolVersion` | `integer` = `1` | ✓ |  |
 | `deviceId` | `string` | ✓ |  |
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
@@ -34,7 +34,7 @@ Sent immediately after the WebSocket opens. The platform must implement the hand
 ```json
 {
   "type": "hello",
-  "protocolVersion": 2,
+  "protocolVersion": 1,
   "deviceId": "bd_001122334455",
   "cliVersion": "string",
   "platform": "win32",

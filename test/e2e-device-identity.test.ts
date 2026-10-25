@@ -293,7 +293,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
       redirectUri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/callback$/),
     });
     expectCommonAuthFields(firstRequest, deviceId);
-    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 1, deviceId });
     expect(new URL(context.platform.connections[0]!.url, 'http://127.0.0.1').searchParams.get('deviceId')).toBe(deviceId);
     const identityAfterCreate = await readIdentity();
     const firstConfig = await readConfig();
@@ -304,7 +304,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
     const restarted = connect();
     await waitFor(() => expect(context.platform.hellos).toHaveLength(2));
     expect(context.platform.at('/api/bridge/token')).toHaveLength(1);
-    expect(context.platform.hellos[1]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(context.platform.hellos[1]).toMatchObject({ protocolVersion: 1, deviceId });
     expect(await readIdentity()).toBe(identityAfterCreate);
     expect(await readConfig()).toMatchObject({ deviceId, deviceToken: 'fake-pkce-token-1' });
     await restarted.stop();
@@ -325,7 +325,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
       expect(request.body.device_code).toBe('fake-device-code');
       expectCommonAuthFields(request.body, deviceId);
     }
-    expect(context.platform.hellos[2]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(context.platform.hellos[2]).toMatchObject({ protocolVersion: 1, deviceId });
     expect(await readIdentity()).toBe(identityAfterCreate);
     expect(await readConfig()).toMatchObject({ deviceId, deviceToken: 'fake-device-token-1' });
     for (const child of [first, restarted, logout, rebound]) expectNoPseudoSecretsInErrors(child);
@@ -351,7 +351,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
     const deviceId = String(requests[0]!.body.deviceId);
     expect(requests[1]!.body.deviceId).toBe(deviceId);
     expectCommonAuthFields(requests[1]!.body, deviceId);
-    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 1, deviceId });
     expect(await readIdentity()).toBe(identityAfterFailure);
     await retried.stop();
   }, TEST_TIMEOUT);
@@ -383,7 +383,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
     expect(requests[1]!.body.code).not.toBe(firstRequest.code);
     expect(requests[1]!.body.codeVerifier).not.toBe(firstRequest.codeVerifier);
     expect(requests[1]!.body.deviceId).toBe(firstRequest.deviceId);
-    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 2, deviceId: firstRequest.deviceId });
+    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 1, deviceId: firstRequest.deviceId });
     expect(await readIdentity()).toBe(identityBeforeCrash);
     expect(await readConfig()).toMatchObject({ deviceId: firstRequest.deviceId });
     await retried.stop();
@@ -409,7 +409,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
     releaseGate();
     await waitFor(() => expect(context.platform.hellos).toHaveLength(1));
     const deviceId = String(context.platform.at('/api/bridge/token')[0]!.body.deviceId);
-    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(context.platform.hellos[0]).toMatchObject({ protocolVersion: 1, deviceId });
     expect(await readIdentity()).toBe(identityWhileLocked);
     expect(await readConfig()).toMatchObject({ deviceId, deviceToken: 'fake-pkce-token-1' });
     expectNoPseudoSecretsInErrors(second);
@@ -429,7 +429,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
     expect(newConnection!.authorization).toBe(oldConnection!.authorization);
     const deviceId = String(context.platform.hellos[0]!.deviceId);
     expect(deviceId).toMatch(/^bd_[0-9a-f]{32}$/);
-    expect(context.platform.hellos[1]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(context.platform.hellos[1]).toMatchObject({ protocolVersion: 1, deviceId });
     expect(new URL(newConnection!.url, 'http://127.0.0.1').searchParams.get('deviceId')).toBe(deviceId);
     expect(context.platform.at('/api/bridge/token')).toHaveLength(1);
 

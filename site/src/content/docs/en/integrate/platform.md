@@ -54,7 +54,7 @@ Field-level reference: [Protocol messages](/agent-bridge/en/protocol/messages).
 
 Rules that bite in production:
 
-- **Require protocol v2 identity.** `hello.protocolVersion` is `2`; its non-empty `deviceId` matches
+- **Require protocol v1 identity.** `hello.protocolVersion` is `1`; its non-empty `deviceId` matches
   `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$` and must equal the WS URL query. There is no empty-ID/Bearer
   reverse-lookup fallback.
 - **Degrade on `capabilities`, not on version numbers.** If `diff` is absent, never ask for it and

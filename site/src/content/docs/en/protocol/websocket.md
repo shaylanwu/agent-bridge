@@ -24,7 +24,7 @@ As soon as the socket opens, the device sends `hello`:
 ```json
 {
   "type": "hello",
-  "protocolVersion": 2,
+  "protocolVersion": 1,
   "deviceId": "bd_001122334455",
   "cliVersion": "0.2.3",
   "platform": "darwin",

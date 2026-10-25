@@ -7,7 +7,7 @@
  * Direction: bridge → platform uses `ClientMessage`; platform → bridge uses `ServerMessage`.
  */
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 1;
 
 /**
  * 能力协商清单（hello.capabilities）

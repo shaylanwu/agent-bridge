@@ -28,7 +28,7 @@ node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs
 | # | 断言 |
 | --- | --- |
 | 1 | WS 升级携带 `Authorization: Bearer` 才放行 |
-| 2 | `hello.protocolVersion === 2`，且 WS `deviceId` query 与 `hello.deviceId` 相同 |
+| 2 | `hello.protocolVersion === 1`，且 WS `deviceId` query 与 `hello.deviceId` 相同 |
 | 3 | `ping` → `pong` 往返 |
 | 4 | `agent_list` 上报数量与适配器注册表一致（当前 12 个） |
 | 5 | `scan` → `scan_result` 且 `requestId` 配对 |

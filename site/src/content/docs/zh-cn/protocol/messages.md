@@ -21,7 +21,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string` = `hello` | ✓ |  |
-| `protocolVersion` | `integer` = `2` | ✓ |  |
+| `protocolVersion` | `integer` = `1` | ✓ |  |
 | `deviceId` | `string` | ✓ | 本地持久化的稳定身份；必须与 WS URL 的 `deviceId` query 完全相等，不允许空 ID 或仅凭 Bearer 反查 |
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
@@ -34,7 +34,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 ```json
 {
   "type": "hello",
-  "protocolVersion": 2,
+  "protocolVersion": 1,
   "deviceId": "bd_001122334455",
   "cliVersion": "string",
   "platform": "win32",

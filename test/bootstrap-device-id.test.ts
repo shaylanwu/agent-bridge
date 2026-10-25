@@ -378,14 +378,14 @@ describe('协议 v2、WS 与帮助文本', () => {
       protocolVersion: PROTOCOL_VERSION,
       deviceId,
     });
-    expect(PROTOCOL_VERSION).toBe(2);
+    expect(PROTOCOL_VERSION).toBe(1);
 
     wsMock.instances[0]?.emit('close', 1006, Buffer.from('lost'));
     await vi.advanceTimersByTimeAsync(1000);
     expect(wsMock.instances).toHaveLength(2);
     wsMock.instances[1]?.open();
     expect(wsMock.instances[1]?.url).toBe(wsUrlOf(PLATFORM, deviceId));
-    expect(wsMock.instances[1]?.sent[0]).toMatchObject({ protocolVersion: 2, deviceId });
+    expect(wsMock.instances[1]?.sent[0]).toMatchObject({ protocolVersion: 1, deviceId });
     client.close();
   });
 

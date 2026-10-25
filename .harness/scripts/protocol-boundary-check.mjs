@@ -56,7 +56,9 @@ for (const { label, re } of DECLS) {
 
 for (const f of files) {
   // ---------- 2. 禁止 shell 字符串执行 ----------
-  if (/\b(execSync|exec)\(/.test(f.bare) && !/execFileSync/.test(f.bare)) {
+  // better-sqlite3 的 db.exec("CREATE TABLE …") 是 SQL 执行，不是 shell；
+  // 只豁免「db.exec(」这一精确形态，child_process.exec / cp.exec 仍会被拦截。
+  if (/(?<!db\.)\b(execSync|exec)\(/.test(f.bare) && !/execFileSync/.test(f.bare)) {
     fail(`${f.rel} 使用 exec/execSync（shell 字符串），必须用 execFileSync/spawn + 参数数组`);
   }
   if (/require\(['"]child_process['"]\)/.test(f.bare) && /\bexec\(/.test(f.bare)) {

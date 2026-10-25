@@ -268,7 +268,7 @@ Protocol (JSON over one connection):
 
 | Protocol | Handshake | Bridge release |
 | --- | --- | --- |
-| **v2** | `PROTOCOL_VERSION = 2` (`hello.protocolVersion = 2`); `deviceId` is a non-empty stable ID matching the WS URL query | **Next major: `≥1.0.0`** (current package: `0.2.3`; semantic-release determines the exact release) |
+| **v1** | `PROTOCOL_VERSION = 1` (`hello.protocolVersion = 1`); `deviceId` is a non-empty stable ID matching the WS URL query | **1.0.0** (Session/Turn gateway baseline) |
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |

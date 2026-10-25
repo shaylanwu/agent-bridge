@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { clearConfig, loadConfig, saveConfig, type BoundBridgeConfig } from '../src/infra/config.js';
+import { clearConfig, loadConfig, saveConfig, stateDbPath, type BoundBridgeConfig } from '../src/infra/config.js';
 
 const DEVICE_ID = 'bd_0123456789abcdef0123456789abcdef';
 
@@ -31,6 +31,20 @@ function boundConfig(overrides: Partial<BoundBridgeConfig> = {}): BoundBridgeCon
     ...overrides,
   };
 }
+
+describe('状态库路径', () => {
+  it('默认与配置同目录，可由环境变量覆盖', () => {
+    expect(stateDbPath()).toBe(join(stateDir, 'state.db'));
+    const previous = process.env['AGENT_BRIDGE_STATE_DB'];
+    process.env['AGENT_BRIDGE_STATE_DB'] = join(stateDir, 'custom.db');
+    try {
+      expect(stateDbPath()).toBe(join(stateDir, 'custom.db'));
+    } finally {
+      if (previous === undefined) delete process.env['AGENT_BRIDGE_STATE_DB'];
+      else process.env['AGENT_BRIDGE_STATE_DB'] = previous;
+    }
+  });
+});
 
 describe('严格配置读取', () => {
   it('仅文件不存在时返回 null', async () => {
