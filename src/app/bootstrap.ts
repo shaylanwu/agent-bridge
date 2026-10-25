@@ -136,7 +136,6 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
   if (recovered > 0) {
     log('info', `[agent-bridge] 已恢复 ${recovered} 个上次中断的会话（未自动重放副作用）`);
   }
-
   let session: BridgeSession;
   try {
     session = createSession({
@@ -153,6 +152,7 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
       requireServiceToken: saved.requireServiceToken === true,
       registry: new TaskRegistry(),
       store,
+      artifactRootDir: join(stateDir(), 'artifacts'),
       log,
     });
   } catch (error) {

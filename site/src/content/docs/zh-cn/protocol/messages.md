@@ -26,7 +26,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -380,6 +380,124 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 ```
 
 
+<a id="msg-task_artifact"></a>
+
+### task_artifact — 入站附件已提交
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_artifact` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `name` | `string` | ✓ |  |
+| `mimeType` | `string` | ✓ |  |
+| `size` | `integer` | ✓ |  |
+| `sha256` | `string` | ✓ |  |
+| `kind` | `string` | ✓ |  |
+| `eventSeq` | `integer` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "task_artifact",
+  "taskId": "string",
+  "artifactId": "string",
+  "name": "string",
+  "mimeType": "string",
+  "size": 1,
+  "sha256": "string",
+  "kind": "string"
+}
+```
+
+
+<a id="msg-artifact_upload_ready"></a>
+
+### artifact_upload_ready — 上传就绪
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_upload_ready` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `nextOffset` | `integer` | ✓ |  |
+| `chunkSize` | `integer` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_upload_ready",
+  "transferId": "string",
+  "artifactId": "string",
+  "nextOffset": 1,
+  "chunkSize": 1
+}
+```
+
+
+<a id="msg-artifact_upload_chunk_ack"></a>
+
+### artifact_upload_chunk_ack — 上传 chunk 确认
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_upload_chunk_ack` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `nextOffset` | `integer` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_upload_chunk_ack",
+  "transferId": "string",
+  "nextOffset": 1
+}
+```
+
+
+<a id="msg-artifact_upload_result"></a>
+
+### artifact_upload_result — 上传结果
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_upload_result` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `status` | `committed` \| `failed` | ✓ |  |
+| `artifactId` | `string` |  |  |
+| `sha256` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+| `errorCode` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_upload_result",
+  "transferId": "string",
+  "status": "committed",
+  "artifactId": "string",
+  "sha256": "string",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-task_interaction_request"></a>
 
 ### task_interaction_request — 交互请求
@@ -652,6 +770,99 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"
+}
+```
+
+
+<a id="msg-artifact_upload_start"></a>
+
+### artifact_upload_start — 启动附件上传
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_upload_start` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `name` | `string` | ✓ |  |
+| `mimeType` | `string` | ✓ |  |
+| `size` | `integer` | ✓ |  |
+| `sha256` | `string` | ✓ |  |
+| `chunkSize` | `integer` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_upload_start",
+  "taskId": "string",
+  "operationId": "string",
+  "name": "string",
+  "mimeType": "string",
+  "size": 1,
+  "sha256": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-artifact_upload_chunk"></a>
+
+### artifact_upload_chunk — 上传附件 chunk
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_upload_chunk` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `offset` | `integer` | ✓ |  |
+| `data` | `string` | ✓ | base64 |
+| `chunkSha256` | `string` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_upload_chunk",
+  "transferId": "string",
+  "offset": 1,
+  "data": "string",
+  "chunkSha256": "string"
+}
+```
+
+
+<a id="msg-artifact_upload_complete"></a>
+
+### artifact_upload_complete — 完成附件上传
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_upload_complete` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `size` | `integer` | ✓ |  |
+| `sha256` | `string` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_upload_complete",
+  "transferId": "string",
+  "size": 1,
+  "sha256": "string"
 }
 ```
 

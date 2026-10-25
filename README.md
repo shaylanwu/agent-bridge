@@ -272,8 +272,8 @@ Protocol (JSON over one connection):
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_snapshot`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `capacity_update`, `pong` |
-| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `capacity_update`, `pong` |
+| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
 
 ### Capability negotiation (`hello.capabilities`)
 
@@ -294,6 +294,7 @@ should degrade on this list rather than guessing from a CLI version:
 | `session-control`| Supports `close_session` / `cancel_turn` with `session_ack`                                  |
 | `session-multi-turn` | Supports `send_message` / `message_ack`; conversation stays in waiting_user between turns |
 | `task-interaction` | Permission/Form/URL requests, responses, results and expiry |
+| `artifact-upload` | Inbound chunked upload with SHA-256, CAS and task_artifact |
 
 ### Step stream (`task_step`)
 

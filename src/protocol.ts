@@ -28,6 +28,7 @@ export const PROTOCOL_CAPABILITIES = [
   'session-control',
   'session-multi-turn',
   'task-interaction',
+  'artifact-upload',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -200,6 +201,39 @@ export type ClientMessage =
       eventSeq?: number;
     }
   | {
+      /** 入站附件已提交 */
+      type: 'task_artifact';
+      taskId: string;
+      artifactId: string;
+      name: string;
+      mimeType: string;
+      size: number;
+      sha256: string;
+      kind: string;
+      eventSeq?: number;
+    }
+  | {
+      type: 'artifact_upload_ready';
+      transferId: string;
+      artifactId: string;
+      nextOffset: number;
+      chunkSize: number;
+    }
+  | {
+      type: 'artifact_upload_chunk_ack';
+      transferId: string;
+      nextOffset: number;
+    }
+  | {
+      type: 'artifact_upload_result';
+      transferId: string;
+      status: 'committed' | 'failed';
+      artifactId?: string;
+      sha256?: string;
+      eventSeq?: number;
+      errorCode?: string;
+    }
+  | {
       /** 交互回复结果（bridge → 平台） */
       type: 'task_interaction_result';
       taskId: string;
@@ -326,6 +360,32 @@ export interface InteractionResponseCommand extends ServiceIdentity {
   respondedBy?: string;
 }
 
+export interface ArtifactUploadStartCommand extends ServiceIdentity {
+  type: 'artifact_upload_start';
+  taskId: string;
+  operationId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  chunkSize?: number;
+}
+
+export interface ArtifactUploadChunkCommand {
+  type: 'artifact_upload_chunk';
+  transferId: string;
+  offset: number;
+  data: string;
+  chunkSha256: string;
+}
+
+export interface ArtifactUploadCompleteCommand {
+  type: 'artifact_upload_complete';
+  transferId: string;
+  size: number;
+  sha256: string;
+}
+
 export interface GetTaskCommand extends ServiceIdentity {
   type: 'get_task';
   taskId: string;
@@ -345,7 +405,10 @@ export type ServerMessage =
   | CloseSessionCommand
   | CancelTurnCommand
   | SendMessageCommand
-  | InteractionResponseCommand;
+  | InteractionResponseCommand
+  | ArtifactUploadStartCommand
+  | ArtifactUploadChunkCommand
+  | ArtifactUploadCompleteCommand;
 
 export class ProtocolError extends Error {}
 
@@ -404,6 +467,65 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'artifact_upload_start') {
+    for (const key of ['taskId', 'operationId', 'name', 'mimeType', 'sha256'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`artifact_upload_start 缺少 ${key}`);
+      }
+    }
+    if (typeof msg['size'] !== 'number' || !Number.isFinite(msg['size']) || msg['size'] < 0) {
+      throw new ProtocolError('artifact_upload_start.size 非法');
+    }
+    return {
+      type: 'artifact_upload_start',
+      taskId: String(msg['taskId']),
+      operationId: String(msg['operationId']),
+      name: String(msg['name']),
+      mimeType: String(msg['mimeType']),
+      size: Math.floor(msg['size'] as number),
+      sha256: String(msg['sha256']),
+      chunkSize:
+        typeof msg['chunkSize'] === 'number' && msg['chunkSize'] > 0
+          ? Math.floor(msg['chunkSize'])
+          : undefined,
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
+  }
+  if (type === 'artifact_upload_chunk') {
+    for (const key of ['transferId', 'data', 'chunkSha256'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`artifact_upload_chunk 缺少 ${key}`);
+      }
+    }
+    if (typeof msg['offset'] !== 'number' || !Number.isFinite(msg['offset']) || msg['offset'] < 0) {
+      throw new ProtocolError('artifact_upload_chunk.offset 非法');
+    }
+    return {
+      type: 'artifact_upload_chunk',
+      transferId: String(msg['transferId']),
+      offset: Math.floor(msg['offset'] as number),
+      data: String(msg['data']),
+      chunkSha256: String(msg['chunkSha256']),
+    };
+  }
+  if (type === 'artifact_upload_complete') {
+    for (const key of ['transferId', 'sha256'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`artifact_upload_complete 缺少 ${key}`);
+      }
+    }
+    if (typeof msg['size'] !== 'number' || !Number.isFinite(msg['size']) || msg['size'] < 0) {
+      throw new ProtocolError('artifact_upload_complete.size 非法');
+    }
+    return {
+      type: 'artifact_upload_complete',
+      transferId: String(msg['transferId']),
+      size: Math.floor(msg['size'] as number),
+      sha256: String(msg['sha256']),
+    };
   }
   if (type === 'task_interaction_response') {
     for (const key of ['taskId', 'requestId', 'responseId'] as const) {

@@ -24,7 +24,9 @@ import {
   dispatchRunTask,
 } from './task-dispatch.js';
 import { dispatchConversationMessage } from './conversation.js';
+import { authorizeService } from './service-gate.js';
 import type { SessionStore } from '../core/session-store.js';
+import { ArtifactTransferManager } from '../core/artifact-transfer.js';
 
 export interface SessionOptions {
   platformUrl: string;
@@ -43,6 +45,8 @@ export interface SessionOptions {
   registry: TaskRegistry;
   /** 持久 Session/Turn/Event 权威源；由 bootstrap 创建并在 close 时关闭 */
   store: SessionStore;
+  /** 入站附件 CAS 根目录 */
+  artifactRootDir: string;
   log: SessionLog;
 }
 
@@ -66,6 +70,11 @@ export function createSession(opts: SessionOptions): BridgeSession {
   // client 的 onOpen/onMessage 里要用到 emitter，而 emitter 又要用到 client.send ——
   // 互相依赖只能在"连接建立后才会回调"这个前提下用后赋值解决（与实现顺序无关，回调天然晚于同步构造）
   let emitter: Emitter | undefined;
+  const artifacts = new ArtifactTransferManager({
+    store: opts.store,
+    emit: (msg) => emitter?.emit(msg),
+    rootDir: opts.artifactRootDir,
+  });
 
   const now = (): string => new Date().toISOString();
 
@@ -137,6 +146,69 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (msg.type === 'task_interaction_response') {
         dispatchInteractionResponse(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'artifact_upload_start') {
+        const gate = authorizeService(
+          msg,
+          'run_task',
+          msg.taskId,
+          'task:create',
+          opts.requireServiceToken,
+        );
+        if (!gate.ok) {
+          opts.log('error', `[agent-bridge] 拒绝附件上传 ${msg.taskId}：${gate.message}`);
+          return;
+        }
+        try {
+          const ready = artifacts.startUpload({
+            sessionId: msg.taskId,
+            operationId: msg.operationId,
+            name: msg.name,
+            mimeType: msg.mimeType,
+            size: msg.size,
+            sha256: msg.sha256,
+            chunkSize: msg.chunkSize,
+          });
+          emitter.emit({ type: 'artifact_upload_ready', ...ready });
+        } catch (error) {
+          opts.log('error', `[agent-bridge] 附件上传启动失败：${(error as Error).message}`);
+        }
+        return;
+      }
+      if (msg.type === 'artifact_upload_chunk') {
+        try {
+          const ack = artifacts.writeChunk(msg);
+          emitter.emit({ type: 'artifact_upload_chunk_ack', transferId: msg.transferId, ...ack });
+        } catch (error) {
+          emitter.emit({
+            type: 'artifact_upload_result',
+            transferId: msg.transferId,
+            status: 'failed',
+            errorCode: (error as { code?: string }).code ?? 'artifact_upload_failed',
+          });
+        }
+        return;
+      }
+      if (msg.type === 'artifact_upload_complete') {
+        try {
+          const result = artifacts.completeUpload(msg);
+          emitter.emit({
+            type: 'artifact_upload_result',
+            transferId: msg.transferId,
+            status: 'committed',
+            artifactId: result.artifactId,
+            sha256: msg.sha256,
+            eventSeq: result.eventSeq,
+          });
+        } catch (error) {
+          emitter.emit({
+            type: 'artifact_upload_result',
+            transferId: msg.transferId,
+            status: 'failed',
+            errorCode: (error as { code?: string }).code ?? 'artifact_upload_failed',
+          });
+        }
         return;
       }
       if (msg.type === 'scan') {

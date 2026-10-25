@@ -53,7 +53,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload。
               items: { type: string }
             capacity:
               type: object
@@ -230,6 +230,58 @@ channels:
             oldestEventSeq: { type: integer }
             latestEventSeq: { type: integer }
             errorCode: { type: string }
+      task_artifact:
+        name: task_artifact
+        title: 入站附件已提交
+        payload:
+          type: object
+          required: [type, taskId, artifactId, name, mimeType, size, sha256, kind]
+          properties:
+            type: { type: string, const: task_artifact }
+            taskId: { type: string }
+            artifactId: { type: string }
+            name: { type: string }
+            mimeType: { type: string }
+            size: { type: integer, minimum: 0 }
+            sha256: { type: string }
+            kind: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
+      artifact_upload_ready:
+        name: artifact_upload_ready
+        title: 上传就绪
+        payload:
+          type: object
+          required: [type, transferId, artifactId, nextOffset, chunkSize]
+          properties:
+            type: { type: string, const: artifact_upload_ready }
+            transferId: { type: string }
+            artifactId: { type: string }
+            nextOffset: { type: integer, minimum: 0 }
+            chunkSize: { type: integer, minimum: 1 }
+      artifact_upload_chunk_ack:
+        name: artifact_upload_chunk_ack
+        title: 上传 chunk 确认
+        payload:
+          type: object
+          required: [type, transferId, nextOffset]
+          properties:
+            type: { type: string, const: artifact_upload_chunk_ack }
+            transferId: { type: string }
+            nextOffset: { type: integer, minimum: 0 }
+      artifact_upload_result:
+        name: artifact_upload_result
+        title: 上传结果
+        payload:
+          type: object
+          required: [type, transferId, status]
+          properties:
+            type: { type: string, const: artifact_upload_result }
+            transferId: { type: string }
+            status: { type: string, enum: [committed, failed] }
+            artifactId: { type: string }
+            sha256: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
+            errorCode: { type: string }
       task_interaction_request:
         name: task_interaction_request
         title: 交互请求
@@ -364,6 +416,47 @@ channels:
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64 }
             serviceToken: { type: string, maxLength: 256 }
+      artifact_upload_start:
+        name: artifact_upload_start
+        title: 启动附件上传
+        payload:
+          type: object
+          required: [type, taskId, operationId, name, mimeType, size, sha256]
+          properties:
+            type: { type: string, const: artifact_upload_start }
+            taskId: { type: string }
+            operationId: { type: string }
+            name: { type: string }
+            mimeType: { type: string }
+            size: { type: integer, minimum: 0 }
+            sha256: { type: string }
+            chunkSize: { type: integer, minimum: 1, maximum: 1048576 }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
+      artifact_upload_chunk:
+        name: artifact_upload_chunk
+        title: 上传附件 chunk
+        payload:
+          type: object
+          required: [type, transferId, offset, data, chunkSha256]
+          properties:
+            type: { type: string, const: artifact_upload_chunk }
+            transferId: { type: string }
+            offset: { type: integer, minimum: 0 }
+            data: { type: string, description: base64 }
+            chunkSha256: { type: string }
+      artifact_upload_complete:
+        name: artifact_upload_complete
+        title: 完成附件上传
+        payload:
+          type: object
+          required: [type, transferId, size, sha256]
+          properties:
+            type: { type: string, const: artifact_upload_complete }
+            transferId: { type: string }
+            size: { type: integer, minimum: 0 }
+            sha256: { type: string }
       task_interaction_response:
         name: task_interaction_response
         title: 回复交互
@@ -467,11 +560,15 @@ operations:
       - $ref: '#/channels/upstream/messages/task_status'
       - $ref: '#/channels/upstream/messages/task_step'
       - $ref: '#/channels/upstream/messages/task_message'
+      - $ref: '#/channels/upstream/messages/task_artifact'
       - $ref: '#/channels/upstream/messages/task_snapshot'
       - $ref: '#/channels/upstream/messages/session_ack'
       - $ref: '#/channels/upstream/messages/message_ack'
       - $ref: '#/channels/upstream/messages/task_interaction_request'
       - $ref: '#/channels/upstream/messages/task_interaction_result'
+      - $ref: '#/channels/upstream/messages/artifact_upload_ready'
+      - $ref: '#/channels/upstream/messages/artifact_upload_chunk_ack'
+      - $ref: '#/channels/upstream/messages/artifact_upload_result'
       - $ref: '#/channels/upstream/messages/pong'
   onDownstream:
     title: 平台下发指令
@@ -481,6 +578,9 @@ operations:
       - $ref: '#/channels/downstream/messages/run_task'
       - $ref: '#/channels/downstream/messages/send_message'
       - $ref: '#/channels/downstream/messages/task_interaction_response'
+      - $ref: '#/channels/downstream/messages/artifact_upload_start'
+      - $ref: '#/channels/downstream/messages/artifact_upload_chunk'
+      - $ref: '#/channels/downstream/messages/artifact_upload_complete'
       - $ref: '#/channels/downstream/messages/cancel_task'
       - $ref: '#/channels/downstream/messages/close_session'
       - $ref: '#/channels/downstream/messages/cancel_turn'
