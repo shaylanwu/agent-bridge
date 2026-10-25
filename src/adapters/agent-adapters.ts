@@ -188,6 +188,7 @@ export const AGENTS: AgentDef[] = [
     // 非交互是 --single，streaming-messages-json 输出与 claude 同构（实测 init/result 骨架）
     taskArgs: ['--single', '{{prompt}}', '--output-format', 'streaming-messages-json'],
     steps: 'claude-json',
+    acp: { command: 'grok', args: ['agent', 'stdio'], authMethod: 'cached_token' },
     credential: {
       envKey: 'XAI_API_KEY',
       envs: ['XAI_API_KEY', 'GROK_API_KEY'],

@@ -14,13 +14,14 @@ describe('CodeBuddy ACP adapter', () => {
     expect(codebuddyAcpArgs()).toEqual(['--serve', '--acp', '--port', '0']);
   });
 
-  it('能力矩阵：7 个工具声明原生 ACP', () => {
+  it('能力矩阵：8 个工具声明原生 ACP', () => {
     const acpAgents = AGENTS.filter((agent) => agent.acp).map((agent) => agent.kind);
     expect(acpAgents).toEqual([
       'codebuddy-cli',
       'gemini',
       'opencode',
       'mimo-code',
+      'grok-cli',
       'kimi-code',
       'minimax-code',
       'trae-cli',

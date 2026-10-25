@@ -85,6 +85,8 @@ export interface AcpAgentSpec {
   args: string[];
   /** 该 ACP 入口要求的环境变量（如 CodeBuddy 的 CODEBUDDY_AUTH_TOKEN） */
   authEnv?: string;
+  /** ACP authenticate methodId（如 Grok 的 cached_token） */
+  authMethod?: string;
   /** 是否清理 WorkBuddy 宿主的 SERVER__PORT 等冲突变量 */
   sanitizeHostEnv?: boolean;
 }
@@ -283,11 +285,22 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
   opts.signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
-    await request('initialize', {
+    const initialized = (await request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'agent-bridge', version: '1.0.0' },
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
-    });
+    })) as { authMethods?: Array<{ id?: string }> };
+    const methods = new Set(
+      (initialized.authMethods ?? [])
+        .map((method) => method.id)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    const authMethod =
+      spec.authMethod ??
+      (spec.command === 'grok' && env['XAI_API_KEY'] ? 'xai.api_key' : undefined);
+    if (authMethod && methods.has(authMethod)) {
+      await request('authenticate', { methodId: authMethod, _meta: { headless: true } });
+    }
     if (opts.nativeSessionId) {
       try {
         const loaded = (await request('session/load', {
