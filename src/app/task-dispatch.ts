@@ -14,6 +14,7 @@ import { authorizeService } from './service-gate.js';
 import type { SessionLog } from './session-log.js';
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionStore, TurnRecord } from '../core/session-store.js';
+import { dispatchConversationRun } from './conversation.js';
 
 export type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 export type CancelTaskMessage = Extract<ServerMessage, { type: 'cancel_task' }>;
@@ -198,6 +199,11 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       errorCode: gate.code,
       requestedBy: msg.requestedBy,
     });
+    return;
+  }
+
+  if (msg.sessionMode === 'conversation') {
+    dispatchConversationRun(msg, o);
     return;
   }
 

@@ -53,7 +53,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn。
               items: { type: string }
             capacity:
               type: object
@@ -230,6 +230,21 @@ channels:
             oldestEventSeq: { type: integer }
             latestEventSeq: { type: integer }
             errorCode: { type: string }
+      message_ack:
+        name: message_ack
+        title: 多轮消息回执
+        payload:
+          type: object
+          required: [type, taskId, messageId, delivery, at]
+          properties:
+            type: { type: string, const: message_ack }
+            taskId: { type: string }
+            messageId: { type: string }
+            turnId: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
+            delivery: { type: string, enum: [queued, duplicate, rejected] }
+            errorCode: { type: string }
+            at: { type: string, format: date-time }
       session_ack:
         name: session_ack
         title: 会话控制回执
@@ -280,6 +295,7 @@ channels:
               description: 从**入队**开始计时，缺省 10 分钟
             allowInteractive: { type: boolean }
             captureDiff: { type: boolean, description: 终态回传 unified diff（P0-6） }
+            sessionMode: { type: string, enum: [task, conversation], description: '缺省 task；conversation 回合间保持 waiting_user' }
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64, examples: [repair, test, free] }
             serviceToken:
@@ -312,6 +328,31 @@ channels:
             requestId: { type: string, description: 会原样带回 task_snapshot }
             afterEventSeq: { type: integer, minimum: 0 }
             limit: { type: integer, minimum: 1, maximum: 1000 }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
+      send_message:
+        name: send_message
+        title: 发送多轮消息
+        description: conversation 且 waiting_user 时创建新 Turn；messageId 为幂等键。
+        payload:
+          type: object
+          required: [type, taskId, messageId, parts]
+          properties:
+            type: { type: string, const: send_message }
+            taskId: { type: string }
+            messageId: { type: string }
+            mode: { type: string, enum: [queue, steer], default: queue }
+            parts:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required: [kind, text]
+                properties:
+                  kind: { type: string, const: text }
+                  text: { type: string }
+            respondedBy: { type: string, maxLength: 128 }
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64 }
             serviceToken: { type: string, maxLength: 256 }
@@ -377,6 +418,7 @@ operations:
       - $ref: '#/channels/upstream/messages/task_message'
       - $ref: '#/channels/upstream/messages/task_snapshot'
       - $ref: '#/channels/upstream/messages/session_ack'
+      - $ref: '#/channels/upstream/messages/message_ack'
       - $ref: '#/channels/upstream/messages/pong'
   onDownstream:
     title: 平台下发指令
@@ -384,6 +426,7 @@ operations:
     channel: { $ref: '#/channels/downstream' }
     messages:
       - $ref: '#/channels/downstream/messages/run_task'
+      - $ref: '#/channels/downstream/messages/send_message'
       - $ref: '#/channels/downstream/messages/cancel_task'
       - $ref: '#/channels/downstream/messages/close_session'
       - $ref: '#/channels/downstream/messages/cancel_turn'

@@ -372,6 +372,39 @@ State transitions, and the only message that carries terminal results: exit code
 ```
 
 
+<a id="msg-message_ack"></a>
+
+### message_ack — 多轮消息回执
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `message_ack` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `messageId` | `string` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+| `delivery` | `queued` \| `duplicate` \| `rejected` | ✓ |  |
+| `errorCode` | `string` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "message_ack",
+  "taskId": "string",
+  "messageId": "string",
+  "turnId": "string",
+  "delivery": "queued",
+  "errorCode": "string",
+  "at": "string"
+}
+```
+
+
 <a id="msg-session_ack"></a>
 
 ### session_ack — 会话控制回执
@@ -454,6 +487,7 @@ Platform → bridge. Creates and runs one agent task. Accepts the optional servi
 | `timeoutMs` | `integer` |  |  |
 | `allowInteractive` | `boolean` |  |  |
 | `captureDiff` | `boolean` |  |  |
+| `sessionMode` | `task` \| `conversation` |  |  |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
 | `serviceToken` | `string` |  |  |
@@ -470,6 +504,7 @@ Platform → bridge. Creates and runs one agent task. Accepts the optional servi
     "string"
   ],
   "prompt": "string",
+  "sessionMode": "task",
   "requestedBy": "string",
   "purpose": "repair",
   "serviceToken": "string"
@@ -532,6 +567,47 @@ Platform → bridge. Requests cancellation of a running task.
   "type": "get_task",
   "taskId": "string",
   "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-send_message"></a>
+
+### send_message — 发送多轮消息
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `send_message` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `messageId` | `string` | ✓ |  |
+| `mode` | `queue` \| `steer` |  |  |
+| `parts` | array&lt;object&gt; | ✓ |  |
+| `respondedBy` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "send_message",
+  "taskId": "string",
+  "messageId": "string",
+  "mode": "queue",
+  "parts": [
+    {
+      "kind": "text",
+      "text": "string"
+    }
+  ],
+  "respondedBy": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

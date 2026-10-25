@@ -22,6 +22,7 @@ import {
   dispatchGetTask,
   dispatchRunTask,
 } from './task-dispatch.js';
+import { dispatchConversationMessage } from './conversation.js';
 import type { SessionStore } from '../core/session-store.js';
 
 export interface SessionOptions {
@@ -127,6 +128,10 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (msg.type === 'cancel_turn') {
         dispatchCancelTurn(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'send_message') {
+        dispatchConversationMessage(msg, dispatchOpts);
         return;
       }
       if (msg.type === 'scan') {

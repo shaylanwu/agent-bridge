@@ -26,7 +26,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -380,6 +380,39 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 ```
 
 
+<a id="msg-message_ack"></a>
+
+### message_ack — 多轮消息回执
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `message_ack` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `messageId` | `string` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+| `delivery` | `queued` \| `duplicate` \| `rejected` | ✓ |  |
+| `errorCode` | `string` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "message_ack",
+  "taskId": "string",
+  "messageId": "string",
+  "turnId": "string",
+  "delivery": "queued",
+  "errorCode": "string",
+  "at": "string"
+}
+```
+
+
 <a id="msg-session_ack"></a>
 
 ### session_ack — 会话控制回执
@@ -464,6 +497,7 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
 | `timeoutMs` | `integer` |  | 从**入队**开始计时，缺省 10 分钟 |
 | `allowInteractive` | `boolean` |  |  |
 | `captureDiff` | `boolean` |  | 终态回传 unified diff（P0-6） |
+| `sessionMode` | `task` \| `conversation` |  | 缺省 task；conversation 回合间保持 waiting_user |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
 | `serviceToken` | `string` |  | scoped 服务令牌 `abs_<kid>_<secret>`；一旦携带必须校验通过 |
@@ -480,6 +514,7 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
     "string"
   ],
   "prompt": "string",
+  "sessionMode": "task",
   "requestedBy": "string",
   "purpose": "repair",
   "serviceToken": "string"
@@ -544,6 +579,49 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   "type": "get_task",
   "taskId": "string",
   "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-send_message"></a>
+
+### send_message — 发送多轮消息
+
+conversation 且 waiting_user 时创建新 Turn；messageId 为幂等键。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `send_message` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `messageId` | `string` | ✓ |  |
+| `mode` | `queue` \| `steer` |  |  |
+| `parts` | array&lt;object&gt; | ✓ |  |
+| `respondedBy` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "send_message",
+  "taskId": "string",
+  "messageId": "string",
+  "mode": "queue",
+  "parts": [
+    {
+      "kind": "text",
+      "text": "string"
+    }
+  ],
+  "respondedBy": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

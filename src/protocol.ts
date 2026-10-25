@@ -26,6 +26,7 @@ export const PROTOCOL_CAPABILITIES = [
   'task-message',
   'task-snapshot',
   'session-control',
+  'session-multi-turn',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -187,6 +188,17 @@ export type ClientMessage =
       at: string;
     }
   | {
+      /** send_message 的幂等回执 */
+      type: 'message_ack';
+      taskId: string;
+      messageId: string;
+      turnId?: string;
+      eventSeq?: number;
+      delivery: 'queued' | 'duplicate' | 'rejected';
+      errorCode?: string;
+      at: string;
+    }
+  | {
       /**
        * 容量水位：每次调度状态变化（入队/启动/终态）后发送一次，
        * 反映平台与控制面两条通道的**合计**占用（它们共用同一调度器）。
@@ -231,6 +243,24 @@ export interface RunTaskCommand extends ServiceIdentity {
   allowInteractive?: boolean;
   /** 任务终态时回传 cwd 下的 unified diff（P0-6） */
   captureDiff?: boolean;
+  /** 1.0：缺省 task（一次性）；conversation 回合结束进入 waiting_user */
+  sessionMode?: 'task' | 'conversation';
+}
+
+export interface MessagePart {
+  kind: 'text';
+  text: string;
+}
+
+export interface SendMessageCommand extends ServiceIdentity {
+  type: 'send_message';
+  taskId: string;
+  messageId: string;
+  /** queue = 新 Turn；steer 仅 adapter 声明且当前 Turn active */
+  mode?: 'queue' | 'steer';
+  parts: MessagePart[];
+  /** 审计身份（可选） */
+  respondedBy?: string;
 }
 
 export interface CancelTaskCommand extends ServiceIdentity {
@@ -279,7 +309,8 @@ export type ServerMessage =
   | PingCommand
   | GetTaskCommand
   | CloseSessionCommand
-  | CancelTurnCommand;
+  | CancelTurnCommand
+  | SendMessageCommand;
 
 export class ProtocolError extends Error {}
 
@@ -311,6 +342,7 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       // 未知字段一律忽略 —— 子进程只用 bridge 自身进程的环境。
       timeoutMs: typeof msg['timeoutMs'] === 'number' ? msg['timeoutMs'] : undefined,
       allowInteractive: msg['allowInteractive'] === true,
+      sessionMode: msg['sessionMode'] === 'conversation' ? 'conversation' : 'task',
       // P0-6：只有显式 true 才捕获 diff（本地 diff_default 可在 cli 层兜底）
       captureDiff: msg['captureDiff'] === true,
       // P0-8：服务身份三件套，形状不对就忽略（不因为新字段拒帧）
@@ -337,6 +369,36 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'send_message') {
+    for (const key of ['taskId', 'messageId'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`send_message 缺少 ${key}`);
+      }
+    }
+    if (!Array.isArray(msg['parts']) || msg['parts'].length === 0) {
+      throw new ProtocolError('send_message.parts 必须是非空数组');
+    }
+    const parts: MessagePart[] = [];
+    for (const raw of msg['parts']) {
+      if (!raw || typeof raw !== 'object') throw new ProtocolError('send_message part 非法');
+      const part = raw as Record<string, unknown>;
+      if (part['kind'] !== 'text' || typeof part['text'] !== 'string') {
+        throw new ProtocolError('当前仅支持 text part');
+      }
+      parts.push({ kind: 'text', text: part['text'] });
+    }
+    return {
+      type: 'send_message',
+      taskId: String(msg['taskId']),
+      messageId: String(msg['messageId']),
+      mode: msg['mode'] === 'steer' ? 'steer' : 'queue',
+      parts,
+      respondedBy: strField(msg, 'respondedBy', MAX_META_LEN),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
   }
   if (type === 'close_session') {
     if (typeof msg['taskId'] !== 'string' || !msg['taskId']) {

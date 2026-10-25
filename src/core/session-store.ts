@@ -18,7 +18,7 @@ export type TurnStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelle
 export type InteractionKind = 'permission' | 'form' | 'auth-url';
 export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_TENANT = 'default';
 
 export class SessionStoreError extends Error {
@@ -71,6 +71,17 @@ export interface SessionEvent {
   eventSeq: number;
   type: string;
   payload: unknown;
+  createdAt: string;
+}
+
+export interface MessageRecord {
+  tenantId: string;
+  sessionId: string;
+  messageId: string;
+  turnId?: string;
+  eventSeq: number;
+  role: 'user' | 'agent' | 'system';
+  text: string;
   createdAt: string;
 }
 
@@ -147,6 +158,17 @@ interface EventRow {
   created_at: string;
 }
 
+interface MessageRow {
+  tenant_id: string;
+  session_id: string;
+  message_id: string;
+  turn_id: string | null;
+  event_seq: number;
+  role: 'user' | 'agent' | 'system';
+  text: string;
+  created_at: string;
+}
+
 interface InteractionRow {
   tenant_id: string;
   session_id: string;
@@ -218,6 +240,19 @@ function toEvent(row: EventRow): SessionEvent {
     eventSeq: row.event_seq,
     type: row.type,
     payload: parseJson(row.payload),
+    createdAt: row.created_at,
+  };
+}
+
+function toMessage(row: MessageRow): MessageRecord {
+  return {
+    tenantId: row.tenant_id,
+    sessionId: row.session_id,
+    messageId: row.message_id,
+    turnId: row.turn_id ?? undefined,
+    eventSeq: row.event_seq,
+    role: row.role,
+    text: row.text,
     createdAt: row.created_at,
   };
 }
@@ -310,6 +345,19 @@ export class SessionStore {
         FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events (tenant_id, session_id, event_seq);
+      CREATE TABLE IF NOT EXISTS messages (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        turn_id TEXT,
+        event_seq INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, session_id, message_id),
+        UNIQUE (tenant_id, session_id, event_seq),
+        FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS interactions (
         tenant_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
@@ -677,6 +725,87 @@ export class SessionStore {
       )
       .all(tenantId, sessionId, after, limit) as EventRow[];
     return rows.map(toEvent);
+  }
+
+  appendMessage(input: {
+    sessionId: string;
+    messageId: string;
+    role: 'user' | 'agent' | 'system';
+    text: string;
+    turnId?: string;
+    tenantId?: string;
+  }): { message: MessageRecord; duplicate: boolean } {
+    const tenantId = input.tenantId ?? DEFAULT_TENANT;
+    if (!this.getSession(input.sessionId, tenantId)) {
+      throw new SessionStoreError('session_not_found', `会话不存在：${input.sessionId}`);
+    }
+    const existing = this.getMessage(input.sessionId, input.messageId, tenantId);
+    if (existing) {
+      if (existing.text !== input.text || existing.role !== input.role) {
+        throw new SessionStoreError('session_conflict', `messageId 已存在且内容不同：${input.messageId}`);
+      }
+      return { message: existing, duplicate: true };
+    }
+    const tx = this.db.transaction(() => {
+      const event = this.appendEvent({
+        sessionId: input.sessionId,
+        tenantId,
+        type: 'task_message',
+        payload: {
+          messageId: input.messageId,
+          role: input.role,
+          state: 'complete',
+          text: input.text,
+          turnId: input.turnId,
+        },
+      });
+      const message: MessageRecord = {
+        tenantId,
+        sessionId: input.sessionId,
+        messageId: input.messageId,
+        turnId: input.turnId,
+        eventSeq: event.eventSeq,
+        role: input.role,
+        text: input.text,
+        createdAt: event.createdAt,
+      };
+      this.db
+        .prepare(
+          `INSERT INTO messages
+             (tenant_id, session_id, message_id, turn_id, event_seq, role, text, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          tenantId,
+          input.sessionId,
+          message.messageId,
+          message.turnId ?? null,
+          message.eventSeq,
+          message.role,
+          message.text,
+          message.createdAt,
+        );
+      return { message, duplicate: false };
+    });
+    return tx();
+  }
+
+  getMessage(sessionId: string, messageId: string, tenantId = DEFAULT_TENANT): MessageRecord | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT * FROM messages WHERE tenant_id = ? AND session_id = ? AND message_id = ?',
+      )
+      .get(tenantId, sessionId, messageId) as MessageRow | undefined;
+    return row ? toMessage(row) : undefined;
+  }
+
+  listMessages(sessionId: string, tenantId = DEFAULT_TENANT): MessageRecord[] {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM messages WHERE tenant_id = ? AND session_id = ? ORDER BY event_seq',
+      )
+      .all(tenantId, sessionId) as MessageRow[];
+    return rows.map(toMessage);
   }
 
   eventWindow(sessionId: string, tenantId = DEFAULT_TENANT): { oldest?: number; latest?: number } {

@@ -272,8 +272,8 @@ Protocol (JSON over one connection):
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_snapshot`, `session_ack`, `capacity_update`, `pong` |
-| platform → bridge | `run_task`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_snapshot`, `session_ack`, `message_ack`, `capacity_update`, `pong` |
+| platform → bridge | `run_task`, `send_message`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
 
 ### Capability negotiation (`hello.capabilities`)
 
@@ -292,6 +292,7 @@ should degrade on this list rather than guessing from a CLI version:
 | `task-message`   | Emits canonical final-answer `task_message` frames with eventSeq                            |
 | `task-snapshot`  | Supports `get_task` / `task_snapshot` replay by eventSeq                                    |
 | `session-control`| Supports `close_session` / `cancel_turn` with `session_ack`                                  |
+| `session-multi-turn` | Supports `send_message` / `message_ack`; conversation stays in waiting_user between turns |
 
 ### Step stream (`task_step`)
 
