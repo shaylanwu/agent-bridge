@@ -96,8 +96,9 @@ agent-bridge services rotate svc_9f1c2a --grace-hours=24   # rotate: old token s
 agent-bridge services revoke svc_9f1c2a
 ```
 
-> `agent-bridge daemon` is **not implemented yet** (Phase 3). Until it lands, keep `connect` running in the
-> foreground under your own process manager (systemd / launchd / a Windows service wrapper).
+> `agent-bridge daemon start <platformUrl>` / `stop` / `status` provides lightweight background management
+> (detached process + PID + `daemon.log`). `install` / `uninstall` (systemd / launchd / Windows Service
+> registration) are still explicitly unimplemented; use your OS service manager for boot-time startup.
 
 With `--token`, the bridge must resolve a stable `deviceId` from `identity.toml`, the saved `config.toml`
 mirror, `--device-id`, or `AGENT_BRIDGE_DEVICE_ID`. If no persisted, migratable, or explicit ID exists,

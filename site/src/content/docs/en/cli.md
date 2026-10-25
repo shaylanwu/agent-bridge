@@ -98,11 +98,12 @@ plane. Failure codes are stable: `unauthorized` (missing), `invalid_token`, `tok
 ## daemon
 
 ```bash
-agent-bridge daemon start|stop|install|uninstall
+agent-bridge daemon start <platformUrl> | stop | status
 ```
 
-**Not implemented.** The command exists as a placeholder and exits with a notice. Run the process
-under your own supervisor (systemd, launchd, Windows service) for now.
+Lightweight background management: detached process, `daemon.pid`, and `daemon.log` under the state
+directory. `install` / `uninstall` (systemd, launchd, Windows Service registration) are still not
+implemented; use your OS supervisor for boot-time startup.
 
 ## Global
 

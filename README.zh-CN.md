@@ -81,8 +81,9 @@ agent-bridge services rotate svc_9f1c2a --grace-hours=24   # 轮换：旧令牌�
 agent-bridge services revoke svc_9f1c2a
 ```
 
-> `agent-bridge daemon` **尚未实现**（Phase 3）。在此之前请用你自己的进程守护（systemd / launchd /
-> Windows 服务包装）托管前台运行的 `connect`。
+> `agent-bridge daemon start <platformUrl>` / `stop` / `status` 提供轻量后台进程管理（detached + PID +
+> `daemon.log`）。`install` / `uninstall`（注册 systemd / launchd / Windows Service）仍明确未实现；
+> 需要开机自启时仍请用系统服务管理器托管。
 
 用 `--token` 时，bridge 必须从 `identity.toml`、已保存的 `config.toml` 镜像、`--device-id` 或
 `AGENT_BRIDGE_DEVICE_ID` 解析出稳定 `deviceId`。如果没有已持久化、可迁移或显式提供的 ID，启动会明确

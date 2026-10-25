@@ -92,11 +92,11 @@ agent-bridge services issue|list|revoke|rotate
 ## daemon
 
 ```bash
-agent-bridge daemon start|stop|install|uninstall
+agent-bridge daemon start <platformUrl> | stop | status
 ```
 
-**尚未实现。** 该命令目前是占位，会打印提示后退出。请先用自己的进程管理器
-（systemd / launchd / Windows 服务）托管。
+轻量后台管理：detached 进程 + `daemon.pid` + 状态目录下的 `daemon.log`。
+`install` / `uninstall`（systemd / launchd / Windows 服务注册）仍未实现；开机自启请用系统服务管理器。
 
 ## 全局
 
