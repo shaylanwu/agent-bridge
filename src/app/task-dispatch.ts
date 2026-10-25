@@ -21,6 +21,7 @@ export type CancelTaskMessage = Extract<ServerMessage, { type: 'cancel_task' }>;
 export type GetTaskMessage = Extract<ServerMessage, { type: 'get_task' }>;
 export type CloseSessionMessage = Extract<ServerMessage, { type: 'close_session' }>;
 export type CancelTurnMessage = Extract<ServerMessage, { type: 'cancel_turn' }>;
+export type InteractionResponseMessage = Extract<ServerMessage, { type: 'task_interaction_response' }>;
 
 export interface TaskDispatchOptions {
   /** 唯一上行出口 */
@@ -140,6 +141,103 @@ export function dispatchCancelTurn(msg: CancelTurnMessage, o: TaskDispatchOption
     o.store.updateSession(msg.taskId, { phase: 'waiting_user' });
   }
   ackSession(o, msg, 'cancel_turn', true, { status: 'cancelled' });
+}
+
+export function dispatchInteractionResponse(
+  msg: InteractionResponseMessage,
+  o: TaskDispatchOptions,
+): void {
+  const emitResult = (
+    state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed',
+    extra: { responseId?: string; resultSeq?: number; resultPayload?: Record<string, unknown>; errorCode?: string } = {},
+  ): void => {
+    o.emitter.emit({
+      type: 'task_interaction_result',
+      taskId: msg.taskId,
+      requestId: msg.requestId,
+      state,
+      ...extra,
+    });
+  };
+
+  const interaction = o.store.getInteraction(msg.taskId, msg.requestId);
+  if (!interaction) {
+    emitResult('failed', { errorCode: 'interaction_not_found' });
+    return;
+  }
+  if (interaction.state !== 'pending') {
+    if (interaction.responseId === msg.responseId) {
+      const settledState = interaction.state as
+        | 'accepted'
+        | 'declined'
+        | 'cancelled'
+        | 'expired'
+        | 'failed';
+      emitResult(settledState, {
+        responseId: interaction.responseId,
+        resultSeq: interaction.resultSeq,
+        resultPayload: interaction.resultPayload as Record<string, unknown> | undefined,
+      });
+    } else {
+      emitResult('failed', { errorCode: 'interaction_already_resolved' });
+    }
+    return;
+  }
+  if (interaction.expiresAt && Date.parse(interaction.expiresAt) <= Date.now()) {
+    const event = o.store.appendEvent({
+      sessionId: msg.taskId,
+      type: 'task_interaction_result',
+      payload: {
+        requestId: msg.requestId,
+        responseId: msg.responseId,
+        state: 'expired',
+      },
+    });
+    const expired = o.store.resolveInteraction({
+      sessionId: msg.taskId,
+      requestId: msg.requestId,
+      state: 'expired',
+      responseId: msg.responseId,
+      resultSeq: event.eventSeq,
+    });
+    emitResult('expired', {
+      responseId: expired.responseId,
+      resultSeq: expired.resultSeq,
+    });
+    return;
+  }
+
+  const scope = interaction.kind === 'permission' ? 'task:approve' : 'task:respond';
+  const gate = authorizeService(msg, 'task_interaction_response', msg.taskId, scope, o.requireServiceToken);
+  if (!gate.ok) {
+    emitResult('failed', { errorCode: gate.code });
+    return;
+  }
+
+  const payload = msg.payload;
+  const event = o.store.appendEvent({
+    sessionId: msg.taskId,
+    type: 'task_interaction_result',
+    payload: {
+      requestId: msg.requestId,
+      responseId: msg.responseId,
+      state: msg.state,
+      resultPayload: payload,
+    },
+  });
+  const resolved = o.store.resolveInteraction({
+    sessionId: msg.taskId,
+    requestId: msg.requestId,
+    state: msg.state,
+    responseId: msg.responseId,
+    resultSeq: event.eventSeq,
+    resultPayload: payload,
+  });
+  emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
+    responseId: resolved.responseId,
+    resultSeq: resolved.resultSeq,
+    resultPayload: payload,
+  });
 }
 
 export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {

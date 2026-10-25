@@ -27,6 +27,7 @@ export const PROTOCOL_CAPABILITIES = [
   'task-snapshot',
   'session-control',
   'session-multi-turn',
+  'task-interaction',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -188,6 +189,29 @@ export type ClientMessage =
       at: string;
     }
   | {
+      /** 权限 / Form / URL 交互请求（bridge → 平台） */
+      type: 'task_interaction_request';
+      taskId: string;
+      requestId: string;
+      turnId?: string;
+      kind: 'permission' | 'form' | 'auth-url';
+      payload: Record<string, unknown>;
+      expiresAt?: string;
+      eventSeq?: number;
+    }
+  | {
+      /** 交互回复结果（bridge → 平台） */
+      type: 'task_interaction_result';
+      taskId: string;
+      requestId: string;
+      state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
+      responseId?: string;
+      resultSeq?: number;
+      resultPayload?: Record<string, unknown>;
+      errorCode?: string;
+      eventSeq?: number;
+    }
+  | {
       /** send_message 的幂等回执 */
       type: 'message_ack';
       taskId: string;
@@ -292,6 +316,16 @@ export interface CancelTurnCommand extends ServiceIdentity {
   operationId: string;
 }
 
+export interface InteractionResponseCommand extends ServiceIdentity {
+  type: 'task_interaction_response';
+  taskId: string;
+  requestId: string;
+  responseId: string;
+  state: 'accepted' | 'declined' | 'cancelled';
+  payload?: Record<string, unknown>;
+  respondedBy?: string;
+}
+
 export interface GetTaskCommand extends ServiceIdentity {
   type: 'get_task';
   taskId: string;
@@ -310,7 +344,8 @@ export type ServerMessage =
   | GetTaskCommand
   | CloseSessionCommand
   | CancelTurnCommand
-  | SendMessageCommand;
+  | SendMessageCommand
+  | InteractionResponseCommand;
 
 export class ProtocolError extends Error {}
 
@@ -369,6 +404,32 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'task_interaction_response') {
+    for (const key of ['taskId', 'requestId', 'responseId'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`task_interaction_response 缺少 ${key}`);
+      }
+    }
+    const state = msg['state'];
+    if (state !== 'accepted' && state !== 'declined' && state !== 'cancelled') {
+      throw new ProtocolError('task_interaction_response.state 非法');
+    }
+    if (msg['payload'] !== undefined && (typeof msg['payload'] !== 'object' || msg['payload'] === null)) {
+      throw new ProtocolError('task_interaction_response.payload 必须是对象');
+    }
+    return {
+      type: 'task_interaction_response',
+      taskId: String(msg['taskId']),
+      requestId: String(msg['requestId']),
+      responseId: String(msg['responseId']),
+      state,
+      payload: msg['payload'] as Record<string, unknown> | undefined,
+      respondedBy: strField(msg, 'respondedBy', MAX_META_LEN),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
   }
   if (type === 'send_message') {
     for (const key of ['taskId', 'messageId'] as const) {

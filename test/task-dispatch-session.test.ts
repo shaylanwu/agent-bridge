@@ -9,6 +9,7 @@ import {
   dispatchCancelTurn,
   dispatchCloseSession,
   dispatchGetTask,
+  dispatchInteractionResponse,
   dispatchRunTask,
   type TaskDispatchOptions,
 } from '../src/app/task-dispatch.js';
@@ -85,6 +86,63 @@ describe('task dispatch → SessionStore', () => {
     expect(sent.find((msg) => msg.type === 'session_ack' && msg.action === 'close_session')).toMatchObject({
       ok: true,
       status: 'failed',
+    });
+  });
+
+  it('交互回复幂等、冲突拒绝并落 resultSeq', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-dispatch-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    store.createSession({ sessionId: 'bt_interaction', mode: 'conversation', agentType: 'codex', cwd: dir });
+    store.requestInteraction({
+      sessionId: 'bt_interaction',
+      requestId: 'ir_1',
+      kind: 'permission',
+      payload: { title: 'write' },
+    });
+    const sent: ClientMessage[] = [];
+    const options: TaskDispatchOptions = {
+      emitter: new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) }),
+      tasks: new Map(),
+      registry: new TaskRegistry(),
+      maxConcurrent: 2,
+      maxQueued: 2,
+      diffMaxBytes: 4096,
+      captureDiffByDefault: false,
+      requireServiceToken: false,
+      store,
+      log: () => undefined,
+    };
+    const response = {
+      type: 'task_interaction_response' as const,
+      taskId: 'bt_interaction',
+      requestId: 'ir_1',
+      responseId: 'resp_1',
+      state: 'accepted' as const,
+      payload: { optionId: 'allow_once' },
+    };
+
+    dispatchInteractionResponse(response, options);
+    expect(store.getInteraction('bt_interaction', 'ir_1')).toMatchObject({
+      state: 'accepted',
+      responseId: 'resp_1',
+    });
+    expect(sent.find((msg) => msg.type === 'task_interaction_result')).toMatchObject({
+      state: 'accepted',
+      resultSeq: expect.any(Number),
+    });
+
+    dispatchInteractionResponse(response, options);
+    expect(sent.filter((msg) => msg.type === 'task_interaction_result')).toHaveLength(2);
+
+    dispatchInteractionResponse({ ...response, responseId: 'resp_2' }, options);
+    expect(sent.at(-1)).toMatchObject({
+      type: 'task_interaction_result',
+      state: 'failed',
+      errorCode: 'interaction_already_resolved',
     });
   });
 

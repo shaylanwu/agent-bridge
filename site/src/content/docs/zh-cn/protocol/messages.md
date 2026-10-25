@@ -26,7 +26,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -380,6 +380,76 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 ```
 
 
+<a id="msg-task_interaction_request"></a>
+
+### task_interaction_request — 交互请求
+
+权限 / Form / URL 请求；平台必须按 kind 选择对应 UI。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_interaction_request` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `kind` | `permission` \| `form` \| `auth-url` | ✓ |  |
+| `payload` | `object` | ✓ |  |
+| `expiresAt` | `string` (date-time) |  |  |
+| `eventSeq` | `integer` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "task_interaction_request",
+  "taskId": "string",
+  "requestId": "string",
+  "turnId": "string",
+  "kind": "permission",
+  "payload": {},
+  "expiresAt": "string"
+}
+```
+
+
+<a id="msg-task_interaction_result"></a>
+
+### task_interaction_result — 交互结果
+
+终态后仍可按 requestId + resultSeq 重放。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_interaction_result` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `state` | `accepted` \| `declined` \| `cancelled` \| `expired` \| `failed` | ✓ |  |
+| `responseId` | `string` |  |  |
+| `resultSeq` | `integer` |  |  |
+| `resultPayload` | `object` |  |  |
+| `errorCode` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "task_interaction_result",
+  "taskId": "string",
+  "requestId": "string",
+  "state": "accepted",
+  "responseId": "string",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-message_ack"></a>
 
 ### message_ack — 多轮消息回执
@@ -579,6 +649,45 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   "type": "get_task",
   "taskId": "string",
   "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-task_interaction_response"></a>
+
+### task_interaction_response — 回复交互
+
+permission 需要 task:approve，form/auth-url 需要 task:respond；responseId 幂等。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_interaction_response` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `responseId` | `string` | ✓ |  |
+| `state` | `accepted` \| `declined` \| `cancelled` | ✓ |  |
+| `payload` | `object` |  |  |
+| `respondedBy` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "task_interaction_response",
+  "taskId": "string",
+  "requestId": "string",
+  "responseId": "string",
+  "state": "accepted",
+  "respondedBy": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

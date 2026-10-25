@@ -372,6 +372,72 @@ State transitions, and the only message that carries terminal results: exit code
 ```
 
 
+<a id="msg-task_interaction_request"></a>
+
+### task_interaction_request — 交互请求
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_interaction_request` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `kind` | `permission` \| `form` \| `auth-url` | ✓ |  |
+| `payload` | `object` | ✓ |  |
+| `expiresAt` | `string` (date-time) |  |  |
+| `eventSeq` | `integer` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "task_interaction_request",
+  "taskId": "string",
+  "requestId": "string",
+  "turnId": "string",
+  "kind": "permission",
+  "payload": {},
+  "expiresAt": "string"
+}
+```
+
+
+<a id="msg-task_interaction_result"></a>
+
+### task_interaction_result — 交互结果
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_interaction_result` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `state` | `accepted` \| `declined` \| `cancelled` \| `expired` \| `failed` | ✓ |  |
+| `responseId` | `string` |  |  |
+| `resultSeq` | `integer` |  |  |
+| `resultPayload` | `object` |  |  |
+| `errorCode` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "task_interaction_result",
+  "taskId": "string",
+  "requestId": "string",
+  "state": "accepted",
+  "responseId": "string",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-message_ack"></a>
 
 ### message_ack — 多轮消息回执
@@ -567,6 +633,43 @@ Platform → bridge. Requests cancellation of a running task.
   "type": "get_task",
   "taskId": "string",
   "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-task_interaction_response"></a>
+
+### task_interaction_response — 回复交互
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_interaction_response` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `responseId` | `string` | ✓ |  |
+| `state` | `accepted` \| `declined` \| `cancelled` | ✓ |  |
+| `payload` | `object` |  |  |
+| `respondedBy` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "task_interaction_response",
+  "taskId": "string",
+  "requestId": "string",
+  "responseId": "string",
+  "state": "accepted",
+  "respondedBy": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

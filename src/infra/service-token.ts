@@ -20,7 +20,14 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { stateDir, tokenTail } from './config.js';
 
 /** 受控 scope 集合（新增 scope = 新增能力，必须同步文档） */
-export const SERVICE_SCOPES = ['task:create', 'task:cancel', 'task:read', 'device:read'] as const;
+export const SERVICE_SCOPES = [
+  'task:create',
+  'task:cancel',
+  'task:read',
+  'task:approve',
+  'task:respond',
+  'device:read',
+] as const;
 export type ServiceScope = (typeof SERVICE_SCOPES)[number];
 
 export interface ServiceTokenRecord {

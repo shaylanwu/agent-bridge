@@ -20,6 +20,7 @@ import {
   dispatchCancelTurn,
   dispatchCloseSession,
   dispatchGetTask,
+  dispatchInteractionResponse,
   dispatchRunTask,
 } from './task-dispatch.js';
 import { dispatchConversationMessage } from './conversation.js';
@@ -132,6 +133,10 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (msg.type === 'send_message') {
         dispatchConversationMessage(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'task_interaction_response') {
+        dispatchInteractionResponse(msg, dispatchOpts);
         return;
       }
       if (msg.type === 'scan') {

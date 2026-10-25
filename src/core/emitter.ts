@@ -110,7 +110,8 @@ export class Emitter {
       this.settled.has(msg.taskId) &&
       msg.type !== 'task_snapshot' &&
       msg.type !== 'session_ack' &&
-      msg.type !== 'message_ack'
+      msg.type !== 'message_ack' &&
+      msg.type !== 'task_interaction_result'
     ) {
       return;
     }

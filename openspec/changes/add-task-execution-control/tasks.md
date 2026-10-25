@@ -6,7 +6,7 @@
 > 启动恢复中断会话）；新增 task_message/task_snapshot/get_task 与 eventSeq，e2e 已验证快照重建；
 > 新增 close_session/cancel_turn/session_ack；本地 `/v1/sessions` 列表/快照/SSE 已接 SQLite；
 > `send_message` 多轮 replay-session、message_ack、conversation waiting_user 已实现；
-> 交互/附件/UI 尚未实现。
+> 交互 request/response/result、task:approve/respond scope 已实现；附件/UI/原生 ACP 触发尚未实现。
 
 ## 1. 决策、标准与安全边界
 
