@@ -21,12 +21,12 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string` = `hello` | ✓ |  |
-| `protocolVersion` | `integer` = `1` | ✓ |  |
+| `protocolVersion` | `integer` = `2` | ✓ |  |
 | `deviceId` | `string` | ✓ | 本地持久化的稳定身份；必须与 WS URL 的 `deviceId` query 完全相等，不允许空 ID 或仅凭 Bearer 反查 |
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -34,7 +34,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 ```json
 {
   "type": "hello",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "deviceId": "bd_001122334455",
   "cliVersion": "string",
   "platform": "win32",
@@ -176,6 +176,8 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
 | `stream` | `stdout` \| `stderr` | ✓ |  |
 | `data` | `string` | ✓ |  |
 | `isAnsi` | `boolean` | ✓ | 当前恒为 true（ANSI 解析未实现） |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
 
 **示例**
 
@@ -185,7 +187,8 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
   "taskId": "string",
   "stream": "stdout",
   "data": "string",
-  "isAnsi": true
+  "isAnsi": true,
+  "turnId": "string"
 }
 ```
 
@@ -207,8 +210,10 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
 | `exitCode` | `integer` |  |  |
 | `error` | `string` |  | 人类可读文案，可直接展示 |
 | `errorCode` | `string` |  | 受控错误码，用于程序化分支（见 components/schemas/ErrorCode） |
-| `phase` | `queued` \| `running` |  |  |
+| `phase` | `queued` \| `running` \| `waiting_interaction` \| `waiting_user` |  |  |
 | `queuePosition` | `integer` |  |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
 | `diff` | `string` |  | unified diff，仅当 `run_task.captureDiff` 为 true 时出现 |
 | `changedFiles` | array&lt;string&gt; |  | 仓库相对路径，上限 500 条 |
 | `diffTruncated` | `boolean` |  |  |
@@ -225,6 +230,7 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
   "error": "string",
   "errorCode": "string",
   "phase": "queued",
+  "turnId": "string",
   "diff": "string",
   "result": "string",
   "requestedBy": "string"
@@ -282,6 +288,8 @@ AI CLI 的步骤由模型实时决定，没有预定义总步数；平台拿到�
 | `ok` | `boolean` |  | 仅 state=finished 时给出 |
 | `ref` | `string` |  | 源事件关联 id（started/finished 配对） |
 | `at` | `string` (date-time) | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
 
 **示例**
 
@@ -294,7 +302,80 @@ AI CLI 的步骤由模型实时决定，没有预定义总步数；平台拿到�
   "label": "string",
   "state": "started",
   "ref": "string",
+  "at": "string",
+  "turnId": "string"
+}
+```
+
+
+<a id="msg-task_message"></a>
+
+### task_message — canonical 会话消息
+
+delta 是流式增量，complete 是最终完整文本；messageId 供平台幂等去重。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_message` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `messageId` | `string` | ✓ |  |
+| `role` | `user` \| `agent` \| `system` | ✓ |  |
+| `state` | `delta` \| `complete` | ✓ |  |
+| `text` | `string` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "task_message",
+  "taskId": "string",
+  "messageId": "string",
+  "role": "user",
+  "state": "delta",
+  "text": "string",
+  "turnId": "string",
   "at": "string"
+}
+```
+
+
+<a id="msg-task_snapshot"></a>
+
+### task_snapshot — 任务历史快照
+
+响应 get_task；终态后仍可补取，events 按 eventSeq 升序。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_snapshot` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` |  |  |
+| `found` | `boolean` | ✓ |  |
+| `session` | `object` |  |  |
+| `turns` | array&lt;object&gt; |  |  |
+| `events` | array&lt;object&gt; |  |  |
+| `oldestEventSeq` | `integer` |  |  |
+| `latestEventSeq` | `integer` |  |  |
+| `errorCode` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "task_snapshot",
+  "taskId": "string",
+  "requestId": "string",
+  "found": true,
+  "errorCode": "string"
 }
 ```
 
@@ -393,6 +474,40 @@ AI CLI 的步骤由模型实时决定，没有预定义总步数；平台拿到�
 {
   "type": "cancel_task",
   "taskId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-get_task"></a>
+
+### get_task — 补取任务历史
+
+按 afterEventSeq 返回有界窗口；终态后仍可调用，需 task:read scope。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `get_task` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` |  | 会原样带回 task_snapshot |
+| `afterEventSeq` | `integer` |  |  |
+| `limit` | `integer` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "get_task",
+  "taskId": "string",
+  "requestId": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

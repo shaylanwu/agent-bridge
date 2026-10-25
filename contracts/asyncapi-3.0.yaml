@@ -53,7 +53,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot。
               items: { type: string }
             capacity:
               type: object
@@ -109,6 +109,8 @@ channels:
             stream: { type: string, enum: [stdout, stderr] }
             data: { type: string }
             isAnsi: { type: boolean, description: 当前恒为 true（ANSI 解析未实现） }
+            turnId: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
       task_status:
         name: task_status
         title: 任务状态与终态产物
@@ -128,8 +130,10 @@ channels:
             errorCode:
               type: string
               description: 受控错误码，用于程序化分支（见 components/schemas/ErrorCode）
-            phase: { type: string, enum: [queued, running] }
+            phase: { type: string, enum: [queued, running, waiting_interaction, waiting_user] }
             queuePosition: { type: integer, minimum: 1 }
+            turnId: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
             diff:
               type: string
               description: unified diff，仅当 `run_task.captureDiff` 为 true 时出现
@@ -178,6 +182,54 @@ channels:
             ok: { type: boolean, description: 仅 state=finished 时给出 }
             ref: { type: string, description: 源事件关联 id（started/finished 配对） }
             at: { type: string, format: date-time }
+            turnId: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
+      task_message:
+        name: task_message
+        title: canonical 会话消息
+        description: delta 是流式增量，complete 是最终完整文本；messageId 供平台幂等去重。
+        payload:
+          type: object
+          required: [type, taskId, messageId, role, state, text, at]
+          properties:
+            type: { type: string, const: task_message }
+            taskId: { type: string }
+            messageId: { type: string }
+            role: { type: string, enum: [user, agent, system] }
+            state: { type: string, enum: [delta, complete] }
+            text: { type: string }
+            turnId: { type: string }
+            eventSeq: { type: integer, minimum: 1 }
+            at: { type: string, format: date-time }
+      task_snapshot:
+        name: task_snapshot
+        title: 任务历史快照
+        description: 响应 get_task；终态后仍可补取，events 按 eventSeq 升序。
+        payload:
+          type: object
+          required: [type, taskId, found]
+          properties:
+            type: { type: string, const: task_snapshot }
+            taskId: { type: string }
+            requestId: { type: string }
+            found: { type: boolean }
+            session: { type: object, additionalProperties: true }
+            turns:
+              type: array
+              items: { type: object, additionalProperties: true }
+            events:
+              type: array
+              items:
+                type: object
+                required: [eventSeq, type, payload, createdAt]
+                properties:
+                  eventSeq: { type: integer, minimum: 1 }
+                  type: { type: string }
+                  payload: { type: object, additionalProperties: true }
+                  createdAt: { type: string, format: date-time }
+            oldestEventSeq: { type: integer }
+            latestEventSeq: { type: integer }
+            errorCode: { type: string }
       pong:
         name: pong
         title: 应用层心跳响应
@@ -231,6 +283,22 @@ channels:
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64 }
             serviceToken: { type: string, maxLength: 256 }
+      get_task:
+        name: get_task
+        title: 补取任务历史
+        description: 按 afterEventSeq 返回有界窗口；终态后仍可调用，需 task:read scope。
+        payload:
+          type: object
+          required: [type, taskId]
+          properties:
+            type: { type: string, const: get_task }
+            taskId: { type: string }
+            requestId: { type: string, description: 会原样带回 task_snapshot }
+            afterEventSeq: { type: integer, minimum: 0 }
+            limit: { type: integer, minimum: 1, maximum: 1000 }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
       scan:
         name: scan
         title: 重新探测本机工具
@@ -261,6 +329,9 @@ operations:
       - $ref: '#/channels/upstream/messages/scan_result'
       - $ref: '#/channels/upstream/messages/task_log'
       - $ref: '#/channels/upstream/messages/task_status'
+      - $ref: '#/channels/upstream/messages/task_step'
+      - $ref: '#/channels/upstream/messages/task_message'
+      - $ref: '#/channels/upstream/messages/task_snapshot'
       - $ref: '#/channels/upstream/messages/pong'
   onDownstream:
     title: 平台下发指令
@@ -269,6 +340,7 @@ operations:
     messages:
       - $ref: '#/channels/downstream/messages/run_task'
       - $ref: '#/channels/downstream/messages/cancel_task'
+      - $ref: '#/channels/downstream/messages/get_task'
       - $ref: '#/channels/downstream/messages/scan'
       - $ref: '#/channels/downstream/messages/ping'
 components:

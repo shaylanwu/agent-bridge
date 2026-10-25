@@ -15,7 +15,7 @@ import { assertServerMessage, ProtocolError, type ClientMessage } from '../proto
 import type { TaskHandle } from '../runner.js';
 import { createBridgeClient } from '../transport/bridge-client.js';
 import type { SessionLog } from './session-log.js';
-import { dispatchCancelTask, dispatchRunTask } from './task-dispatch.js';
+import { dispatchCancelTask, dispatchGetTask, dispatchRunTask } from './task-dispatch.js';
 import type { SessionStore } from '../core/session-store.js';
 
 export interface SessionOptions {
@@ -91,8 +91,26 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (!emitter) return;
 
+      const dispatchOpts = {
+        emitter,
+        tasks,
+        registry: opts.registry,
+        allowedCwd: opts.allowedCwd,
+        maxConcurrent: opts.maxConcurrent,
+        maxQueued: opts.maxQueued,
+        diffMaxBytes: opts.diffMaxBytes,
+        captureDiffByDefault: opts.captureDiffByDefault,
+        requireServiceToken: opts.requireServiceToken,
+        store: opts.store,
+        log: opts.log,
+      };
+
       if (msg.type === 'ping') {
         emitter.emit({ type: 'pong', at: Date.now() });
+        return;
+      }
+      if (msg.type === 'get_task') {
+        dispatchGetTask(msg, dispatchOpts);
         return;
       }
       if (msg.type === 'scan') {
@@ -114,20 +132,6 @@ export function createSession(opts: SessionOptions): BridgeSession {
         });
         return;
       }
-
-      const dispatchOpts = {
-        emitter,
-        tasks,
-        registry: opts.registry,
-        allowedCwd: opts.allowedCwd,
-        maxConcurrent: opts.maxConcurrent,
-        maxQueued: opts.maxQueued,
-        diffMaxBytes: opts.diffMaxBytes,
-        captureDiffByDefault: opts.captureDiffByDefault,
-        requireServiceToken: opts.requireServiceToken,
-        store: opts.store,
-        log: opts.log,
-      };
       if (msg.type === 'cancel_task') return dispatchCancelTask(msg, dispatchOpts);
       dispatchRunTask(msg, dispatchOpts);
     },

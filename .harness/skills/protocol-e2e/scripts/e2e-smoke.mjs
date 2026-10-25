@@ -109,6 +109,14 @@ wss.on('connection', (ws, req) => {
         record(`真实任务 success + exitCode=0（${AGENT}）`, m.status === 'success' && m.exitCode === 0, m.error);
         record('日志内容非空', Boolean((logs.get('t_ok') ?? '').trim()), JSON.stringify((logs.get('t_ok') ?? '').slice(0, 40)));
       }
+      ws.send(JSON.stringify({ type: 'get_task', taskId: 't_ok', requestId: 'r_task' }));
+    }
+    if (m.type === 'task_snapshot') {
+      record(
+        'get_task → task_snapshot（eventSeq 历史可重建）',
+        m.found === true && m.requestId === 'r_task' && Array.isArray(m.events) && m.events.length > 0,
+        `events=${m.events?.length ?? 0}, latest=${m.latestEventSeq ?? '-'}`,
+      );
       ws.send(
         JSON.stringify({ type: 'run_task', taskId: 't_slow', agentType: AGENT, cwd: ROOT, args: ['--version'], timeoutMs: 50 }),
       );
@@ -124,7 +132,7 @@ function finish(code) {
   console.log('\n===== 端到端冒烟结果 =====');
   const failed = results.filter((r) => !r.ok);
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? ` (${r.detail})` : ''}`);
-  const missing = ['hello', 'agent_list', 'pong', 'scan_result', 'task_log', 'task_status'].filter((t) => !seen.has(t));
+  const missing = ['hello', 'agent_list', 'pong', 'scan_result', 'task_log', 'task_status', 'task_snapshot'].filter((t) => !seen.has(t));
   if (missing.length) console.log(`FAIL  缺少消息类型：${missing.join(', ')}`);
   console.log(`\n${failed.length === 0 && missing.length === 0 ? '✅ 全部通过' : `⛔ ${failed.length + missing.length} 项失败`}`);
   try {

@@ -104,12 +104,19 @@ export class Emitter {
 
   emit(msg: ClientMessage): void {
     // —— 1. 幂等 ——
-    if ('taskId' in msg && this.settled.has(msg.taskId)) return;
+    // task_snapshot 是补取/重放通道，终态后仍必须可发。
+    if ('taskId' in msg && this.settled.has(msg.taskId) && msg.type !== 'task_snapshot') return;
 
     let out: ClientMessage = msg;
     if (msg.type === 'task_log') {
       // —— 2. 脱敏（只动日志正文，不动 diff 这类产物）——
       if (this.redactLogs) out = { ...msg, data: redact(msg.data, { home: this.home }) };
+    }
+    if (out.type === 'task_message') {
+      out = {
+        ...out,
+        text: this.redactLogs ? redact(out.text, { home: this.home }) : out.text,
+      };
     }
     if (out.type === 'task_step' && typeof out.label === 'string') {
       // 步骤摘要同口径脱敏，并按协议上限截断（160 字符）

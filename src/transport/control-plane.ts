@@ -25,7 +25,7 @@ import type { SessionLog } from '../app/session-log.js';
 import type { TaskRegistry } from '../app/task-registry.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
-import type { ClientMessage, AgentListItem } from '../protocol.js';
+import type { ClientMessage, AgentListItem, TaskPhase } from '../protocol.js';
 import {
   verifyServiceToken,
   type ServiceTokenRecord,
@@ -88,7 +88,7 @@ interface TaskRecord {
   agentType: string;
   cwd: string;
   state: TaskStatus;
-  phase?: 'queued' | 'running';
+  phase?: TaskPhase;
   queuePosition?: number;
   exitCode?: number;
   error?: string;

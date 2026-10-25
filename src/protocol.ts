@@ -23,6 +23,8 @@ export const PROTOCOL_CAPABILITIES = [
   'cloud-events',
   'capacity',
   'task-step',
+  'task-message',
+  'task-snapshot',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -102,15 +104,26 @@ export type ClientMessage =
       /** 回显本次调用的服务身份，供平台落 requested_by 审计 */
       requestedBy?: string;
       /**
-       * 排队语义：`status` 恒为 `running`（v1 兼容，老平台不会收到未知状态值），
-       * 排队中的任务额外给出 `phase: 'queued'` 与 `queuePosition`。
-       * 这是"新增可选字段 = 同版本"而不是新增状态值 —— 避免老平台遇到未知 status 崩溃。
+       * 排队/等待语义：`status` 恒为 `running`，phase 区分 queued/running/waiting_*。
+       * 新增 waiting_* 只作为可选字段值；平台不认识时应继续按 running 展示。
        */
-      phase?: 'queued' | 'running';
+      phase?: TaskPhase;
       /** 队列中的位次（从 1 开始），仅在 `phase: 'queued'` 时出现 */
       queuePosition?: number;
+      /** 当前 Turn（1.0 会话模型）；老的一次性任务可省略 */
+      turnId?: string;
+      /** 持久事件序号：平台按它去重/补洞 */
+      eventSeq?: number;
     }
-  | { type: 'task_log'; taskId: string; stream: 'stdout' | 'stderr'; data: string; isAnsi: boolean }
+  | {
+      type: 'task_log';
+      taskId: string;
+      stream: 'stdout' | 'stderr';
+      data: string;
+      isAnsi: boolean;
+      turnId?: string;
+      eventSeq?: number;
+    }
   | {
       /**
        * 动态步骤流（task-step 能力）：AI CLI 的步骤由模型实时决定，无预定义总步数。
@@ -129,6 +142,37 @@ export type ClientMessage =
       ref?: string;
       /** ISO 时间戳 */
       at: string;
+      turnId?: string;
+      /** 持久事件序号；与 task_status 共用同一序列 */
+      eventSeq?: number;
+    }
+  | {
+      /**
+       * canonical 会话消息（1.0）。
+       * delta 是流式增量；complete 是最终完整文本。messageId 是平台幂等键。
+       */
+      type: 'task_message';
+      taskId: string;
+      messageId: string;
+      role: 'user' | 'agent' | 'system';
+      state: 'delta' | 'complete';
+      text: string;
+      turnId?: string;
+      eventSeq?: number;
+      at: string;
+    }
+  | {
+      /** 历史快照：响应 get_task；终态后仍可补取 */
+      type: 'task_snapshot';
+      taskId: string;
+      requestId?: string;
+      found: boolean;
+      session?: Record<string, unknown>;
+      turns?: Record<string, unknown>[];
+      events?: { eventSeq: number; type: string; payload: unknown; createdAt: string }[];
+      oldestEventSeq?: number;
+      latestEventSeq?: number;
+      errorCode?: string;
     }
   | {
       /**
@@ -145,6 +189,9 @@ export type ClientMessage =
   | { type: 'scan_result'; requestId?: string; agents: AgentListItem[]; scannedAt: string };
 
 export type TaskStatus = 'running' | 'success' | 'failed' | 'cancelled' | 'timeout';
+
+/** 过程阶段：waiting_* 仍属于 running，不是终态 */
+export type TaskPhase = 'queued' | 'running' | 'waiting_interaction' | 'waiting_user';
 
 /**
  * 服务身份（P0-8）：任何第三方系统/后端服务都可以带一个 scoped service token 调进来。
@@ -189,7 +236,22 @@ export interface PingCommand {
   at?: number;
 }
 
-export type ServerMessage = RunTaskCommand | CancelTaskCommand | ScanCommand | PingCommand;
+export interface GetTaskCommand extends ServiceIdentity {
+  type: 'get_task';
+  taskId: string;
+  /** 平台请求关联 id，原样回在 task_snapshot */
+  requestId?: string;
+  /** 只补取该序号之后的事件；缺省返回从最旧开始的有界窗口 */
+  afterEventSeq?: number;
+  limit?: number;
+}
+
+export type ServerMessage =
+  | RunTaskCommand
+  | CancelTaskCommand
+  | ScanCommand
+  | PingCommand
+  | GetTaskCommand;
 
 export class ProtocolError extends Error {}
 
@@ -247,6 +309,29 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'get_task') {
+    if (typeof msg['taskId'] !== 'string' || !msg['taskId']) {
+      throw new ProtocolError('get_task 缺少 taskId');
+    }
+    const after =
+      typeof msg['afterEventSeq'] === 'number' && Number.isFinite(msg['afterEventSeq'])
+        ? Math.max(0, Math.floor(msg['afterEventSeq']))
+        : undefined;
+    const limit =
+      typeof msg['limit'] === 'number' && Number.isFinite(msg['limit'])
+        ? Math.min(1000, Math.max(1, Math.floor(msg['limit'])))
+        : undefined;
+    return {
+      type: 'get_task',
+      taskId: String(msg['taskId']),
+      requestId: strField(msg, 'requestId', MAX_META_LEN),
+      afterEventSeq: after,
+      limit,
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
   }
   throw new ProtocolError(`未知指令类型: ${String(type)}`);
 }

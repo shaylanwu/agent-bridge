@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
-import { dispatchRunTask, type TaskDispatchOptions } from '../src/app/task-dispatch.js';
+import {
+  dispatchGetTask,
+  dispatchRunTask,
+  type TaskDispatchOptions,
+} from '../src/app/task-dispatch.js';
 import type { ClientMessage } from '../src/protocol.js';
 
 const cleanups: Array<() => void> = [];
@@ -55,5 +59,21 @@ describe('task dispatch → SessionStore', () => {
     expect(snapshot.events.some((event) => event.type === 'task_status')).toBe(true);
     expect(sent.some((msg) => msg.type === 'task_status' && msg.status === 'failed')).toBe(true);
     expect(store.getTombstone('bt_dispatch_failed')).toBeDefined();
+
+    dispatchGetTask(
+      { type: 'get_task', taskId: 'bt_dispatch_failed', requestId: 'req_snapshot' },
+      options,
+    );
+    const snapshotMsg = sent.find((msg) => msg.type === 'task_snapshot');
+    expect(snapshotMsg).toMatchObject({
+      type: 'task_snapshot',
+      taskId: 'bt_dispatch_failed',
+      requestId: 'req_snapshot',
+      found: true,
+    });
+    if (snapshotMsg?.type === 'task_snapshot') {
+      expect(snapshotMsg.events?.some((event) => event.type === 'task_status')).toBe(true);
+      expect(snapshotMsg.latestEventSeq).toBeGreaterThan(0);
+    }
   });
 });

@@ -21,7 +21,7 @@ Sent immediately after the WebSocket opens. The platform must implement the hand
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `string` = `hello` | ✓ |  |
-| `protocolVersion` | `integer` = `1` | ✓ |  |
+| `protocolVersion` | `integer` = `2` | ✓ |  |
 | `deviceId` | `string` | ✓ |  |
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
@@ -34,7 +34,7 @@ Sent immediately after the WebSocket opens. The platform must implement the hand
 ```json
 {
   "type": "hello",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "deviceId": "bd_001122334455",
   "cliVersion": "string",
   "platform": "win32",
@@ -176,6 +176,8 @@ A chunk of stdout/stderr (each chunk is at most 4096 bytes and never splits a mu
 | `stream` | `stdout` \| `stderr` | ✓ |  |
 | `data` | `string` | ✓ |  |
 | `isAnsi` | `boolean` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
 
 **Example**
 
@@ -185,7 +187,8 @@ A chunk of stdout/stderr (each chunk is at most 4096 bytes and never splits a mu
   "taskId": "string",
   "stream": "stdout",
   "data": "string",
-  "isAnsi": true
+  "isAnsi": true,
+  "turnId": "string"
 }
 ```
 
@@ -207,8 +210,10 @@ State transitions, and the only message that carries terminal results: exit code
 | `exitCode` | `integer` |  |  |
 | `error` | `string` |  |  |
 | `errorCode` | `string` |  |  |
-| `phase` | `queued` \| `running` |  |  |
+| `phase` | `queued` \| `running` \| `waiting_interaction` \| `waiting_user` |  |  |
 | `queuePosition` | `integer` |  |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
 | `diff` | `string` |  |  |
 | `changedFiles` | array&lt;string&gt; |  |  |
 | `diffTruncated` | `boolean` |  |  |
@@ -225,6 +230,7 @@ State transitions, and the only message that carries terminal results: exit code
   "error": "string",
   "errorCode": "string",
   "phase": "queued",
+  "turnId": "string",
   "diff": "string",
   "result": "string",
   "requestedBy": "string"
@@ -278,6 +284,8 @@ State transitions, and the only message that carries terminal results: exit code
 | `ok` | `boolean` |  |  |
 | `ref` | `string` |  |  |
 | `at` | `string` (date-time) | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
 
 **Example**
 
@@ -290,7 +298,76 @@ State transitions, and the only message that carries terminal results: exit code
   "label": "string",
   "state": "started",
   "ref": "string",
+  "at": "string",
+  "turnId": "string"
+}
+```
+
+
+<a id="msg-task_message"></a>
+
+### task_message — canonical 会话消息
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_message` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `messageId` | `string` | ✓ |  |
+| `role` | `user` \| `agent` \| `system` | ✓ |  |
+| `state` | `delta` \| `complete` | ✓ |  |
+| `text` | `string` | ✓ |  |
+| `turnId` | `string` |  |  |
+| `eventSeq` | `integer` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "task_message",
+  "taskId": "string",
+  "messageId": "string",
+  "role": "user",
+  "state": "delta",
+  "text": "string",
+  "turnId": "string",
   "at": "string"
+}
+```
+
+
+<a id="msg-task_snapshot"></a>
+
+### task_snapshot — 任务历史快照
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_snapshot` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` |  |  |
+| `found` | `boolean` | ✓ |  |
+| `session` | `object` |  |  |
+| `turns` | array&lt;object&gt; |  |  |
+| `events` | array&lt;object&gt; |  |  |
+| `oldestEventSeq` | `integer` |  |  |
+| `latestEventSeq` | `integer` |  |  |
+| `errorCode` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "task_snapshot",
+  "taskId": "string",
+  "requestId": "string",
+  "found": true,
+  "errorCode": "string"
 }
 ```
 
@@ -389,6 +466,38 @@ Platform → bridge. Requests cancellation of a running task.
 {
   "type": "cancel_task",
   "taskId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-get_task"></a>
+
+### get_task — 补取任务历史
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `get_task` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` |  |  |
+| `afterEventSeq` | `integer` |  |  |
+| `limit` | `integer` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "get_task",
+  "taskId": "string",
+  "requestId": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

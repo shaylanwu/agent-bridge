@@ -17,6 +17,7 @@ import type { SessionStore, TurnRecord } from '../core/session-store.js';
 
 export type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 export type CancelTaskMessage = Extract<ServerMessage, { type: 'cancel_task' }>;
+export type GetTaskMessage = Extract<ServerMessage, { type: 'get_task' }>;
 
 export interface TaskDispatchOptions {
   /** 唯一上行出口 */
@@ -49,6 +50,51 @@ export function dispatchCancelTask(msg: CancelTaskMessage, o: TaskDispatchOption
 
 function terminalStatus(status: string): status is 'success' | 'failed' | 'cancelled' | 'timeout' {
   return status === 'success' || status === 'failed' || status === 'cancelled' || status === 'timeout';
+}
+
+export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {
+  const gate = authorizeService(msg, 'get_task', msg.taskId, 'task:read', o.requireServiceToken);
+  if (!gate.ok) {
+    o.emitter.emit({
+      type: 'task_snapshot',
+      taskId: msg.taskId,
+      requestId: msg.requestId,
+      found: false,
+      errorCode: gate.code,
+    });
+    return;
+  }
+  try {
+    const snapshot = o.store.snapshot(msg.taskId, {
+      afterEventSeq: msg.afterEventSeq,
+      limit: msg.limit,
+    });
+    o.emitter.emit({
+      type: 'task_snapshot',
+      taskId: msg.taskId,
+      requestId: msg.requestId,
+      found: true,
+      session: snapshot.session as unknown as Record<string, unknown>,
+      turns: snapshot.turns as unknown as Record<string, unknown>[],
+      events: snapshot.events.map((event) => ({
+        eventSeq: event.eventSeq,
+        type: event.type,
+        payload: event.payload,
+        createdAt: event.createdAt,
+      })),
+      oldestEventSeq: snapshot.oldestEventSeq,
+      latestEventSeq: snapshot.latestEventSeq,
+    });
+  } catch (error) {
+    o.emitter.emit({
+      type: 'task_snapshot',
+      taskId: msg.taskId,
+      requestId: msg.requestId,
+      found: false,
+      errorCode: 'task_not_found',
+    });
+    o.log('error', `[agent-bridge] 读取快照失败 ${msg.taskId}：${(error as Error).message}`);
+  }
 }
 
 export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): void {
@@ -131,27 +177,44 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       onLog: (stream, data) => {
         const text = data.replace(/\x1b\[[0-9;]*m/g, '');
         if (text.trim()) o.log('info', `[${stream}] ${text.trimEnd()}`);
+        let eventSeq: number | undefined;
         if (sessionCreated) {
-          o.store.appendEvent({
+          eventSeq = o.store.appendEvent({
             sessionId: msg.taskId,
             type: 'task_log',
             payload: { stream, data, isAnsi: true },
-          });
+          }).eventSeq;
         }
-        o.emitter.emit({ type: 'task_log', taskId: msg.taskId, stream, data, isAnsi: true });
+        o.emitter.emit({
+          type: 'task_log',
+          taskId: msg.taskId,
+          stream,
+          data,
+          isAnsi: true,
+          turnId: turn?.turnId,
+          eventSeq,
+        });
       },
       // 步骤流（B 批次）：仅 steps:true 的工具会触发；label 的截断与脱敏在 Emitter 收口
       onStep: (step) => {
         o.registry.updateStep(msg.taskId, step);
         const at = new Date().toISOString();
+        let eventSeq: number | undefined;
         if (sessionCreated) {
-          o.store.appendEvent({
+          eventSeq = o.store.appendEvent({
             sessionId: msg.taskId,
             type: 'task_step',
             payload: { ...step, at },
-          });
+          }).eventSeq;
         }
-        o.emitter.emit({ type: 'task_step', taskId: msg.taskId, ...step, at });
+        o.emitter.emit({
+          type: 'task_step',
+          taskId: msg.taskId,
+          ...step,
+          at,
+          turnId: turn?.turnId,
+          eventSeq,
+        });
       },
       onPlan: (items) => {
         o.registry.updatePlan(msg.taskId, items);
@@ -164,21 +227,37 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
             `[agent-bridge] 变更 ${info.changedFiles.length} 个文件：${info.changedFiles.slice(0, 8).join(', ')}`,
           );
         }
-        const payload = {
-          taskId: msg.taskId,
-          status,
-          exitCode: info?.exitCode,
-          error: info?.error,
-          errorCode: info?.errorCode,
-          phase: info?.phase,
-          queuePosition: info?.queuePosition,
-          diff: info?.diff,
-          changedFiles: info?.changedFiles,
-          diffTruncated: info?.diffTruncated,
-          requestedBy: msg.requestedBy,
-        };
+        let eventSeq: number | undefined;
         if (sessionCreated) {
           try {
+            // 最终回答先落 canonical task_message，再落终态；平台按 eventSeq 可完整重建。
+            if (terminalStatus(status) && info?.result?.trim()) {
+              const at = new Date().toISOString();
+              const messageId = `msg_${msg.taskId}_final`;
+              const messageEvent = o.store.appendEvent({
+                sessionId: msg.taskId,
+                type: 'task_message',
+                payload: {
+                  messageId,
+                  role: 'agent',
+                  state: 'complete',
+                  text: info.result,
+                  turnId: turn?.turnId,
+                  at,
+                },
+              });
+              o.emitter.emit({
+                type: 'task_message',
+                taskId: msg.taskId,
+                messageId,
+                role: 'agent',
+                state: 'complete',
+                text: info.result,
+                turnId: turn?.turnId,
+                eventSeq: messageEvent.eventSeq,
+                at,
+              });
+            }
             const nextPhase =
               status === 'running' ? (info?.phase === 'queued' ? 'queued' : 'running') : 'settled';
             o.store.updateSession(msg.taskId, { phase: nextPhase });
@@ -200,7 +279,24 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
               if (terminalStatus(status)) turnPatch.finishedAt = at;
               o.store.updateTurn(msg.taskId, turn.turnId, turnPatch);
             }
-            o.store.appendEvent({ sessionId: msg.taskId, type: 'task_status', payload });
+            const payload = {
+              taskId: msg.taskId,
+              status,
+              exitCode: info?.exitCode,
+              error: info?.error,
+              errorCode: info?.errorCode,
+              phase: info?.phase,
+              queuePosition: info?.queuePosition,
+              diff: info?.diff,
+              changedFiles: info?.changedFiles,
+              diffTruncated: info?.diffTruncated,
+              requestedBy: msg.requestedBy,
+            };
+            eventSeq = o.store.appendEvent({
+              sessionId: msg.taskId,
+              type: 'task_status',
+              payload,
+            }).eventSeq;
             if (terminalStatus(status)) {
               o.store.closeSession(msg.taskId, status, info?.error);
             }
@@ -210,7 +306,19 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
         }
         o.emitter.emit({
           type: 'task_status',
-          ...payload,
+          taskId: msg.taskId,
+          status,
+          exitCode: info?.exitCode,
+          error: info?.error,
+          errorCode: info?.errorCode,
+          phase: info?.phase,
+          queuePosition: info?.queuePosition,
+          diff: info?.diff,
+          changedFiles: info?.changedFiles,
+          diffTruncated: info?.diffTruncated,
+          requestedBy: msg.requestedBy,
+          turnId: turn?.turnId,
+          eventSeq,
         });
       },
     },
