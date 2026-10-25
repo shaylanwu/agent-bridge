@@ -23,10 +23,12 @@ import {
   resolveMaxQueued,
   resolveMaxTasks,
   saveConfig,
+  stateDbPath,
   stateDir,
   tokenTail,
   type BridgeConfig,
 } from '../infra/config.js';
+import { SessionStore } from '../core/session-store.js';
 import { ensureDeviceIdentity } from '../infra/device-identity-store.js';
 import { withProfileLock } from '../infra/profile-lock.js';
 
@@ -129,21 +131,34 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
   const maxTasksOverride = numFlagMin(flags, 'max-tasks', 1);
   const maxQueueOverride = numFlagMin(flags, 'max-queue', 0);
 
-  const session = createSession({
-    platformUrl: targetUrl,
-    deviceToken,
-    deviceId,
-    cliVersion: version(),
-    hostname: hostname(),
-    allowedCwd: saved.allowedCwd,
-    maxConcurrent: resolveMaxTasks(saved.maxTasks, maxTasksOverride),
-    maxQueued: resolveMaxQueued(saved.maxQueued, maxQueueOverride),
-    diffMaxBytes: resolveDiffMaxBytes(saved.diffMaxBytes),
-    captureDiffByDefault: saved.diffDefault === true,
-    requireServiceToken: saved.requireServiceToken === true,
-    registry: new TaskRegistry(),
-    log,
-  });
+  const store = new SessionStore(stateDbPath());
+  const recovered = store.recoverInterrupted();
+  if (recovered > 0) {
+    log('info', `[agent-bridge] 已恢复 ${recovered} 个上次中断的会话（未自动重放副作用）`);
+  }
+
+  let session: BridgeSession;
+  try {
+    session = createSession({
+      platformUrl: targetUrl,
+      deviceToken,
+      deviceId,
+      cliVersion: version(),
+      hostname: hostname(),
+      allowedCwd: saved.allowedCwd,
+      maxConcurrent: resolveMaxTasks(saved.maxTasks, maxTasksOverride),
+      maxQueued: resolveMaxQueued(saved.maxQueued, maxQueueOverride),
+      diffMaxBytes: resolveDiffMaxBytes(saved.diffMaxBytes),
+      captureDiffByDefault: saved.diffDefault === true,
+      requireServiceToken: saved.requireServiceToken === true,
+      registry: new TaskRegistry(),
+      store,
+      log,
+    });
+  } catch (error) {
+    store.close();
+    throw error;
+  }
 
   return { session, config: saved };
 }

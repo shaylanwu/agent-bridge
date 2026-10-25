@@ -119,6 +119,20 @@ describe('SessionStore', () => {
     ).toThrowError(SessionStoreError);
   });
 
+  it('启动恢复把中断的 task 关闭、conversation 留 waiting_user', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_task', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });
+    store.createTurn({ sessionId: 'bt_task', status: 'running' });
+    store.createSession({ sessionId: 'bt_conv', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
+    store.createTurn({ sessionId: 'bt_conv', status: 'running' });
+
+    expect(store.recoverInterrupted()).toBe(2);
+    expect(store.getSession('bt_task')).toMatchObject({ status: 'failed', phase: 'settled' });
+    expect(store.getTombstone('bt_task')).toBeDefined();
+    expect(store.getSession('bt_conv')).toMatchObject({ status: 'running', phase: 'waiting_user' });
+    expect(store.listTurns('bt_conv')[0]?.status).toBe('failed');
+  });
+
   it('重新打开数据库后历史仍在', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-session-'));
     dirs.push(dir);

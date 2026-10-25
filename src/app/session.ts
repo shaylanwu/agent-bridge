@@ -16,6 +16,7 @@ import type { TaskHandle } from '../runner.js';
 import { createBridgeClient } from '../transport/bridge-client.js';
 import type { SessionLog } from './session-log.js';
 import { dispatchCancelTask, dispatchRunTask } from './task-dispatch.js';
+import type { SessionStore } from '../core/session-store.js';
 
 export interface SessionOptions {
   platformUrl: string;
@@ -32,6 +33,8 @@ export interface SessionOptions {
   requireServiceToken: boolean;
   /** 任务注册表（面板/台账共用视图；由 bootstrap 创建） */
   registry: TaskRegistry;
+  /** 持久 Session/Turn/Event 权威源；由 bootstrap 创建并在 close 时关闭 */
+  store: SessionStore;
   log: SessionLog;
 }
 
@@ -122,6 +125,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
         diffMaxBytes: opts.diffMaxBytes,
         captureDiffByDefault: opts.captureDiffByDefault,
         requireServiceToken: opts.requireServiceToken,
+        store: opts.store,
         log: opts.log,
       };
       if (msg.type === 'cancel_task') return dispatchCancelTask(msg, dispatchOpts);
@@ -144,7 +148,10 @@ export function createSession(opts: SessionOptions): BridgeSession {
     // 循环依赖的解法：client 的回调只在连接建立后触发，此时 emitter 必然已赋值
     emitter,
     registry: opts.registry,
-    close: () => client.close(),
+    close: () => {
+      client.close();
+      opts.store.close();
+    },
     isConnected: () => client.isOpen(),
     activeTasks: () => tasks.size,
     cancelTask: (taskId: string) => {

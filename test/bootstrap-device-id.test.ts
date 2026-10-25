@@ -131,6 +131,11 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  // startBridge 现在会创建真实 SessionStore；mock 的 createSession 不会替我们 close。
+  for (const call of createSessionMock.mock.calls) {
+    const store = (call[0] as SessionOptions | undefined)?.store;
+    store?.close();
+  }
   if (previousConfig === undefined) delete process.env['AGENT_BRIDGE_CONFIG'];
   else process.env['AGENT_BRIDGE_CONFIG'] = previousConfig;
   if (previousDeviceId === undefined) delete process.env['AGENT_BRIDGE_DEVICE_ID'];

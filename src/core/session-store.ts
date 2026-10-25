@@ -14,7 +14,7 @@ export type SessionMode = 'task' | 'conversation';
 export type SessionPhase = 'queued' | 'running' | 'waiting_interaction' | 'waiting_user' | 'settled';
 export type SessionTerminalStatus = 'success' | 'failed' | 'cancelled' | 'timeout';
 export type SessionStatus = 'running' | SessionTerminalStatus;
-export type TurnStatus = 'queued' | 'running' | 'settled' | 'cancelled' | 'failed';
+export type TurnStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'timeout';
 export type InteractionKind = 'permission' | 'form' | 'auth-url';
 export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
 
@@ -256,6 +256,7 @@ function toArtifact(row: ArtifactRow): ArtifactRecord {
 
 export class SessionStore {
   private readonly db: Database.Database;
+  private closed = false;
 
   constructor(dbPath: string) {
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
@@ -375,6 +376,8 @@ export class SessionStore {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 
@@ -437,6 +440,13 @@ export class SessionStore {
       .prepare('SELECT * FROM sessions WHERE tenant_id = ? AND session_id = ?')
       .get(tenantId, sessionId) as SessionRow | undefined;
     return row ? toSession(row) : undefined;
+  }
+
+  listSessions(tenantId = DEFAULT_TENANT): SessionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM sessions WHERE tenant_id = ? ORDER BY created_at')
+      .all(tenantId) as SessionRow[];
+    return rows.map(toSession);
   }
 
   updateSession(
@@ -846,5 +856,31 @@ export class SessionStore {
       )
       .run(at, at, tenantId, sessionId);
     return result.changes;
+  }
+
+  /**
+   * 进程启动时的一次性恢复：上一进程留下的 running Session 不能假装还在跑。
+   * task 模式直接落 failed + tombstone；conversation 保留历史并进入 waiting_user。
+   */
+  recoverInterrupted(tenantId = DEFAULT_TENANT): number {
+    let recovered = 0;
+    for (const session of this.listSessions(tenantId)) {
+      if (session.status !== 'running' || session.phase === 'waiting_user') continue;
+      const tx = this.db.transaction(() => {
+        this.markActiveTurnsInterrupted(session.sessionId, tenantId);
+        this.appendEvent({
+          sessionId: session.sessionId,
+          tenantId,
+          type: 'session_interrupted',
+          payload: { previousPhase: session.phase, at: now() },
+        });
+        if (session.mode === 'task') {
+          this.closeSession(session.sessionId, 'failed', 'session_interrupted', tenantId);
+        }
+        recovered += 1;
+      });
+      tx();
+    }
+    return recovered;
   }
 }

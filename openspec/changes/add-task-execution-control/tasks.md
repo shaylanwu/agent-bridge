@@ -2,7 +2,8 @@
 
 > 状态：方案已于 2026-10-25 人工确认，作为 1.0.0 实施基线。分阶段实施。
 > Phase 1 切片（2026-10-25）：包/协议版本 v1、better-sqlite3、SessionStore（事件幂等/快照/tombstone）、
-> stateDbPath、harness/e2e 版本对齐；未接执行路径与新增 wire 消息。
+> stateDbPath、harness/e2e 版本对齐；SessionStore 已接 bootstrap + task-dispatch（一次性任务落 Session/Turn/Event，
+> 启动恢复中断会话）；新增 wire 消息、交互/附件/多轮 API 尚未实现。
 
 ## 1. 决策、标准与安全边界
 
