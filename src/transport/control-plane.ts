@@ -24,6 +24,7 @@ import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/erro
 import type { SessionLog } from '../app/session-log.js';
 import type { TaskRegistry } from '../app/task-registry.js';
 import type { SessionStore } from '../core/session-store.js';
+import type { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
 import type { ClientMessage, AgentListItem, TaskPhase } from '../protocol.js';
@@ -51,6 +52,8 @@ export interface ControlPlaneDeps {
   registry: TaskRegistry;
   /** 持久 Session/Turn/Event 权威源（只读查询） */
   store: SessionStore;
+  /** 附件 TTL 管理 */
+  artifacts: ArtifactTransferManager;
   scan: (opts: { fresh?: boolean }) => Promise<AgentListItem[]>;
   log: SessionLog;
   /** 能力清单（与 `hello.capabilities` 同源） */
@@ -599,6 +602,21 @@ export async function startControlPlane(
     });
   };
 
+  const handleArtifactsGc = (ctx: RouteContext): void => {
+    if (!authorize(ctx, 'task:cancel')) return;
+    const body = (ctx.body ?? {}) as { ttlDays?: unknown; dryRun?: unknown };
+    const ttlDays = typeof body.ttlDays === 'number' ? Math.floor(body.ttlDays) : 30;
+    if (!Number.isFinite(ttlDays) || ttlDays <= 0) {
+      problem(ctx.res, 400, 'cwd_not_allowed', 'ttlDays 必须是正整数');
+      return;
+    }
+    const result = deps.artifacts.cleanupArtifacts({
+      olderThanMs: ttlDays * 24 * 60 * 60 * 1000,
+      dryRun: body.dryRun === true,
+    });
+    json(ctx.res, 200, { ttlDays, dryRun: body.dryRun === true, ...result });
+  };
+
   const handleSessionSnapshot = (ctx: RouteContext, id: string): void => {
     if (!authorize(ctx, 'task:read')) return;
     try {
@@ -776,6 +794,9 @@ export async function startControlPlane(
           return;
         }
         // 面板聚合视图：任务注册表（与终端面板同源）+ 计数 + 容量
+        if (path === '/v1/artifacts:gc' && req.method === 'POST') {
+          return handleArtifactsGc(ctx);
+        }
         if (path === '/v1/sessions' && req.method === 'GET') {
           return handleSessions(ctx);
         }

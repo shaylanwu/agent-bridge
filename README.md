@@ -424,6 +424,7 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |
 | GET | `/v1/board` | `task:read` (board aggregate: tasks + counts + capacity) |
+| POST | `/v1/artifacts:gc` | `task:cancel` (explicit artifact TTL cleanup, dryRun supported) |
 | GET | `/v1/sessions` | `task:read` (persistent sessions) |
 | GET | `/v1/sessions/{id}` | `task:read` (session snapshot + eventSeq window) |
 | GET | `/v1/sessions/{id}/events` | `task:read` (SSE: replay + live events) |

@@ -147,6 +147,34 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/BoardTask' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/artifacts:gc:
+    post:
+      tags: [artifacts]
+      summary: 显式 TTL 清理 artifact（按 CAS 引用计数，不自动执行）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttlDays: { type: integer, minimum: 1, default: 30 }
+                dryRun: { type: boolean, default: false }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ttlDays: { type: integer }
+                  dryRun: { type: boolean }
+                  scanned: { type: integer }
+                  deleted: { type: integer }
+                  filesRemoved: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /v1/sessions:
     get:
       tags: [sessions]
@@ -416,6 +444,9 @@ components:
       required: true
       schema: { type: string }
   responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     Unauthorized:
       description: Missing / invalid / expired token
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }

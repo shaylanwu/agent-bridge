@@ -15,6 +15,7 @@ description: Every endpoint of the optional loopback control plane — generated
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | Installed agents and their credential state (`?fresh=true` to re-probe) |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | Trigger a fresh scan (same as GET /v1/agents?fresh=true) |
 | `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
+| `POST` | [`/v1/artifacts:gc`](#op-post-v1-artifacts-gc) | 显式 TTL 清理 artifact（按 CAS 引用计数，不自动执行） |
 | `GET` | [`/v1/sessions`](#op-get-v1-sessions) | 持久会话列表（按 created_at 升序，返回末尾 limit 条） |
 | `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
 | `GET` | [`/v1/sessions/{id}/events`](#op-get-v1-sessions-id-events) | 会话 SSE：先回放历史，再接实时事件 |
@@ -228,6 +229,58 @@ The only route that needs no token — safe for container and CI probes.
       "createdAt": 1
     }
   ]
+}
+```
+
+
+
+
+<a id="op-post-v1-artifacts-gc"></a>
+
+### POST /v1/artifacts:gc
+
+**显式 TTL 清理 artifact（按 CAS 引用计数，不自动执行）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Request body**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ttlDays` | `integer` |  |  |
+| `dryRun` | `boolean` |  |  |
+
+
+**Example**
+
+```json
+{
+  "ttlDays": 1,
+  "dryRun": true
+}
+```
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Invalid request body or parameters — Schema: Problem |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "ttlDays": 1,
+  "dryRun": true,
+  "scanned": 1,
+  "deleted": 1,
+  "filesRemoved": 1
 }
 ```
 
@@ -646,7 +699,7 @@ Late subscribers are backfilled from a bounded ring buffer before live events st
 | Status | Meaning |
 | --- | --- |
 | `200` | 文件内容（content-type 按扩展名：md/html/图片/文本） |
-| `400` |  |
+| `400` | Invalid request body or parameters — Schema: Problem |
 | `401` | Missing / invalid / expired token — Schema: Problem |
 | `403` | 路径越出任务工作目录或不在 allowed_cwd |
 | `404` | Session does not exist — Schema: Problem |

@@ -152,6 +152,40 @@ describe('ArtifactTransferManager', () => {
     if (persisted?.tempPath) expect(existsSync(persisted.tempPath)).toBe(false);
   });
 
+  it('TTL 清理按 CAS 引用计数，只删最后一个引用', () => {
+    const { manager, store } = setup();
+    const body = Buffer.from('same content', 'utf8');
+    const whole = sha(body);
+    const upload = (op: string) => {
+      const ready = manager.startUpload({
+        sessionId: 'bt_art',
+        operationId: op,
+        name: `${op}.txt`,
+        mimeType: 'text/plain',
+        size: body.length,
+        sha256: whole,
+      });
+      manager.writeChunk({
+        transferId: ready.transferId,
+        offset: 0,
+        data: body.toString('base64'),
+        chunkSha256: sha(body),
+      });
+      return manager.completeUpload({ transferId: ready.transferId, size: body.length, sha256: whole });
+    };
+    upload('op_ttl_1');
+    upload('op_ttl_2');
+    expect(store.listAllArtifacts()).toHaveLength(2);
+
+    const preview = manager.cleanupArtifacts({ olderThanMs: 0, dryRun: true });
+    expect(preview).toMatchObject({ deleted: 2, filesRemoved: 1 });
+    expect(store.listAllArtifacts()).toHaveLength(2);
+
+    const actual = manager.cleanupArtifacts({ olderThanMs: 0 });
+    expect(actual).toMatchObject({ deleted: 2, filesRemoved: 1 });
+    expect(store.listAllArtifacts()).toHaveLength(0);
+  });
+
   it('下载按 ready/chunk/ack/result 推送', () => {
     const { manager, sent } = setup();
     const body = Buffer.from('download me', 'utf8');

@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
+import { ArtifactTransferManager } from '../src/core/artifact-transfer.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
 import { startControlPlane, type ControlPlaneDeps } from '../src/transport/control-plane.js';
 import type { RunTaskRequest, TaskFinishInfo, TaskHandle, TaskHooks } from '../src/core/task-supervisor.js';
@@ -59,10 +60,16 @@ function call(port: number, method: string, path: string, opts: { body?: unknown
 
 function makeDeps(overrides: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps {
   const emitter = new Emitter({ sink: () => undefined, ringSize: 64 });
+  const store = new SessionStore(':memory:');
   return {
     emitter,
     registry: new TaskRegistry(),
-    store: new SessionStore(':memory:'),
+    store,
+    artifacts: new ArtifactTransferManager({
+      store,
+      rootDir: join(tmpdir(), 'agent-bridge-control-plane-artifacts'),
+      emit: () => undefined,
+    }),
     startTask: (req: RunTaskRequest, hooks: TaskHooks): TaskHandle => {
       // 立即成功：测试关心的是 HTTP 层契约，不是真跑 CLI
       hooks.onStatus('success', { exitCode: 0 } satisfies TaskFinishInfo);
@@ -181,6 +188,17 @@ describe('本地回环控制面', () => {
     expect(res.body).toContain('event: event');
     expect(res.body).toContain('event: done');
     expect(res.body).toContain('"eventSeq":1');
+    plane.close();
+  });
+
+  it('POST /v1/artifacts:gc 执行 TTL 清理（默认 dryRun 可显式）', async () => {
+    const plane = await start({ verify: () => ({ ok: true }) });
+    const res = await call(plane.port, 'POST', '/v1/artifacts:gc', {
+      body: { ttlDays: 30, dryRun: true },
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json()).toMatchObject({ ttlDays: 30, dryRun: true, scanned: 0, deleted: 0 });
     plane.close();
   });
 

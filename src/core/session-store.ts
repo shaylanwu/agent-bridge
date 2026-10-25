@@ -1124,6 +1124,19 @@ export class SessionStore {
     return row ? toArtifact(row) : undefined;
   }
 
+  listAllArtifacts(tenantId = DEFAULT_TENANT): ArtifactRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM artifacts WHERE tenant_id = ? ORDER BY created_at')
+      .all(tenantId) as ArtifactRow[];
+    return rows.map(toArtifact);
+  }
+
+  deleteArtifact(artifactId: string, tenantId = DEFAULT_TENANT): void {
+    this.db
+      .prepare('DELETE FROM artifacts WHERE tenant_id = ? AND artifact_id = ?')
+      .run(tenantId, artifactId);
+  }
+
   listArtifacts(sessionId: string, tenantId = DEFAULT_TENANT): ArtifactRecord[] {
     const rows = this.db
       .prepare('SELECT * FROM artifacts WHERE tenant_id = ? AND session_id = ? ORDER BY created_at')

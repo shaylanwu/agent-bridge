@@ -15,6 +15,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | 已安装 AI Agent 及其凭据状态 |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | 触发一次全新扫描 |
 | `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
+| `POST` | [`/v1/artifacts:gc`](#op-post-v1-artifacts-gc) | 显式 TTL 清理 artifact（按 CAS 引用计数，不自动执行） |
 | `GET` | [`/v1/sessions`](#op-get-v1-sessions) | 持久会话列表（按 created_at 升序，返回末尾 limit 条） |
 | `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
 | `GET` | [`/v1/sessions/{id}/events`](#op-get-v1-sessions-id-events) | 会话 SSE：先回放历史，再接实时事件 |
@@ -232,6 +233,58 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
       "createdAt": 1
     }
   ]
+}
+```
+
+
+
+
+<a id="op-post-v1-artifacts-gc"></a>
+
+### POST /v1/artifacts:gc
+
+**显式 TTL 清理 artifact（按 CAS 引用计数，不自动执行）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**请求体**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `ttlDays` | `integer` |  |  |
+| `dryRun` | `boolean` |  |  |
+
+
+**示例**
+
+```json
+{
+  "ttlDays": 1,
+  "dryRun": true
+}
+```
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `400` |  — 结构: Problem |
+| `401` |  — 结构: Problem |
+| `403` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "ttlDays": 1,
+  "dryRun": true,
+  "scanned": 1,
+  "deleted": 1,
+  "filesRemoved": 1
 }
 ```
 
@@ -652,7 +705,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | 状态码 | 含义 |
 | --- | --- |
 | `200` |  |
-| `400` |  |
+| `400` |  — 结构: Problem |
 | `401` |  — 结构: Problem |
 | `403` |  |
 | `404` |  — 结构: Problem |

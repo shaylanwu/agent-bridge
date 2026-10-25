@@ -59,6 +59,8 @@ export interface BridgeSession {
   readonly registry: TaskRegistry;
   /** 持久 Session/Turn/Event 权威源（控制面只读查询用） */
   readonly store: SessionStore;
+  /** 附件传输与 TTL 管理（控制面管理接口用） */
+  readonly artifacts: ArtifactTransferManager;
   /** 在跑/排队的任务数（状态展示与控制面用） */
   activeTasks: () => number;
   /** 取消指定任务（无此任务返回 false） */
@@ -297,6 +299,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     emitter,
     registry: opts.registry,
     store: opts.store,
+    artifacts,
     close: () => {
       client.close();
       opts.store.close();

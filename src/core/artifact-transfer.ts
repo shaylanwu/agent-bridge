@@ -251,6 +251,38 @@ export class ArtifactTransferManager {
     return removed;
   }
 
+  /**
+   * 显式 artifact TTL 清理（不自动执行）。同一 CAS 文件仍被其他 artifact 引用时保留文件。
+   */
+  cleanupArtifacts(input: {
+    olderThanMs: number;
+    dryRun?: boolean;
+    now?: number;
+  }): { scanned: number; deleted: number; filesRemoved: number } {
+    const cutoff = (input.now ?? Date.now()) - input.olderThanMs;
+    const all = this.deps.store.listAllArtifacts(this.tenant());
+    const expired = all.filter((artifact) => Date.parse(artifact.createdAt) <= cutoff);
+    if (expired.length === 0) return { scanned: all.length, deleted: 0, filesRemoved: 0 };
+
+    const expiredKeys = new Set(expired.map((artifact) => artifact.storageKey));
+    if (!input.dryRun) {
+      for (const artifact of expired) {
+        this.deps.store.deleteArtifact(artifact.artifactId, this.tenant());
+      }
+    }
+    const remaining = input.dryRun
+      ? all.filter((artifact) => !expiredKeys.has(artifact.storageKey))
+      : this.deps.store.listAllArtifacts(this.tenant());
+    const remainingKeys = new Set(remaining.map((artifact) => artifact.storageKey));
+    let filesRemoved = 0;
+    for (const key of expiredKeys) {
+      if (remainingKeys.has(key)) continue;
+      filesRemoved += 1;
+      if (!input.dryRun) rmSync(join(this.root, key), { force: true });
+    }
+    return { scanned: all.length, deleted: expired.length, filesRemoved };
+  }
+
   startDownload(input: {
     sessionId: string;
     artifactId: string;
