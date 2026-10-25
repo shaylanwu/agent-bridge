@@ -272,8 +272,8 @@ Protocol (JSON over one connection):
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `artifact_download_ready`, `artifact_download_chunk`, `artifact_download_result`, `capacity_update`, `pong` |
-| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `artifact_download_start`, `artifact_download_chunk_ack`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `interaction_url`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `artifact_download_ready`, `artifact_download_chunk`, `artifact_download_result`, `capacity_update`, `pong` |
+| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `get_interaction_url`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `artifact_download_start`, `artifact_download_chunk_ack`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
 
 ### Capability negotiation (`hello.capabilities`)
 
@@ -296,6 +296,7 @@ should degrade on this list rather than guessing from a CLI version:
 | `task-interaction` | Permission/Form/URL requests, responses, results and expiry |
 | `artifact-upload` | Inbound chunked upload with SHA-256, CAS and task_artifact |
 | `artifact-download` | Chunked download from CAS (ready/chunk/ack/result) |
+| `interaction-url` | `get_interaction_url`; URLs kept in process memory with a short TTL |
 
 ### Step stream (`task_step`)
 

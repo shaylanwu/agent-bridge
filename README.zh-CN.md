@@ -247,8 +247,8 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`、`session_ack`、`message_ack`、`task_interaction_request`、`task_interaction_result`、`artifact_upload_ready`、`artifact_upload_chunk_ack`、`artifact_upload_result`、`artifact_download_ready`、`artifact_download_chunk`、`artifact_download_result`、`capacity_update`、`pong` |
-| 平台 → bridge | `run_task`、`send_message`、`task_interaction_response`、`artifact_upload_start`、`artifact_upload_chunk`、`artifact_upload_complete`、`artifact_download_start`、`artifact_download_chunk_ack`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
+| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`、`session_ack`、`message_ack`、`task_interaction_request`、`task_interaction_result`、`interaction_url`、`artifact_upload_ready`、`artifact_upload_chunk_ack`、`artifact_upload_result`、`artifact_download_ready`、`artifact_download_chunk`、`artifact_download_result`、`capacity_update`、`pong` |
+| 平台 → bridge | `run_task`、`send_message`、`task_interaction_response`、`get_interaction_url`、`artifact_upload_start`、`artifact_upload_chunk`、`artifact_upload_complete`、`artifact_download_start`、`artifact_download_chunk_ack`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
 
 ### 能力协商（hello.capabilities）
 
@@ -270,6 +270,7 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 | `task-interaction` | 支持权限/Form/URL 交互请求、回复、结果与过期处理 |
 | `artifact-upload` | 支持入站附件分块上传、SHA-256、CAS 与 task_artifact |
 | `artifact-download` | 支持从 CAS 分块下载附件（ready/chunk/ack/result） |
+| `interaction-url` | 支持 `get_interaction_url`，URL 仅进程内短期保存 |
 
 ### 步骤流（task_step）
 

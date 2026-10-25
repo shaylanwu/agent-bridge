@@ -30,6 +30,7 @@ export const PROTOCOL_CAPABILITIES = [
   'task-interaction',
   'artifact-upload',
   'artifact-download',
+  'interaction-url',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -256,6 +257,15 @@ export type ClientMessage =
       errorCode?: string;
     }
   | {
+      type: 'interaction_url';
+      taskId: string;
+      requestId: string;
+      ok: boolean;
+      url?: string;
+      expiresAt?: string;
+      errorCode?: string;
+    }
+  | {
       /** 交互回复结果（bridge → 平台） */
       type: 'task_interaction_result';
       taskId: string;
@@ -372,6 +382,12 @@ export interface CancelTurnCommand extends ServiceIdentity {
   operationId: string;
 }
 
+export interface GetInteractionUrlCommand extends ServiceIdentity {
+  type: 'get_interaction_url';
+  taskId: string;
+  requestId: string;
+}
+
 export interface InteractionResponseCommand extends ServiceIdentity {
   type: 'task_interaction_response';
   taskId: string;
@@ -441,6 +457,7 @@ export type ServerMessage =
   | CancelTurnCommand
   | SendMessageCommand
   | InteractionResponseCommand
+  | GetInteractionUrlCommand
   | ArtifactUploadStartCommand
   | ArtifactUploadChunkCommand
   | ArtifactUploadCompleteCommand
@@ -504,6 +521,21 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'get_interaction_url') {
+    for (const key of ['taskId', 'requestId'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`get_interaction_url 缺少 ${key}`);
+      }
+    }
+    return {
+      type: 'get_interaction_url',
+      taskId: String(msg['taskId']),
+      requestId: String(msg['requestId']),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
   }
   if (type === 'artifact_download_start') {
     for (const key of ['taskId', 'artifactId', 'operationId'] as const) {

@@ -27,6 +27,7 @@ import { dispatchConversationMessage } from './conversation.js';
 import { authorizeService } from './service-gate.js';
 import type { SessionStore } from '../core/session-store.js';
 import { ArtifactTransferManager } from '../core/artifact-transfer.js';
+import { InteractionUrlVault } from '../core/interaction-url.js';
 
 export interface SessionOptions {
   platformUrl: string;
@@ -61,6 +62,8 @@ export interface BridgeSession {
   readonly store: SessionStore;
   /** 附件传输与 TTL 管理（控制面管理接口用） */
   readonly artifacts: ArtifactTransferManager;
+  /** 交互短期 URL（仅进程内，不落盘） */
+  readonly urls: InteractionUrlVault;
   /** 在跑/排队的任务数（状态展示与控制面用） */
   activeTasks: () => number;
   /** 取消指定任务（无此任务返回 false） */
@@ -77,6 +80,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     emit: (msg) => emitter?.emit(msg),
     rootDir: opts.artifactRootDir,
   });
+  const urls = new InteractionUrlVault();
   try {
     const stale = artifacts.cleanupStaleTransfers();
     if (stale > 0) opts.log('info', `[agent-bridge] 已回收 ${stale} 个超时未完成的附件上传`);
@@ -150,6 +154,36 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (msg.type === 'send_message') {
         dispatchConversationMessage(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'get_interaction_url') {
+        const gate = authorizeService(
+          msg,
+          'get_interaction_url',
+          msg.taskId,
+          'task:respond',
+          opts.requireServiceToken,
+        );
+        if (!gate.ok) {
+          emitter.emit({
+            type: 'interaction_url',
+            taskId: msg.taskId,
+            requestId: msg.requestId,
+            ok: false,
+            errorCode: gate.code,
+          });
+          return;
+        }
+        const entry = urls.get(msg.taskId, msg.requestId);
+        emitter.emit({
+          type: 'interaction_url',
+          taskId: msg.taskId,
+          requestId: msg.requestId,
+          ok: Boolean(entry),
+          url: entry?.url,
+          expiresAt: entry?.expiresAt,
+          errorCode: entry ? undefined : 'interaction_url_not_found',
+        });
         return;
       }
       if (msg.type === 'task_interaction_response') {
@@ -301,6 +335,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     registry: opts.registry,
     store: opts.store,
     artifacts,
+    urls,
     close: () => {
       client.close();
       opts.store.close();

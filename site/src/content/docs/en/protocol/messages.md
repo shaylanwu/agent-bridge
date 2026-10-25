@@ -607,6 +607,38 @@ State transitions, and the only message that carries terminal results: exit code
 ```
 
 
+<a id="msg-interaction_url"></a>
+
+### interaction_url — 交互短期 URL
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `interaction_url` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `ok` | `boolean` | ✓ |  |
+| `url` | `string` |  |  |
+| `expiresAt` | `string` (date-time) |  |  |
+| `errorCode` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "interaction_url",
+  "taskId": "string",
+  "requestId": "string",
+  "ok": true,
+  "url": "string",
+  "expiresAt": "string",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-task_interaction_result"></a>
 
 ### task_interaction_result — 交互结果
@@ -987,6 +1019,36 @@ Platform → bridge. Requests cancellation of a running task.
   "transferId": "string",
   "size": 1,
   "sha256": "string"
+}
+```
+
+
+<a id="msg-get_interaction_url"></a>
+
+### get_interaction_url — 获取交互短期 URL
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `get_interaction_url` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "get_interaction_url",
+  "taskId": "string",
+  "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
 }
 ```
 

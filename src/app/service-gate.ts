@@ -24,7 +24,12 @@ export interface ServiceIdentityInput {
 
 export function authorizeService(
   msg: ServiceIdentityInput,
-  action: 'run_task' | 'cancel_task' | 'get_task' | 'task_interaction_response',
+  action:
+    | 'run_task'
+    | 'cancel_task'
+    | 'get_task'
+    | 'task_interaction_response'
+    | 'get_interaction_url',
   taskId: string,
   scope: ServiceScope,
   requireToken: boolean,

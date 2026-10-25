@@ -53,7 +53,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url。
               items: { type: string }
             capacity:
               type: object
@@ -334,6 +334,21 @@ channels:
             payload: { type: object, additionalProperties: true }
             expiresAt: { type: string, format: date-time }
             eventSeq: { type: integer, minimum: 1 }
+      interaction_url:
+        name: interaction_url
+        title: 交互短期 URL
+        description: URL 仅存 bridge 进程内，带 TTL；不写入 SQLite 或日志。
+        payload:
+          type: object
+          required: [type, taskId, requestId, ok]
+          properties:
+            type: { type: string, const: interaction_url }
+            taskId: { type: string }
+            requestId: { type: string }
+            ok: { type: boolean }
+            url: { type: string }
+            expiresAt: { type: string, format: date-time }
+            errorCode: { type: string }
       task_interaction_result:
         name: task_interaction_result
         title: 交互结果
@@ -517,6 +532,20 @@ channels:
             transferId: { type: string }
             size: { type: integer, minimum: 0 }
             sha256: { type: string }
+      get_interaction_url:
+        name: get_interaction_url
+        title: 获取交互短期 URL
+        description: 需要 task:respond scope；只返回进程内 Vault 中未过期的 URL。
+        payload:
+          type: object
+          required: [type, taskId, requestId]
+          properties:
+            type: { type: string, const: get_interaction_url }
+            taskId: { type: string }
+            requestId: { type: string }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
       task_interaction_response:
         name: task_interaction_response
         title: 回复交互
@@ -626,6 +655,7 @@ operations:
       - $ref: '#/channels/upstream/messages/message_ack'
       - $ref: '#/channels/upstream/messages/task_interaction_request'
       - $ref: '#/channels/upstream/messages/task_interaction_result'
+      - $ref: '#/channels/upstream/messages/interaction_url'
       - $ref: '#/channels/upstream/messages/artifact_upload_ready'
       - $ref: '#/channels/upstream/messages/artifact_upload_chunk_ack'
       - $ref: '#/channels/upstream/messages/artifact_upload_result'
@@ -641,6 +671,7 @@ operations:
       - $ref: '#/channels/downstream/messages/run_task'
       - $ref: '#/channels/downstream/messages/send_message'
       - $ref: '#/channels/downstream/messages/task_interaction_response'
+      - $ref: '#/channels/downstream/messages/get_interaction_url'
       - $ref: '#/channels/downstream/messages/artifact_upload_start'
       - $ref: '#/channels/downstream/messages/artifact_upload_chunk'
       - $ref: '#/channels/downstream/messages/artifact_upload_complete'

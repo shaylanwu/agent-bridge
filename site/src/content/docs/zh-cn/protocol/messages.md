@@ -26,7 +26,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -617,6 +617,40 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 ```
 
 
+<a id="msg-interaction_url"></a>
+
+### interaction_url — 交互短期 URL
+
+URL 仅存 bridge 进程内，带 TTL；不写入 SQLite 或日志。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `interaction_url` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `ok` | `boolean` | ✓ |  |
+| `url` | `string` |  |  |
+| `expiresAt` | `string` (date-time) |  |  |
+| `errorCode` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "interaction_url",
+  "taskId": "string",
+  "requestId": "string",
+  "ok": true,
+  "url": "string",
+  "expiresAt": "string",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-task_interaction_result"></a>
 
 ### task_interaction_result — 交互结果
@@ -1003,6 +1037,38 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   "transferId": "string",
   "size": 1,
   "sha256": "string"
+}
+```
+
+
+<a id="msg-get_interaction_url"></a>
+
+### get_interaction_url — 获取交互短期 URL
+
+需要 task:respond scope；只返回进程内 Vault 中未过期的 URL。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `get_interaction_url` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `requestId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "get_interaction_url",
+  "taskId": "string",
+  "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
 }
 ```
 

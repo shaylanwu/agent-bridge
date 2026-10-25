@@ -111,7 +111,8 @@ export class Emitter {
       msg.type !== 'task_snapshot' &&
       msg.type !== 'session_ack' &&
       msg.type !== 'message_ack' &&
-      msg.type !== 'task_interaction_result'
+      msg.type !== 'task_interaction_result' &&
+      msg.type !== 'interaction_url'
     ) {
       return;
     }
