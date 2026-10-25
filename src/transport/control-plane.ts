@@ -26,6 +26,7 @@ import type { TaskRegistry } from '../app/task-registry.js';
 import type { SessionStore } from '../core/session-store.js';
 import type { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
+import { SESSIONS_HTML } from './control-plane-sessions-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
 import type { ClientMessage, AgentListItem, TaskPhase } from '../protocol.js';
 import {
@@ -791,6 +792,11 @@ export async function startControlPlane(
         if (path === '/' && req.method === 'GET') {
           ctx.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
           ctx.res.end(DASHBOARD_HTML);
+          return;
+        }
+        if (path === '/sessions' && req.method === 'GET') {
+          ctx.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          ctx.res.end(SESSIONS_HTML);
           return;
         }
         // 面板聚合视图：任务注册表（与终端面板同源）+ 计数 + 容量

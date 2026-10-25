@@ -154,6 +154,15 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('GET /sessions 提供免令牌页面壳（数据仍需令牌）', async () => {
+    const plane = await start();
+    const res = await call(plane.port, 'GET', '/sessions');
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('Sessions');
+    expect(res.body).toContain('/v1/sessions');
+    plane.close();
+  });
+
   it('/v1/sessions 可列出持久会话并返回快照', async () => {
     const store = new SessionStore(':memory:');
     store.createSession({ sessionId: 'bt_persisted', mode: 'task', agentType: 'codex', cwd: process.cwd() });

@@ -8,7 +8,7 @@
 > `send_message` 多轮 replay-session、message_ack、conversation waiting_user 已实现；
 > 交互 request/response/result、task:approve/respond scope 已实现；入站附件分块上传/CAS、下载、重连续传、
 > 超时临时传输 GC、artifact TTL/引用计数清理（`POST /v1/artifacts:gc`）、下载传输续传已实现；
-> UI、原生 ACP 触发尚未实现。
+> 本地 `/sessions` 会话 UI（列表/快照/SSE）已落地；附件下载按钮、原生 ACP 触发尚未实现。
 
 ## 1. 决策、标准与安全边界
 
