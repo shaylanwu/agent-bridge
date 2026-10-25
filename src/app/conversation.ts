@@ -15,7 +15,7 @@ import type { TaskRegistry } from './task-registry.js';
 import type { SessionLog } from './session-log.js';
 import { authorizeService } from './service-gate.js';
 import { agentDefOf } from '../adapters/agent-adapters.js';
-import { hasCodebuddyAcpAuth } from '../adapters/acp-codebuddy.js';
+import { canRunAcp } from '../adapters/acp-codebuddy.js';
 
 type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 type SendMessageMessage = Extract<ServerMessage, { type: 'send_message' }>;
@@ -284,10 +284,8 @@ export function startConversationTurn(
         maxQueued: deps.maxQueued,
         captureDiff: deps.captureDiffByDefault,
         diffMaxBytes: deps.diffMaxBytes,
-        acp:
-          session.agentType === 'codebuddy-cli' &&
-          Boolean(prompt) &&
-          hasCodebuddyAcpAuth(),
+        acp: Boolean(prompt) && canRunAcp(def?.acp),
+        acpSpec: def?.acp,
         nativeSessionId: session.nativeSessionId,
       },
       hooks,

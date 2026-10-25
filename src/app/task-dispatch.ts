@@ -11,7 +11,8 @@ import type { Emitter } from '../core/emitter.js';
 import { startTask, type TaskHandle } from '../runner.js';
 import type { ServerMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
-import { hasCodebuddyAcpAuth } from '../adapters/acp-codebuddy.js';
+import { canRunAcp } from '../adapters/acp-codebuddy.js';
+import { agentDefOf } from '../adapters/agent-adapters.js';
 import type { SessionLog } from './session-log.js';
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionStore, TurnRecord } from '../core/session-store.js';
@@ -381,10 +382,8 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       captureDiff: msg.captureDiff === true || o.captureDiffByDefault,
       diffMaxBytes: o.diffMaxBytes,
       interactive: msg.allowInteractive === true,
-      acp:
-        msg.agentType === 'codebuddy-cli' &&
-        Boolean(msg.prompt) &&
-        hasCodebuddyAcpAuth(),
+      acp: Boolean(msg.prompt) && canRunAcp(agentDefOf(msg.agentType)?.acp),
+      acpSpec: agentDefOf(msg.agentType)?.acp,
     },
     {
       onLog: (stream, data) => {

@@ -171,9 +171,10 @@ never sit in the queue for hours and then run for ten more minutes. Precedence: 
 `--max-tasks` / `--max-queue` (both `connect` and `serve`) > `AGENT_BRIDGE_MAX_TASKS` /
 `AGENT_BRIDGE_MAX_QUEUE` > the config file > defaults.
 
-CodeBuddy ACP: when `CODEBUDDY_AUTH_TOKEN` is explicitly set, `codebuddy-cli` tasks/conversations prefer
-ACP (native session, structured permission requests); without it the bridge keeps headless `codebuddy -p`
-and never starts an unauthenticated ACP child.
+ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, and `trae-cli`
+declare native ACP and prefer it for tasks/conversations; the rest stay headless. CodeBuddy additionally
+requires an explicit `CODEBUDDY_AUTH_TOKEN`; without it the bridge keeps headless `codebuddy -p` and never
+starts an unauthenticated ACP child.
 
 Re-sending a `run_task` with the same `taskId` is safe: the bridge is idempotent by `taskId` —
 a live task gets a current-state snapshot, a settled task replays its terminal snapshot, and nothing

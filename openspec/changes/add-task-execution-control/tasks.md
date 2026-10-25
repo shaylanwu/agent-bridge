@@ -15,6 +15,8 @@
 > （initialize/session/new/session/prompt、permission、fs 读写、取消、超时）与 `CODEBUDDY_AUTH_TOKEN`
 > 显式认证门禁。已接入 TaskSupervisor：`acp` 任务走 ACP，`session/load` 续接，permission 转
 > `task_interaction_request` 并把 `task_interaction_response.optionId` 回送 ACP；无 token 仍回落 headless。
+> 2026-10-26 实测 7 个原生 ACP：codebuddy / gemini / opencode / mimo / kimi / minimax / trae；
+> claude/qoder 有 resume，codex/dsh 走 headless。剩余 5 个需 ACP shim 才能统一语义。
 
 ## 1. 决策、标准与安全边界
 

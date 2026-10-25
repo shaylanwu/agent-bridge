@@ -38,6 +38,20 @@ export function codebuddyAcpArgs(): string[] {
   return ['--serve', '--acp', '--port', '0'];
 }
 
+export const CODEBUDDY_ACP_SPEC: AcpAgentSpec = {
+  command: 'codebuddy',
+  args: codebuddyAcpArgs(),
+  authEnv: 'CODEBUDDY_AUTH_TOKEN',
+  sanitizeHostEnv: true,
+};
+
+export function canRunAcp(spec: AcpAgentSpec | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!spec) return false;
+  if (!spec.authEnv) return true;
+  const token = env[spec.authEnv];
+  return typeof token === 'string' && token.trim() !== '';
+}
+
 export function codebuddyAcpEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const key of HOST_COLLISION_ENV) delete env[key];
@@ -66,9 +80,19 @@ export interface AcpPromptResult {
   stopReason: string;
 }
 
+export interface AcpAgentSpec {
+  command: string;
+  args: string[];
+  /** 该 ACP 入口要求的环境变量（如 CodeBuddy 的 CODEBUDDY_AUTH_TOKEN） */
+  authEnv?: string;
+  /** 是否清理 WorkBuddy 宿主的 SERVER__PORT 等冲突变量 */
+  sanitizeHostEnv?: boolean;
+}
+
 export interface AcpPromptOptions {
   cwd: string;
   prompt: string;
+  spec?: AcpAgentSpec;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   /** 已存在的 native session：优先 session/load，失败再 session/new */
@@ -93,11 +117,14 @@ function isUnder(child: string, parent: string): boolean {
   return fc === fp || fc.startsWith(fp.endsWith(sep) ? fp : fp + sep);
 }
 
-export async function runCodeBuddyAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptResult> {
-  const env = codebuddyAcpEnv(opts.env);
-  if (!hasCodebuddyAcpAuth(env)) throw new AcpAuthRequiredError();
+export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptResult> {
+  const spec = opts.spec ?? CODEBUDDY_ACP_SPEC;
+  const env = spec.sanitizeHostEnv ? codebuddyAcpEnv(opts.env) : { ...(opts.env ?? process.env) };
+  if (spec.authEnv && !canRunAcp(spec, env)) {
+    throw new AcpAuthRequiredError(`ACP 需要 ${spec.authEnv}，未设置时不会启动无认证子进程`);
+  }
 
-  const child = spawn('codebuddy', codebuddyAcpArgs(), {
+  const child = spawn(spec.command, spec.args, {
     cwd: opts.cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -303,4 +330,9 @@ export async function runCodeBuddyAcpPrompt(opts: AcpPromptOptions): Promise<Acp
     }
     child.kill();
   }
+}
+
+/** 向后兼容入口：CodeBuddy 固定启动参数与认证门禁 */
+export function runCodeBuddyAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptResult> {
+  return runAcpPrompt({ ...opts, spec: CODEBUDDY_ACP_SPEC });
 }

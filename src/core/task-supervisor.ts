@@ -21,7 +21,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   AcpAuthRequiredError,
-  runCodeBuddyAcpPrompt,
+  runAcpPrompt,
+  type AcpAgentSpec,
 } from '../adapters/acp-codebuddy.js';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
@@ -50,8 +51,10 @@ export interface RunTaskRequest {
   diffMaxBytes?: number;
   /** 打开 stdin 管道（steer / ACP 交互）；默认 false，保持 v1 行为 */
   interactive?: boolean;
-  /** 走 CodeBuddy ACP 会话（需要显式 CODEBUDDY_AUTH_TOKEN） */
+  /** 走该 CLI 的原生 ACP 会话 */
   acp?: boolean;
+  /** ACP 启动方式；缺省回落 CodeBuddy */
+  acpSpec?: AcpAgentSpec;
   /** ACP 续接已有 native session */
   nativeSessionId?: string;
 }
@@ -524,9 +527,10 @@ export class TaskSupervisor {
     entry.acpPermissions = new Map();
     entry.hooks.onStatus('running');
 
-    void runCodeBuddyAcpPrompt({
+    void runAcpPrompt({
       cwd: entry.req.cwd,
       prompt: entry.req.prompt ?? '',
+      spec: entry.req.acpSpec,
       timeoutMs: timeoutOf(entry.req),
       nativeSessionId: entry.req.nativeSessionId,
       signal: controller.signal,

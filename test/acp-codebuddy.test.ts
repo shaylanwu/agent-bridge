@@ -1,15 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import {
   AcpAuthRequiredError,
+  canRunAcp,
   codebuddyAcpArgs,
   codebuddyAcpEnv,
   hasCodebuddyAcpAuth,
   runCodeBuddyAcpPrompt,
 } from '../src/adapters/acp-codebuddy.js';
+import { AGENTS } from '../src/adapters/agent-adapters.js';
 
 describe('CodeBuddy ACP adapter', () => {
   it('启动参数使用已验证的 --serve --acp --port 0', () => {
     expect(codebuddyAcpArgs()).toEqual(['--serve', '--acp', '--port', '0']);
+  });
+
+  it('能力矩阵：7 个工具声明原生 ACP', () => {
+    const acpAgents = AGENTS.filter((agent) => agent.acp).map((agent) => agent.kind);
+    expect(acpAgents).toEqual([
+      'codebuddy-cli',
+      'gemini',
+      'opencode',
+      'mimo-code',
+      'kimi-code',
+      'minimax-code',
+      'trae-cli',
+    ]);
   });
 
   it('清理 WorkBuddy 继承的端口/会话变量，保留显式 auth token', () => {
@@ -29,6 +44,13 @@ describe('CodeBuddy ACP adapter', () => {
     expect(env['CODEBUDDY_SESSION_ID']).toBeUndefined();
     expect(env['CODEBUDDY_AUTH_TOKEN']).toBe('explicit-token');
     expect(env['PATH']).toBe('/bin');
+  });
+
+  it('无 authEnv 的原生 ACP（gemini/opencode 等）无需 token', () => {
+    expect(canRunAcp({ command: 'gemini', args: ['--acp'] }, {})).toBe(true);
+    expect(canRunAcp({ command: 'codebuddy', args: [], authEnv: 'CODEBUDDY_AUTH_TOKEN' }, {})).toBe(
+      false,
+    );
   });
 
   it('没有显式 token 时拒绝启动，避免无认证 ACP 子进程', async () => {

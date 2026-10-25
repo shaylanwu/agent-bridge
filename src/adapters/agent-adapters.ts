@@ -14,6 +14,7 @@ import { delimiter, join } from 'node:path';
 import type { AgentCapability, AgentListItem, AgentStatus } from '../protocol.js';
 import { logoDataUri } from './agent-logos.js';
 import type { StepFormat } from './step-parsers.js';
+import type { AcpAgentSpec } from './acp-codebuddy.js';
 import { buildWinCommandLine, isWinShim } from './win-exec.js';
 
 export interface AgentDef {
@@ -31,6 +32,8 @@ export interface AgentDef {
   steps?: StepFormat;
   /** 原生 resume 参数模板（含 {{sessionId}}）；仅对 help 已确认的工具声明 */
   resumeArgs?: string[];
+  /** 原生 ACP 启动方式；未声明表示该 CLI 没有已验证的 ACP 入口 */
+  acp?: AcpAgentSpec;
   credential: {
     /** 平台可代管 Key 的注入变量（有值才允许"绑定 Key"） */
     envKey?: string;
@@ -74,6 +77,12 @@ export const AGENTS: AgentDef[] = [
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
     resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose', '--resume', '{{sessionId}}'],
     steps: 'claude-json',
+    acp: {
+      command: 'codebuddy',
+      args: ['--serve', '--acp', '--port', '0'],
+      authEnv: 'CODEBUDDY_AUTH_TOKEN',
+      sanitizeHostEnv: true,
+    },
     credential: {
       envs: [],
       files: [join(home(), '.codebuddy')],
@@ -120,6 +129,7 @@ export const AGENTS: AgentDef[] = [
     // 步骤流：官方文档确认 stream-json（init/message/tool_use/tool_result/result）
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
     steps: 'gemini-json',
+    acp: { command: 'gemini', args: ['--acp'] },
     credential: {
       envKey: 'GEMINI_API_KEY',
       envs: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
@@ -135,6 +145,7 @@ export const AGENTS: AgentDef[] = [
     // 修 bug（B 批次实测发现）：opencode 只认 `--format json`，原先写的 `--json` 是无效参数
     taskArgs: ['run', '--format', 'json', '{{prompt}}'],
     steps: 'opencode-json',
+    acp: { command: 'opencode', args: ['acp'] },
     credential: {
       envs: ['OPENCODE_API_KEY'],
       files: [
@@ -153,6 +164,7 @@ export const AGENTS: AgentDef[] = [
     // opencode fork（官方 drive-mimo skill 确认事件同构）：run --format json 出 JSONL
     taskArgs: ['run', '--format', 'json', '{{prompt}}'],
     steps: 'opencode-json',
+    acp: { command: 'mimo', args: ['acp'] },
     credential: { envs: ['MIMO_API_KEY'], files: [], loginCommand: 'mimo' },
   },
   {
@@ -191,6 +203,7 @@ export const AGENTS: AgentDef[] = [
     // 非交互是 -p，stream-json 为 OpenAI tool_calls 风格（已实测）
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
     steps: 'kimi-json',
+    acp: { command: 'kimi', args: ['acp'] },
     credential: {
       envKey: 'MOONSHOT_API_KEY',
       envs: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
@@ -208,6 +221,7 @@ export const AGENTS: AgentDef[] = [
     // item.started/completed + item.type=tool_call，toolCall{name,input}）
     taskArgs: ['exec', '--output-format', 'stream-json', '{{prompt}}'],
     steps: 'mcode-json',
+    acp: { command: 'mcode', args: ['acp'] },
     credential: { envs: ['MINIMAX_API_KEY'], files: [], loginCommand: 'mcode' },
   },
   {
@@ -219,6 +233,7 @@ export const AGENTS: AgentDef[] = [
     // 输出 claude 同构事件流（v0.211.1）
     taskArgs: ['exec', '--print', '--output-format', 'stream-json', '{{prompt}}'],
     steps: 'claude-json',
+    acp: { command: 'traecli', args: ['acp'] },
     credential: { envs: [], files: [join(home(), '.trae')], loginCommand: 'traecli' },
   },
 ];
