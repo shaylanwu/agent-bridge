@@ -18,6 +18,8 @@ import type { SessionStore, TurnRecord } from '../core/session-store.js';
 export type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 export type CancelTaskMessage = Extract<ServerMessage, { type: 'cancel_task' }>;
 export type GetTaskMessage = Extract<ServerMessage, { type: 'get_task' }>;
+export type CloseSessionMessage = Extract<ServerMessage, { type: 'close_session' }>;
+export type CancelTurnMessage = Extract<ServerMessage, { type: 'cancel_turn' }>;
 
 export interface TaskDispatchOptions {
   /** 唯一上行出口 */
@@ -50,6 +52,93 @@ export function dispatchCancelTask(msg: CancelTaskMessage, o: TaskDispatchOption
 
 function terminalStatus(status: string): status is 'success' | 'failed' | 'cancelled' | 'timeout' {
   return status === 'success' || status === 'failed' || status === 'cancelled' || status === 'timeout';
+}
+
+function ackSession(
+  o: TaskDispatchOptions,
+  msg: CloseSessionMessage | CancelTurnMessage,
+  action: 'close_session' | 'cancel_turn',
+  ok: boolean,
+  extra: { status?: string; errorCode?: string } = {},
+): void {
+  o.emitter.emit({
+    type: 'session_ack',
+    taskId: msg.taskId,
+    operationId: msg.operationId,
+    action,
+    ok,
+    status: extra.status,
+    errorCode: extra.errorCode,
+    at: new Date().toISOString(),
+  });
+}
+
+export function dispatchCloseSession(msg: CloseSessionMessage, o: TaskDispatchOptions): void {
+  const gate = authorizeService(msg, 'cancel_task', msg.taskId, 'task:cancel', o.requireServiceToken);
+  if (!gate.ok) {
+    ackSession(o, msg, 'close_session', false, { errorCode: gate.code });
+    return;
+  }
+  const session = o.store.getSession(msg.taskId);
+  if (!session) {
+    ackSession(o, msg, 'close_session', false, { errorCode: 'session_not_found' });
+    return;
+  }
+  if (session.status !== 'running') {
+    ackSession(o, msg, 'close_session', true, { status: session.status });
+    return;
+  }
+  const handle = o.tasks.get(msg.taskId);
+  if (handle) {
+    handle.cancel();
+    ackSession(o, msg, 'close_session', true, { status: 'cancelled' });
+    return;
+  }
+  const active = o.store.getActiveTurn(msg.taskId);
+  if (active) {
+    o.store.updateTurn(msg.taskId, active.turnId, {
+      status: 'cancelled',
+      stopReason: 'session_closed',
+      finishedAt: new Date().toISOString(),
+    });
+  }
+  const closed = o.store.closeSession(msg.taskId, 'cancelled', 'session_closed');
+  ackSession(o, msg, 'close_session', true, { status: closed.status });
+}
+
+export function dispatchCancelTurn(msg: CancelTurnMessage, o: TaskDispatchOptions): void {
+  const gate = authorizeService(msg, 'cancel_task', msg.taskId, 'task:cancel', o.requireServiceToken);
+  if (!gate.ok) {
+    ackSession(o, msg, 'cancel_turn', false, { errorCode: gate.code });
+    return;
+  }
+  const session = o.store.getSession(msg.taskId);
+  if (!session) {
+    ackSession(o, msg, 'cancel_turn', false, { errorCode: 'session_not_found' });
+    return;
+  }
+  const active = o.store.getActiveTurn(msg.taskId);
+  if (!active || active.turnId !== msg.turnId) {
+    ackSession(o, msg, 'cancel_turn', false, { errorCode: 'turn_not_found' });
+    return;
+  }
+  const handle = o.tasks.get(msg.taskId);
+  if (handle) {
+    handle.cancel();
+    ackSession(o, msg, 'cancel_turn', true, { status: 'cancelled' });
+    return;
+  }
+  o.store.updateTurn(msg.taskId, active.turnId, {
+    status: 'cancelled',
+    stopReason: 'turn_cancelled',
+    finishedAt: new Date().toISOString(),
+  });
+  if (session.mode === 'task') {
+    o.store.closeSession(msg.taskId, 'cancelled', 'turn_cancelled');
+  } else {
+    o.store.updateSession(msg.taskId, { phase: 'waiting_user' });
+  }
+  ackSession(o, msg, 'cancel_turn', true, { status: 'cancelled' });
 }
 
 export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {

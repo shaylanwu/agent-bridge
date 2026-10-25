@@ -585,6 +585,17 @@ export class SessionStore {
     return rows.map(toTurn);
   }
 
+  getActiveTurn(sessionId: string, tenantId = DEFAULT_TENANT): TurnRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM turns
+          WHERE tenant_id = ? AND session_id = ? AND status IN ('queued','running')
+          ORDER BY ordinal DESC LIMIT 1`,
+      )
+      .get(tenantId, sessionId) as TurnRow | undefined;
+    return row ? toTurn(row) : undefined;
+  }
+
   appendEvent(input: {
     sessionId: string;
     type: string;

@@ -26,7 +26,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -380,6 +380,42 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 ```
 
 
+<a id="msg-session_ack"></a>
+
+### session_ack — 会话控制回执
+
+close_session / cancel_turn 的幂等回执；终态后仍会返回。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `session_ack` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `action` | `close_session` \| `cancel_turn` | ✓ |  |
+| `ok` | `boolean` | ✓ |  |
+| `status` | `string` |  |  |
+| `errorCode` | `string` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "session_ack",
+  "taskId": "string",
+  "operationId": "string",
+  "action": "close_session",
+  "ok": true,
+  "status": "string",
+  "errorCode": "string",
+  "at": "string"
+}
+```
+
+
 <a id="msg-pong"></a>
 
 ### pong — 心跳应答
@@ -508,6 +544,70 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
   "type": "get_task",
   "taskId": "string",
   "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-close_session"></a>
+
+### close_session — 关闭会话
+
+operationId 为幂等键；终态会话重复关闭返回原状态。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `close_session` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "close_session",
+  "taskId": "string",
+  "operationId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-cancel_turn"></a>
+
+### cancel_turn — 取消指定 Turn
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `cancel_turn` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `turnId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "cancel_turn",
+  "taskId": "string",
+  "turnId": "string",
+  "operationId": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

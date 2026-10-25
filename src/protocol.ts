@@ -25,6 +25,7 @@ export const PROTOCOL_CAPABILITIES = [
   'task-step',
   'task-message',
   'task-snapshot',
+  'session-control',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -175,6 +176,17 @@ export type ClientMessage =
       errorCode?: string;
     }
   | {
+      /** 会话控制回执：close_session / cancel_turn 的幂等结果 */
+      type: 'session_ack';
+      taskId: string;
+      operationId: string;
+      action: 'close_session' | 'cancel_turn';
+      ok: boolean;
+      status?: string;
+      errorCode?: string;
+      at: string;
+    }
+  | {
       /**
        * 容量水位：每次调度状态变化（入队/启动/终态）后发送一次，
        * 反映平台与控制面两条通道的**合计**占用（它们共用同一调度器）。
@@ -236,6 +248,20 @@ export interface PingCommand {
   at?: number;
 }
 
+export interface CloseSessionCommand extends ServiceIdentity {
+  type: 'close_session';
+  taskId: string;
+  /** 幂等键：同 operationId 重发返回同一结果 */
+  operationId: string;
+}
+
+export interface CancelTurnCommand extends ServiceIdentity {
+  type: 'cancel_turn';
+  taskId: string;
+  turnId: string;
+  operationId: string;
+}
+
 export interface GetTaskCommand extends ServiceIdentity {
   type: 'get_task';
   taskId: string;
@@ -251,7 +277,9 @@ export type ServerMessage =
   | CancelTaskCommand
   | ScanCommand
   | PingCommand
-  | GetTaskCommand;
+  | GetTaskCommand
+  | CloseSessionCommand
+  | CancelTurnCommand;
 
 export class ProtocolError extends Error {}
 
@@ -309,6 +337,38 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'close_session') {
+    if (typeof msg['taskId'] !== 'string' || !msg['taskId']) {
+      throw new ProtocolError('close_session 缺少 taskId');
+    }
+    if (typeof msg['operationId'] !== 'string' || !msg['operationId']) {
+      throw new ProtocolError('close_session 缺少 operationId');
+    }
+    return {
+      type: 'close_session',
+      taskId: String(msg['taskId']),
+      operationId: String(msg['operationId']),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
+  }
+  if (type === 'cancel_turn') {
+    for (const key of ['taskId', 'turnId', 'operationId'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`cancel_turn 缺少 ${key}`);
+      }
+    }
+    return {
+      type: 'cancel_turn',
+      taskId: String(msg['taskId']),
+      turnId: String(msg['turnId']),
+      operationId: String(msg['operationId']),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
   }
   if (type === 'get_task') {
     if (typeof msg['taskId'] !== 'string' || !msg['taskId']) {

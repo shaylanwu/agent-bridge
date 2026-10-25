@@ -15,7 +15,13 @@ import { assertServerMessage, ProtocolError, type ClientMessage } from '../proto
 import type { TaskHandle } from '../runner.js';
 import { createBridgeClient } from '../transport/bridge-client.js';
 import type { SessionLog } from './session-log.js';
-import { dispatchCancelTask, dispatchGetTask, dispatchRunTask } from './task-dispatch.js';
+import {
+  dispatchCancelTask,
+  dispatchCancelTurn,
+  dispatchCloseSession,
+  dispatchGetTask,
+  dispatchRunTask,
+} from './task-dispatch.js';
 import type { SessionStore } from '../core/session-store.js';
 
 export interface SessionOptions {
@@ -111,6 +117,14 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (msg.type === 'get_task') {
         dispatchGetTask(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'close_session') {
+        dispatchCloseSession(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'cancel_turn') {
+        dispatchCancelTurn(msg, dispatchOpts);
         return;
       }
       if (msg.type === 'scan') {

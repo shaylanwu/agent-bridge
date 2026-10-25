@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-线协议版本为 1（`PROTOCOL_VERSION = 1`）。它刻意做得很小：一条出站 WebSocket，16 个消息类型。
+线协议版本为 1（`PROTOCOL_VERSION = 1`）。它刻意做得很小：一条出站 WebSocket，19 个消息类型。
 规范性描述在 [`contracts/asyncapi-3.0.yaml`](/agent-bridge/asyncapi-3.0.yaml)，本页解释它周围的规则。
 
 ## 消息方向

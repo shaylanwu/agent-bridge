@@ -372,6 +372,40 @@ State transitions, and the only message that carries terminal results: exit code
 ```
 
 
+<a id="msg-session_ack"></a>
+
+### session_ack — 会话控制回执
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `session_ack` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `action` | `close_session` \| `cancel_turn` | ✓ |  |
+| `ok` | `boolean` | ✓ |  |
+| `status` | `string` |  |  |
+| `errorCode` | `string` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "session_ack",
+  "taskId": "string",
+  "operationId": "string",
+  "action": "close_session",
+  "ok": true,
+  "status": "string",
+  "errorCode": "string",
+  "at": "string"
+}
+```
+
+
 <a id="msg-pong"></a>
 
 ### pong — Heartbeat reply
@@ -498,6 +532,68 @@ Platform → bridge. Requests cancellation of a running task.
   "type": "get_task",
   "taskId": "string",
   "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-close_session"></a>
+
+### close_session — 关闭会话
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `close_session` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "close_session",
+  "taskId": "string",
+  "operationId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-cancel_turn"></a>
+
+### cancel_turn — 取消指定 Turn
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `cancel_turn` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `turnId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "cancel_turn",
+  "taskId": "string",
+  "turnId": "string",
+  "operationId": "string",
   "requestedBy": "string",
   "purpose": "string",
   "serviceToken": "string"

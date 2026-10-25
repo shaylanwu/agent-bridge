@@ -104,8 +104,15 @@ export class Emitter {
 
   emit(msg: ClientMessage): void {
     // —— 1. 幂等 ——
-    // task_snapshot 是补取/重放通道，终态后仍必须可发。
-    if ('taskId' in msg && this.settled.has(msg.taskId) && msg.type !== 'task_snapshot') return;
+    // task_snapshot/session_ack 是补取/控制回执，终态后仍必须可发。
+    if (
+      'taskId' in msg &&
+      this.settled.has(msg.taskId) &&
+      msg.type !== 'task_snapshot' &&
+      msg.type !== 'session_ack'
+    ) {
+      return;
+    }
 
     let out: ClientMessage = msg;
     if (msg.type === 'task_log') {

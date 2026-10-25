@@ -6,6 +6,8 @@ import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
 import {
+  dispatchCancelTurn,
+  dispatchCloseSession,
   dispatchGetTask,
   dispatchRunTask,
   type TaskDispatchOptions,
@@ -75,5 +77,54 @@ describe('task dispatch → SessionStore', () => {
       expect(snapshotMsg.events?.some((event) => event.type === 'task_status')).toBe(true);
       expect(snapshotMsg.latestEventSeq).toBeGreaterThan(0);
     }
+
+    dispatchCloseSession(
+      { type: 'close_session', taskId: 'bt_dispatch_failed', operationId: 'op_close' },
+      options,
+    );
+    expect(sent.find((msg) => msg.type === 'session_ack' && msg.action === 'close_session')).toMatchObject({
+      ok: true,
+      status: 'failed',
+    });
+  });
+
+  it('cancel_turn 取消无进程的 active Turn', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-dispatch-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    store.createSession({ sessionId: 'bt_turn', mode: 'task', agentType: 'codex', cwd: dir });
+    const turn = store.createTurn({ sessionId: 'bt_turn', status: 'running' });
+    const sent: ClientMessage[] = [];
+    const options: TaskDispatchOptions = {
+      emitter: new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) }),
+      tasks: new Map(),
+      registry: new TaskRegistry(),
+      maxConcurrent: 2,
+      maxQueued: 2,
+      diffMaxBytes: 4096,
+      captureDiffByDefault: false,
+      requireServiceToken: false,
+      store,
+      log: () => undefined,
+    };
+
+    dispatchCancelTurn(
+      {
+        type: 'cancel_turn',
+        taskId: 'bt_turn',
+        turnId: turn.turnId,
+        operationId: 'op_cancel_turn',
+      },
+      options,
+    );
+
+    expect(store.getTurn('bt_turn', turn.turnId)?.status).toBe('cancelled');
+    expect(sent.find((msg) => msg.type === 'session_ack' && msg.action === 'cancel_turn')).toMatchObject({
+      ok: true,
+      status: 'cancelled',
+    });
   });
 });

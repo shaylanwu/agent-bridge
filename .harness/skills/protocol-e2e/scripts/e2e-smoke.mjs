@@ -118,6 +118,16 @@ wss.on('connection', (ws, req) => {
         `events=${m.events?.length ?? 0}, latest=${m.latestEventSeq ?? '-'}`,
       );
       ws.send(
+        JSON.stringify({ type: 'close_session', taskId: 't_ok', operationId: 'op_close_e2e' }),
+      );
+    }
+    if (m.type === 'session_ack') {
+      record(
+        'close_session → session_ack（幂等回执）',
+        m.ok === true && m.action === 'close_session' && m.operationId === 'op_close_e2e',
+        `status=${m.status ?? '-'}`,
+      );
+      ws.send(
         JSON.stringify({ type: 'run_task', taskId: 't_slow', agentType: AGENT, cwd: ROOT, args: ['--version'], timeoutMs: 50 }),
       );
     }
@@ -132,7 +142,7 @@ function finish(code) {
   console.log('\n===== 端到端冒烟结果 =====');
   const failed = results.filter((r) => !r.ok);
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? ` (${r.detail})` : ''}`);
-  const missing = ['hello', 'agent_list', 'pong', 'scan_result', 'task_log', 'task_status', 'task_snapshot'].filter((t) => !seen.has(t));
+  const missing = ['hello', 'agent_list', 'pong', 'scan_result', 'task_log', 'task_status', 'task_snapshot', 'session_ack'].filter((t) => !seen.has(t));
   if (missing.length) console.log(`FAIL  缺少消息类型：${missing.join(', ')}`);
   console.log(`\n${failed.length === 0 && missing.length === 0 ? '✅ 全部通过' : `⛔ ${failed.length + missing.length} 项失败`}`);
   try {

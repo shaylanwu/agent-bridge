@@ -247,8 +247,8 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_snapshot`、`capacity_update`、`pong` |
-| 平台 → bridge | `run_task`、`cancel_task`、`get_task`、`scan`、`ping`                   |
+| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_snapshot`、`session_ack`、`capacity_update`、`pong` |
+| 平台 → bridge | `run_task`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
 
 ### 能力协商（hello.capabilities）
 
@@ -265,6 +265,7 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 | `task-step`      | 结构化工具实时回传 `task_step` 步骤流（能力分级见下）          |
 | `task-message`   | 回传最终回答等 canonical `task_message`（带 eventSeq）       |
 | `task-snapshot`  | 支持 `get_task` / `task_snapshot` 按 eventSeq 补取历史        |
+| `session-control`| 支持 `close_session` / `cancel_turn` 与 `session_ack` 回执    |
 
 ### 步骤流（task_step）
 
