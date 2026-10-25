@@ -33,8 +33,10 @@ Non-negotiables:
   `409 device_bound_to_other_account` and `409 device_identity_ambiguous` require a platform administrator
   (no automatic ID change, merge, or ownership transfer); `401`/`403` are terminal credential failures;
   only `428 authorization_pending` tells device-code polling to continue at the server interval.
-- **Store only the SHA-256 of `device_token`** — never the token itself. `refresh_token` is optional;
-  the current bridge saves it but does not use it for automatic renewal.
+- **Store only the SHA-256 of `device_token`** — never the token itself. `refresh_token` is optional.
+  When present, the bridge tries one refresh on WS close `4401`/`4403` by calling
+  `POST /api/bridge/token` with `grant_type=refresh_token` and reconnects with the new token. A failed
+  refresh falls back to explicit re-authorization; it never retries indefinitely.
 - The redirect target is a loopback URL (`http://127.0.0.1:<random port>/callback`) — do not
   restrict `redirect_uri` to a registered HTTPS origin.
 - Returning `404` for `device-code` / `device-token` is allowed: the bridge then tells the user your

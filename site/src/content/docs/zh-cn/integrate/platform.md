@@ -31,8 +31,9 @@ sidebar:
   `409 device_bound_to_other_account` 与 `409 device_identity_ambiguous` 需平台管理员处理
   （不自动换 ID、合并或转移所有权）；`401`/`403` 是终态凭证失败；只有
   `428 authorization_pending` 让设备码按服务端 interval 继续轮询；
-- **只存 `device_token` 的 SHA-256**，绝不存明文。`refresh_token` 可选，当前 bridge 只保存，
-  不用于自动续期；
+- **只存 `device_token` 的 SHA-256**，绝不存明文。`refresh_token` 可选。若返回，bridge 会在 WS
+  关闭码 `4401`/`4403` 时调用 `POST /api/bridge/token` + `grant_type=refresh_token` 尝试一次刷新，
+  成功后用新 token 重连；刷新失败回退到显式重新授权，不会无限重试；
 - 回调地址是回环地址（`http://127.0.0.1:<随机端口>/callback`），不要把 `redirect_uri` 限制成已注册的 HTTPS 源；
 - `device-code` / `device-token` 返回 `404` 是允许的：bridge 会据此提示"平台配套接口未上线"。
 

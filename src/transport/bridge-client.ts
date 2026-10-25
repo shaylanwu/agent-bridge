@@ -14,6 +14,9 @@ export interface BridgeClientOptions {
   platformUrl: string;
   deviceToken: string;
   deviceId: string;
+  /** 有 refresh token 时，4401/4403 会尝试一次 refresh 再重连 */
+  refresh?: () => Promise<{ deviceToken: string; refreshToken?: string }>;
+  onTokenRefreshed?: (tokens: { deviceToken: string; refreshToken?: string }) => void;
   cliVersion: string;
   hostname: string;
   /** 本次会话生效的调度额度（随 hello 上报；平台据此做有水位线的派发） */
@@ -49,6 +52,8 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
   let ws: WebSocket | null = null;
   let closedByUs = false;
   let backoff = 1000;
+  let currentToken = opts.deviceToken;
+  let refreshed = false;
   /** 断线期间待发消息：控制类按条数、日志按字节各自有界（见 outbox.ts） */
   const outbox = new Outbox();
   let hbTimer: NodeJS.Timeout | undefined;
@@ -76,7 +81,7 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
     if (closedByUs) return;
     log(`[agent-bridge] 连接 ${url}`);
     ws = new WebSocket(url, {
-      headers: { Authorization: `Bearer ${opts.deviceToken}` },
+      headers: { Authorization: `Bearer ${currentToken}` },
       handshakeTimeout: 10_000,
     });
 
@@ -124,8 +129,26 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       const why = `${code} ${reason?.toString() ?? ''}`.trim();
       opts.onClose?.(why);
       if (closedByUs) return;
-      // 401/403 说明 token 失效或被吊销：不要无脑重连，交给上层提示重新绑定
+      // 401/403：有 refresh token 时只尝试一次；失败/再次失效则交给上层重新绑定
       if (code === 4401 || code === 4403) {
+        if (opts.refresh && !refreshed) {
+          refreshed = true;
+          log('[agent-bridge] 设备凭证失效，尝试 refresh token…');
+          void opts
+            .refresh()
+            .then((tokens) => {
+              currentToken = tokens.deviceToken;
+              opts.onTokenRefreshed?.(tokens);
+              log('[agent-bridge] refresh 成功，正在重新连接');
+              connect();
+            })
+            .catch((error) => {
+              log(
+                `[agent-bridge] refresh 失败（${(error as Error).message}），请执行 agent-bridge logout 后重新授权；设备身份保持不变`,
+              );
+            });
+          return;
+        }
         log('[agent-bridge] 设备凭证失效或被撤销，请先执行 agent-bridge logout，再重新 connect；设备身份保持不变');
         return;
       }

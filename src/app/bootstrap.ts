@@ -15,7 +15,12 @@ import { boolFlag, numFlagMin, posFlag, strFlag } from '../cli/flags.js';
 import type { SessionLog } from './session-log.js';
 import { createSession, type BridgeSession } from './session.js';
 import { TaskRegistry } from './task-registry.js';
-import { AuthError, authorizeWithBrowser, authorizeWithDeviceCode } from '../infra/auth.js';
+import {
+  AuthError,
+  authorizeWithBrowser,
+  authorizeWithDeviceCode,
+  refreshDeviceToken,
+} from '../infra/auth.js';
 import {
   configPath,
   loadConfig,
@@ -137,11 +142,40 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
     log('info', `[agent-bridge] 已恢复 ${recovered} 个上次中断的会话（未自动重放副作用）`);
   }
   let session: BridgeSession;
+  let refreshToken = saved?.refreshToken;
+  const refresh = refreshToken
+    ? () =>
+        refreshDeviceToken(
+          {
+            platformUrl: targetUrl,
+            deviceId,
+            hostname: hostname(),
+            platform: process.platform,
+            cliVersion: version(),
+          },
+          refreshToken as string,
+        )
+    : undefined;
   try {
     session = createSession({
       platformUrl: targetUrl,
       deviceToken,
       deviceId,
+      refresh,
+      onTokenRefreshed: (tokens) => {
+        refreshToken = tokens.refreshToken ?? refreshToken;
+        if (!saved) return;
+        saved.deviceToken = tokens.deviceToken;
+        if (refreshToken) saved.refreshToken = refreshToken;
+        const bound = {
+          ...saved,
+          platformUrl: saved.platformUrl ?? targetUrl,
+          deviceId: saved.deviceId ?? deviceId,
+          deviceToken: tokens.deviceToken,
+          ...(refreshToken ? { refreshToken } : {}),
+        };
+        void saveConfig(bound);
+      },
       cliVersion: version(),
       hostname: hostname(),
       allowedCwd: saved.allowedCwd,

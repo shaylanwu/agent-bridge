@@ -260,6 +260,32 @@ async function exchangeCode(
   return parseTokenResponse(res, context);
 }
 
+/**
+ * 用 refresh token 换新 device token。
+ * 平台需支持 `POST /api/bridge/token` + `grant_type=refresh_token`；不支持时抛 AuthError，
+ * 调用方必须回退到重新授权，而不是静默继续用失效 token。
+ */
+export async function refreshDeviceToken(
+  context: AuthContext,
+  refreshToken: string,
+): Promise<AuthResult> {
+  const platform = normalizeBase(context.platformUrl);
+  const res = await postJson(`${platform}/api/bridge/token`, {
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    clientId: 'agent-bridge',
+    deviceId: context.deviceId,
+    hostname: context.hostname,
+    platform: context.platform,
+    cliVersion: context.cliVersion,
+  });
+  if (!res.ok) {
+    const code = await readPublicErrorCode(res);
+    throw authErrorFromResponse(res, '/api/bridge/token (refresh)', code);
+  }
+  return parseTokenResponse(res, context);
+}
+
 /** 回环回调授权（主路径）：用户只需确认浏览器里的授权框 */
 export async function authorizeWithBrowser(
   context: AuthContext,

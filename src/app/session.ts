@@ -33,6 +33,9 @@ export interface SessionOptions {
   platformUrl: string;
   deviceToken: string;
   deviceId: string;
+  /** 可选：4201/4403 时用于刷新设备凭证 */
+  refresh?: () => Promise<{ deviceToken: string; refreshToken?: string }>;
+  onTokenRefreshed?: (tokens: { deviceToken: string; refreshToken?: string }) => void;
   cliVersion: string;
   hostname: string;
   allowedCwd?: string[];
@@ -94,6 +97,8 @@ export function createSession(opts: SessionOptions): BridgeSession {
     platformUrl: opts.platformUrl,
     deviceToken: opts.deviceToken,
     deviceId: opts.deviceId,
+    refresh: opts.refresh,
+    onTokenRefreshed: opts.onTokenRefreshed,
     cliVersion: opts.cliVersion,
     hostname: opts.hostname,
     capacity: { maxTasks: opts.maxConcurrent, maxQueued: opts.maxQueued },

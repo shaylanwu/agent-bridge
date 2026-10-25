@@ -4,6 +4,7 @@ import {
   AuthError,
   authorizeWithBrowser,
   authorizeWithDeviceCode,
+  refreshDeviceToken,
   type AuthContext,
 } from '../src/infra/auth.js';
 
@@ -71,6 +72,31 @@ async function captureAuthError(promise: Promise<unknown>): Promise<AuthError> {
   }
   throw new Error('预期授权失败，但实际成功了');
 }
+
+describe('refresh token', () => {
+  it('用 grant_type=refresh_token 换新设备凭证并保留身份校验', async () => {
+    fetchMock.mockResolvedValueOnce(tokenResponse());
+    const result = await refreshDeviceToken(CONTEXT, 'refresh-token-secret');
+    expect(result.deviceToken).toBe('device-token-secret');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toBe('https://platform.example/api/bridge/token');
+    expect(requestBody(0)).toMatchObject({
+      grant_type: 'refresh_token',
+      refresh_token: 'refresh-token-secret',
+      deviceId: DEVICE_ID,
+      clientId: 'agent-bridge',
+    });
+  });
+
+  it('平台拒绝 refresh 时抛 AuthError，由上层回退重新授权', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(400, { code: 'invalid_grant', detail: 'expired' }),
+    );
+    const error = await captureAuthError(refreshDeviceToken(CONTEXT, 'bad'));
+    expect(error.code).toBe('invalid_grant');
+  });
+});
 
 describe('PKCE 浏览器授权', () => {
   it('打开授权页前已有本地 ID，换 token 请求携带稳定 ID 与元信息', async () => {
