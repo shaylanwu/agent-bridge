@@ -41,6 +41,17 @@ export function numFlag(flags: Flags, key: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
+/**
+ * 取数值型 flag 并允许自定义下界（如 `--max-queue=0` 合法）。
+ * 空串 / 非法 / 越下界一律视为「未给」（返回 undefined），由调用方回落自己的优先级链。
+ */
+export function numFlagMin(flags: Flags, key: string, min: number): number | undefined {
+  const raw = strFlag(flags, key);
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= min ? Math.floor(n) : undefined;
+}
+
 /** 位置参数：`agent-bridge services revoke <id>` 里 pos(flags,2) 即 `<id>` */
 export function posFlag(flags: Flags, index: number): string {
   return (flags._ as string[])[index] ?? '';

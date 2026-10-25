@@ -49,6 +49,7 @@ export async function scanAgents(opts: ScanOptions = {}): Promise<AgentListItem[
           display: def.display,
           status: 'not_installed',
           capability: def.capability,
+          steps: def.steps !== undefined,
         };
       }
       items[index] = item;

@@ -9,16 +9,39 @@ description: Every endpoint of the optional loopback control plane — generated
 
 | Method | Path | Summary |
 | --- | --- | --- |
+| `GET` | [`/`](#op-get) | 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点） |
 | `GET` | [`/v1/health`](#op-get-v1-health) | Liveness / readiness / version |
 | `GET` | [`/v1/capabilities`](#op-get-v1-capabilities) | Capabilities and endpoint index (same source as hello.capabilities) |
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | Installed agents and their credential state (`?fresh=true` to re-probe) |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | Trigger a fresh scan (same as GET /v1/agents?fresh=true) |
+| `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | Task ledger, cursor-paginated (cursor, not offset — the list keeps moving) |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | Create a task |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | Task state plus terminal artifacts (diff / changedFiles) |
 | `GET` | [`/v1/tasks/{id}/events`](#op-get-v1-tasks-id-events) | SSE stream: log + status events for one task |
+| `GET` | [`/v1/tasks/{id}/steps`](#op-get-v1-tasks-id-steps) | 步骤时间线（完整步骤序列 + 最终回答文本） |
+| `GET` | [`/v1/tasks/{id}/file`](#op-get-v1-tasks-id-file) | 任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB） |
 | `GET` | [`/v1/tasks/{id}/diff`](#op-get-v1-tasks-id-diff) | Terminal diff only — the task is never re-run to produce it |
 | `POST` | [`/v1/tasks/{id}:cancel`](#op-post-v1-tasks-id-cancel) | Cancel a task (idempotent; already-settled tasks return 200 with alreadySettled) |
+
+
+<a id="op-get"></a>
+
+### GET /
+
+**内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点）**
+
+终端面板（TTY 状态表）之外的交互表面：四态任务表 + 每行日志按钮 （执行中走 SSE 实时流，排队中置灰，终态看环形缓冲回放）。 EventSource 无法自定义请求头，故所有端点额外接受 `?token=` query 兜底 （与 Bearer 同口径校验；仅本机回环，令牌勿外发）。
+
+**Auth**：No token required  (`abs_<kid>_<secret>`)
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | text/html 页面壳 |
+
+
 
 
 <a id="op-get-v1-health"></a>
@@ -121,7 +144,8 @@ The only route that needs no token — safe for container and CI probes.
       "status": "ready",
       "version": "string",
       "path": "string",
-      "installedButBroken": true
+      "installedButBroken": true,
+      "steps": true
     }
   ],
   "scannedAt": "string"
@@ -151,6 +175,57 @@ The only route that needs no token — safe for container and CI probes.
 
 ```json
 {}
+```
+
+
+
+
+<a id="op-get-v1-board"></a>
+
+### GET /v1/board
+
+**面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "counts": {
+    "running": 1,
+    "queued": 1,
+    "success": 1,
+    "failed": 1
+  },
+  "capacity": {
+    "running": 1,
+    "queued": 1,
+    "maxTasks": 1,
+    "maxQueued": 1
+  },
+  "tasks": [
+    {
+      "taskId": "string",
+      "agentType": "string",
+      "cwdShort": "string",
+      "source": "platform",
+      "status": "running",
+      "phase": "queued",
+      "error": "string",
+      "stepCount": 1,
+      "createdAt": 1
+    }
+  ]
+}
 ```
 
 
@@ -341,6 +416,92 @@ Late subscribers are backfilled from a bounded ring buffer before live events st
 | --- | --- |
 | `200` | Event stream |
 | `401` | Missing / invalid / expired token — Schema: Problem |
+
+
+
+
+<a id="op-get-v1-tasks-id-steps"></a>
+
+### GET /v1/tasks/{id}/steps
+
+**步骤时间线（完整步骤序列 + 最终回答文本）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `404` |  |
+
+
+**Example**
+
+```json
+{
+  "taskId": "string",
+  "status": "string",
+  "phase": "string",
+  "stepCount": 1,
+  "steps": [
+    {
+      "seq": 1,
+      "action": "string",
+      "label": "string",
+      "state": "started",
+      "ok": true,
+      "at": 1,
+      "finishedAt": 1
+    }
+  ],
+  "plan": [
+    {
+      "text": "string",
+      "state": "pending"
+    }
+  ],
+  "finalText": "string"
+}
+```
+
+
+
+
+<a id="op-get-v1-tasks-id-file"></a>
+
+### GET /v1/tasks/{id}/file
+
+**任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+| `path` | query | `string` | ✓ | 相对任务 cwd 的路径 |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | 文件内容（content-type 按扩展名：md/html/图片/文本） |
+| `400` |  |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | 路径越出任务工作目录或不在 allowed_cwd |
+| `404` |  |
+| `413` | 超过预览上限 |
 
 
 

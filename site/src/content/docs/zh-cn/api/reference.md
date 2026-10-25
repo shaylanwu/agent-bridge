@@ -50,7 +50,7 @@ bridge 会用系统默认浏览器打开该 URL。复用用户已有登录态，
 
 **用授权码换取 device_token**
 
-bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`base64url(sha256(code_verifier)) === 之前下发的 code_challenge`。
+bridge 拿到 `code` 后调用。**必须校验 codeVerifier 满足 S256**：`base64url(sha256(codeVerifier)) === 之前下发的 code_challenge`。
 
 **请求体**
 
@@ -58,9 +58,13 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `code` | `string` | ✓ |  |
-| `code_verifier` | `string` | ✓ |  |
-| `redirect_uri` | `string` (uri) | ✓ |  |
-| `client_id` | `string` = `agent-bridge` | ✓ |  |
+| `codeVerifier` | `string` | ✓ |  |
+| `redirectUri` | `string` (uri) | ✓ |  |
+| `clientId` | `string` = `agent-bridge` | ✓ |  |
+| `deviceId` | `DeviceId` | ✓ |  |
+| `hostname` | `string` | ✓ |  |
+| `platform` | `string` | ✓ |  |
+| `cliVersion` | `string` | ✓ |  |
 
 
 **示例**
@@ -68,9 +72,13 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 ```json
 {
   "code": "string",
-  "code_verifier": "string",
-  "redirect_uri": "string",
-  "client_id": "agent-bridge"
+  "codeVerifier": "string",
+  "redirectUri": "string",
+  "clientId": "agent-bridge",
+  "deviceId": "bd_001122334455",
+  "hostname": "string",
+  "platform": "win32",
+  "cliVersion": "string"
 }
 ```
 
@@ -79,9 +87,12 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 
 | 状态码 | 含义 |
 | --- | --- |
-| `200` | 换取成功 |
-| `400` | code / verifier 校验失败 |
+| `200` | 换取成功；`device_id` 必须等于请求中的 `deviceId`，否则 bridge 拒绝保存凭证或建立 WS — 结构: TokenResponse |
+| `400` | code / verifier 校验失败；`invalid_device_id` 表示平台拒绝该 ID 格式，bridge 保留本地身份且不更换 ID — 结构: PublicError |
+| `401` | 授权或凭证失败；bridge 保留本地身份，不重放已交换的授权码 — 结构: PublicError |
+| `403` | 授权或凭证被拒绝；bridge 保留本地身份，不重放已交换的授权码 — 结构: PublicError |
 | `404` | 平台未实现该端点（bridge 会提示"平台配套接口未上线"） |
+| `409` | `device_bound_to_other_account`：设备属于其他账号；`device_identity_ambiguous`：平台历史身份重复。两者都需平台管理员处理；bridge 不换 ID，也不自动转移或合并 — 结构: PublicError |
 
 
 **示例**
@@ -110,14 +121,14 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `client_id` | `string` = `agent-bridge` | ✓ |  |
+| `clientId` | `string` = `agent-bridge` | ✓ |  |
 
 
 **示例**
 
 ```json
 {
-  "client_id": "agent-bridge"
+  "clientId": "agent-bridge"
 }
 ```
 
@@ -157,7 +168,11 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `device_code` | `string` | ✓ |  |
-| `client_id` | `string` = `agent-bridge` | ✓ |  |
+| `clientId` | `string` = `agent-bridge` | ✓ |  |
+| `deviceId` | `DeviceId` | ✓ |  |
+| `hostname` | `string` | ✓ |  |
+| `platform` | `string` | ✓ |  |
+| `cliVersion` | `string` | ✓ |  |
 
 
 **示例**
@@ -165,7 +180,11 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 ```json
 {
   "device_code": "string",
-  "client_id": "agent-bridge"
+  "clientId": "agent-bridge",
+  "deviceId": "bd_001122334455",
+  "hostname": "string",
+  "platform": "win32",
+  "cliVersion": "string"
 }
 ```
 
@@ -174,10 +193,13 @@ bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`b
 
 | 状态码 | 含义 |
 | --- | --- |
-| `200` | 已确认 |
-| `403` | 等待用户确认（bridge 继续轮询） |
+| `200` | 已确认；`device_id` 必须等于请求中的 `deviceId`，否则 bridge 拒绝保存凭证或建立 WS — 结构: TokenResponse |
+| `400` | `invalid_device_id` 表示平台拒绝该 ID 格式；bridge 保留本地身份，不更换 ID — 结构: PublicError |
+| `401` | 授权或凭证失败；bridge 保留本地身份，不重放已终态交换的设备码 — 结构: PublicError |
+| `403` | 授权或凭证被拒绝；bridge 保留本地身份，不重放已终态交换的设备码 — 结构: PublicError |
 | `404` | 平台未实现该端点 |
-| `428` | 尚未确认（bridge 继续轮询） |
+| `409` | `device_bound_to_other_account`：设备属于其他账号；`device_identity_ambiguous`：平台历史身份重复。两者都需平台管理员处理；bridge 不换 ID，也不自动转移或合并 — 结构: PublicError |
+| `428` | 顶层 `code` 为 `authorization_pending` 时，用户尚未确认；bridge 按服务端 interval 继续轮询且不生成新 ID — 结构: PublicError |
 
 
 **示例**

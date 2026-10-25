@@ -50,7 +50,7 @@ The bridge opens this URL in the system browser. Reuse the user’s existing ses
 
 **Exchange the authorization code**
 
-The bridge calls this after receiving `code`. You MUST verify `code_verifier` against the S256 challenge: `base64url(sha256(code_verifier)) === code_challenge`.
+The bridge calls this after receiving `code`. You MUST verify `codeVerifier` against the S256 challenge: `base64url(sha256(codeVerifier)) === code_challenge`.
 
 **Request body**
 
@@ -58,9 +58,13 @@ The bridge calls this after receiving `code`. You MUST verify `code_verifier` ag
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `code` | `string` | ✓ |  |
-| `code_verifier` | `string` | ✓ |  |
-| `redirect_uri` | `string` (uri) | ✓ |  |
-| `client_id` | `string` = `agent-bridge` | ✓ |  |
+| `codeVerifier` | `string` | ✓ |  |
+| `redirectUri` | `string` (uri) | ✓ |  |
+| `clientId` | `string` = `agent-bridge` | ✓ |  |
+| `deviceId` | `DeviceId` | ✓ |  |
+| `hostname` | `string` | ✓ |  |
+| `platform` | `string` | ✓ |  |
+| `cliVersion` | `string` | ✓ |  |
 
 
 **Example**
@@ -68,9 +72,13 @@ The bridge calls this after receiving `code`. You MUST verify `code_verifier` ag
 ```json
 {
   "code": "string",
-  "code_verifier": "string",
-  "redirect_uri": "string",
-  "client_id": "agent-bridge"
+  "codeVerifier": "string",
+  "redirectUri": "string",
+  "clientId": "agent-bridge",
+  "deviceId": "bd_001122334455",
+  "hostname": "string",
+  "platform": "win32",
+  "cliVersion": "string"
 }
 ```
 
@@ -79,9 +87,12 @@ The bridge calls this after receiving `code`. You MUST verify `code_verifier` ag
 
 | Status | Meaning |
 | --- | --- |
-| `200` |  |
-| `400` |  |
+| `200` |  — Schema: TokenResponse |
+| `400` |  — Schema: PublicError |
+| `401` |  — Schema: PublicError |
+| `403` |  — Schema: PublicError |
 | `404` |  |
+| `409` |  — Schema: PublicError |
 
 
 **Example**
@@ -110,14 +121,14 @@ For browserless / SSH environments: hand out a short `user_code` the user confir
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `client_id` | `string` = `agent-bridge` | ✓ |  |
+| `clientId` | `string` = `agent-bridge` | ✓ |  |
 
 
 **Example**
 
 ```json
 {
-  "client_id": "agent-bridge"
+  "clientId": "agent-bridge"
 }
 ```
 
@@ -157,7 +168,11 @@ Returns 4xx while the user has not confirmed (the bridge keeps polling every `in
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `device_code` | `string` | ✓ |  |
-| `client_id` | `string` = `agent-bridge` | ✓ |  |
+| `clientId` | `string` = `agent-bridge` | ✓ |  |
+| `deviceId` | `DeviceId` | ✓ |  |
+| `hostname` | `string` | ✓ |  |
+| `platform` | `string` | ✓ |  |
+| `cliVersion` | `string` | ✓ |  |
 
 
 **Example**
@@ -165,7 +180,11 @@ Returns 4xx while the user has not confirmed (the bridge keeps polling every `in
 ```json
 {
   "device_code": "string",
-  "client_id": "agent-bridge"
+  "clientId": "agent-bridge",
+  "deviceId": "bd_001122334455",
+  "hostname": "string",
+  "platform": "win32",
+  "cliVersion": "string"
 }
 ```
 
@@ -174,10 +193,13 @@ Returns 4xx while the user has not confirmed (the bridge keeps polling every `in
 
 | Status | Meaning |
 | --- | --- |
-| `200` |  |
-| `403` |  |
+| `200` |  — Schema: TokenResponse |
+| `400` |  — Schema: PublicError |
+| `401` |  — Schema: PublicError |
+| `403` |  — Schema: PublicError |
 | `404` |  |
-| `428` |  |
+| `409` |  — Schema: PublicError |
+| `428` |  — Schema: PublicError |
 
 
 **Example**

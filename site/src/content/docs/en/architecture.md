@@ -15,10 +15,10 @@ cli.ts                    entry: argv → dispatch()
   └─ cli/                 presentation: dispatch table, flags, rendering, help
        └─ commands/       one file per command
             └─ app/       use cases: session, task dispatch, service gate, control plane
-                 ├─ core/       domain: emitter, task supervisor, errors, redaction, scan
+                 ├─ core/       domain: emitter, task supervisor, device identity, errors, redaction, scan
                  ├─ transport/  outbound: bridge client, outbox
                  ├─ adapters/   edges: agent adapters, windows exec, logos
-                 └─ infra/      platform: config, auth, git, audit, service tokens
+                 └─ infra/      platform: identity/config stores, profile lock, auth, git, audit, service tokens
 ```
 
 Dependencies point **downward only** — `core` imports nothing from `transport`, `adapters`,
@@ -55,13 +55,24 @@ extension, not a second front door: tasks it creates still flow through the shar
 
 `core/task-supervisor.ts` owns the state machine: `queued → running → settled`.
 
-- Concurrency cap: `max_tasks` in `config.toml` (default 3, ceiling 32); `AGENT_BRIDGE_MAX_TASKS`
-  overrides it for CI.
+- Concurrency cap: `max_tasks` in `config.toml` (default 30, ceiling 128); startup flags
+  `--max-tasks` / `--max-queue` or `AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` override it.
 - **Queuing is expressed with optional fields, not a new status value.** A queued task reports
   `status: "running"` plus `phase: "queued"` and `queuePosition`. A platform that has never heard of
   queuing keeps working; one that cares can read the extra fields.
 - Cancellation is SIGTERM, then SIGKILL after 2 s.
 - A watchdog marks long-silent tasks `lost`; that state exists for platforms, not on the wire.
+
+## Stable identity and protocol v2
+
+`infra/device-identity-store.ts` persists `identity.toml` before interactive authorization; `config.toml`
+keeps only a same-value compatibility mirror plus credentials and settings. The parent of the configured
+`config.toml` is the profile. A profile lock serializes identity migration, authorization, credential
+writes, and logout without being held for the WebSocket lifetime.
+
+Authorization requests, the WS URL query, and `hello.deviceId` all use this one local ID. Protocol v2
+requires it to be non-empty and valid; a pre-issued token without a persisted, migratable, or explicit ID
+fails instead of creating an identity. Logout removes credentials but keeps identity and settings.
 
 ## Contracts are the source of truth
 

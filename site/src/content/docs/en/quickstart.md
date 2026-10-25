@@ -52,18 +52,22 @@ agent-bridge connect https://your-platform.example.com \
   --token=dt_xxx --device-id=bd_xxx
 ```
 
-Pass `--device-id` (or set `AGENT_BRIDGE_DEVICE_ID`) whenever you use `--token`, otherwise the
-platform has to reverse-lookup the device from the token.
+A pre-issued token has no identity of its own. The bridge must find a stable ID in local state or migrate
+one from `--device-id` / `AGENT_BRIDGE_DEVICE_ID`; if none exists, startup fails rather than generating an
+ID, sending an empty one, or relying on a Bearer reverse lookup.
 
 ## Where state lives
 
 | File | Path | Contents |
 | --- | --- | --- |
-| Config | `~/.agent-bridge/config.toml` (`%APPDATA%\.agent-bridge\config.toml` on Windows) | `platformUrl`, `deviceId`, `max_tasks`, control-plane settings |
-| Device credential | same directory | `device_token`, chmod `0600` |
+| Identity (source of truth) | `~/.agent-bridge/identity.toml` (`%APPDATA%\.agent-bridge\identity.toml` on Windows) | Stable `deviceId` |
+| Config | `~/.agent-bridge/config.toml` (`%APPDATA%\.agent-bridge\config.toml` on Windows) | `platformUrl`, `deviceToken`, the `deviceId` compatibility mirror, `max_tasks`, control-plane settings |
 | Service tokens | `~/.agent-bridge/services.toml` | Issued `abs_…` tokens (hashed) |
 
-Override the config location with `AGENT_BRIDGE_CONFIG`.
+`AGENT_BRIDGE_CONFIG` points to a profile's `config.toml`; its parent directory is the profile and also
+holds `identity.toml`. Keep that directory across uninstall/reinstall to reuse the ID. Deleting only
+`identity.toml` restores it from the config mirror; deleting the whole profile means a new installation.
+`logout` preserves identity and settings, so `logout` → `connect` rebinds the same ID.
 
 ## Run your first task
 

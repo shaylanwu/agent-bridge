@@ -12,6 +12,8 @@ to bind the device.
 
 - **Direction of establishment:** device → platform. The device never listens.
 - **Scheme:** `wss://` in production; `ws://` only for local development.
+- **URL:** `wss://<platform>/api/bridge/ws?deviceId=<stable-id>`; the query ID is required and must
+  equal `hello.deviceId`.
 - **Authentication:** the `device_token` obtained during binding, sent as a Bearer credential at
   handshake. Platforms store only the token's SHA-256.
 
@@ -22,17 +24,19 @@ As soon as the socket opens, the device sends `hello`:
 ```json
 {
   "type": "hello",
-  "protocolVersion": 1,
-  "deviceId": "bd_9f1c…",
-  "cliVersion": "0.1.0",
+  "protocolVersion": 2,
+  "deviceId": "bd_001122334455",
+  "cliVersion": "0.2.3",
   "platform": "darwin",
   "hostname": "dev-laptop",
-  "capabilities": ["diff", "service-token", "queue", "scan-progress", "cloud-events"]
+  "capabilities": ["diff", "service-token", "queue", "scan-progress", "cloud-events", "capacity", "task-step"]
 }
 ```
 
-If `deviceId` is empty, resolve the device from the Bearer token. If your platform speaks a
-different `protocolVersion`, close with `protocol_incompatible` — do not proceed and hope.
+Protocol v2 requires a non-empty `deviceId` matching `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`; it is
+the locally persisted identity, not a value derived from the Bearer token. Reject a missing, malformed,
+or URL/hello-mismatched ID. If your platform speaks a different `protocolVersion`, close with
+`protocol_incompatible` — do not proceed and hope.
 
 Right after `hello` the device sends `agent_list`, the inventory of AI agents it found.
 

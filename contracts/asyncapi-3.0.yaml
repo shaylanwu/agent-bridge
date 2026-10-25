@@ -12,9 +12,10 @@ info:
     退避：断线后 1s→2s→…→30s 指数退避重连；`4401` / `4403` 表示凭据被吊销，**不再重连**。
     补发：断线期间的上行报文进有界缓冲（日志 256KB，控制类 200 条），重连后按序补发。
 
-    版本规则：**新增可选字段 = 协议版本不变**（当前 PROTOCOL_VERSION = 1）；
+    版本规则：**新增可选字段 = 协议版本不变**（当前 PROTOCOL_VERSION = 2）；
     语义变更或新增必填字段 = 版本 +1。能力差异一律通过 `hello.capabilities` 协商，
-    而不是猜 CLI 版本号。
+    而不是猜 CLI 版本号。v2 要求 WS URL query 与 `hello.deviceId` 使用同一个合法、
+    非空的本地稳定身份；不再允许空 ID 或仅凭 Bearer 反查设备身份。
   license:
     name: MIT
     identifier: MIT
@@ -38,10 +39,13 @@ channels:
           required: [type, protocolVersion, deviceId, cliVersion, platform, hostname]
           properties:
             type: { type: string, const: hello }
-            protocolVersion: { type: integer, const: 1 }
+            protocolVersion: { type: integer, const: 2 }
             deviceId:
               type: string
-              description: 解析不到时为空串，平台须按 Bearer 反查设备
+              minLength: 1
+              pattern: '^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$'
+              examples: [bd_001122334455]
+              description: 本地持久化的稳定身份；必须与 WS URL 的 `deviceId` query 完全相等，不允许空 ID 或仅凭 Bearer 反查
             cliVersion: { type: string }
             platform: { type: string, examples: [win32, darwin, linux] }
             hostname: { type: string }
@@ -49,8 +53,14 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events。
+                scan-progress / cloud-events / capacity / task-step。
               items: { type: string }
+            capacity:
+              type: object
+              description: 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错）
+              properties:
+                maxTasks: { type: integer }
+                maxQueued: { type: integer }
       agent_list:
         name: agent_list
         title: 本机工具清单（首连终态）
@@ -128,9 +138,46 @@ channels:
               items: { type: string }
               description: 仓库相对路径，上限 500 条
             diffTruncated: { type: boolean }
+            result:
+              type: string
+              description: 终态最终回答文本（步骤流工具从 result 事件提取；≤16KB）
             requestedBy:
               type: string
               description: 回显调用方身份，供平台落 requested_by 审计
+      capacity_update:
+        name: capacity_update
+        title: 容量水位
+        description: |
+          每次调度状态变化（入队 / 启动 / 终态）后发送一次，反映平台与控制面
+          两条通道的合计占用。平台据此知道「还能不能再派任务」，无需等 device_busy。
+        payload:
+          type: object
+          required: [type, running, queued, maxTasks, maxQueued]
+          properties:
+            type: { type: string, const: capacity_update }
+            running: { type: integer, description: 正在执行的任务数 }
+            queued: { type: integer, description: 排队中的任务数 }
+            maxTasks: { type: integer }
+            maxQueued: { type: integer }
+      task_step:
+        name: task_step
+        title: 任务步骤（动态步骤流）
+        description: |
+          AI CLI 的步骤由模型实时决定，没有预定义总步数；平台拿到的是「已发生的步骤序列 + 当前步骤」。
+          仅 `agent_list` 中 `steps: true` 的工具会产生本消息。终态后该 task 的步骤一律丢弃（同 task_log）。
+        payload:
+          type: object
+          required: [type, taskId, seq, action, state, at]
+          properties:
+            type: { type: string, const: task_step }
+            taskId: { type: string }
+            seq: { type: integer, minimum: 1, description: 从 1 单调递增 }
+            action: { type: string, description: Bash / Edit / Read / command_execution / file_change… }
+            label: { type: string, maxLength: 160, description: 目标摘要，与日志同口径脱敏 }
+            state: { type: string, enum: [started, finished] }
+            ok: { type: boolean, description: 仅 state=finished 时给出 }
+            ref: { type: string, description: 源事件关联 id（started/finished 配对） }
+            at: { type: string, format: date-time }
       pong:
         name: pong
         title: 应用层心跳响应
@@ -238,6 +285,9 @@ components:
         credentialSource: { type: string, examples: ['env:OPENAI_API_KEY', 'file:~/.codex/auth.json'] }
         capability: { type: string, enum: [non_interactive, interactive_only] }
         installedButBroken: { type: boolean }
+        steps:
+          type: boolean
+          description: 是否支持 task_step 步骤流；false 的工具平台应隐藏步骤面板而不是空转
         logo: { type: string, description: 'data:image/svg+xml;base64,… 24×24 单色；按 kind 缓存' }
     ErrorCode:
       type: string

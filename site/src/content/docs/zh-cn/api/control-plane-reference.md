@@ -9,16 +9,37 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 
 | 方法 | 路径 | 摘要 |
 | --- | --- | --- |
+| `GET` | [`/`](#op-get) | 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点） |
 | `GET` | [`/v1/health`](#op-get-v1-health) | 存活 / 就绪 / 版本 |
 | `GET` | [`/v1/capabilities`](#op-get-v1-capabilities) | 能力清单与端点索引 |
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | 已安装 AI Agent 及其凭据状态 |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | 触发一次全新扫描 |
+| `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | 任务台账（游标分页） |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | 创建任务 |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | 任务状态 + 终态产物 |
 | `GET` | [`/v1/tasks/{id}/events`](#op-get-v1-tasks-id-events) | SSE 事件流 |
+| `GET` | [`/v1/tasks/{id}/steps`](#op-get-v1-tasks-id-steps) | 步骤时间线（完整步骤序列 + 最终回答文本） |
+| `GET` | [`/v1/tasks/{id}/file`](#op-get-v1-tasks-id-file) | 任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB） |
 | `GET` | [`/v1/tasks/{id}/diff`](#op-get-v1-tasks-id-diff) | 仅取终态 diff |
 | `POST` | [`/v1/tasks/{id}:cancel`](#op-post-v1-tasks-id-cancel) | 取消任务 |
+
+
+<a id="op-get"></a>
+
+### GET /
+
+**内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点）**
+
+**鉴权**：无需令牌  (`abs_<kid>_<secret>`)
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+
+
 
 
 <a id="op-get-v1-health"></a>
@@ -125,7 +146,8 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
       "status": "ready",
       "version": "string",
       "path": "string",
-      "installedButBroken": true
+      "installedButBroken": true,
+      "steps": true
     }
   ],
   "scannedAt": "string"
@@ -157,6 +179,57 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 
 ```json
 {}
+```
+
+
+
+
+<a id="op-get-v1-board"></a>
+
+### GET /v1/board
+
+**面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `401` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "counts": {
+    "running": 1,
+    "queued": 1,
+    "success": 1,
+    "failed": 1
+  },
+  "capacity": {
+    "running": 1,
+    "queued": 1,
+    "maxTasks": 1,
+    "maxQueued": 1
+  },
+  "tasks": [
+    {
+      "taskId": "string",
+      "agentType": "string",
+      "cwdShort": "string",
+      "source": "platform",
+      "status": "running",
+      "phase": "queued",
+      "error": "string",
+      "stepCount": 1,
+      "createdAt": 1
+    }
+  ]
+}
 ```
 
 
@@ -351,6 +424,92 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | --- | --- |
 | `200` |  |
 | `401` |  — 结构: Problem |
+
+
+
+
+<a id="op-get-v1-tasks-id-steps"></a>
+
+### GET /v1/tasks/{id}/steps
+
+**步骤时间线（完整步骤序列 + 最终回答文本）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `401` |  — 结构: Problem |
+| `404` |  |
+
+
+**示例**
+
+```json
+{
+  "taskId": "string",
+  "status": "string",
+  "phase": "string",
+  "stepCount": 1,
+  "steps": [
+    {
+      "seq": 1,
+      "action": "string",
+      "label": "string",
+      "state": "started",
+      "ok": true,
+      "at": 1,
+      "finishedAt": 1
+    }
+  ],
+  "plan": [
+    {
+      "text": "string",
+      "state": "pending"
+    }
+  ],
+  "finalText": "string"
+}
+```
+
+
+
+
+<a id="op-get-v1-tasks-id-file"></a>
+
+### GET /v1/tasks/{id}/file
+
+**任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+| `path` | query | `string` | ✓ |  |
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `400` |  |
+| `401` |  — 结构: Problem |
+| `403` |  |
+| `404` |  |
+| `413` |  |
 
 
 

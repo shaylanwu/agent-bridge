@@ -5,14 +5,14 @@ sidebar:
   order: 1
 ---
 
-线协议版本为 1（`PROTOCOL_VERSION = 1`）。它刻意做得很小：一条出站 WebSocket，11 个消息类型。
+线协议版本为 2（`PROTOCOL_VERSION = 2`）。它刻意做得很小：一条出站 WebSocket，13 个消息类型。
 规范性描述在 [`contracts/asyncapi-3.0.yaml`](/agent-bridge/asyncapi-3.0.yaml)，本页解释它周围的规则。
 
 ## 消息方向
 
 | 方向 | 消息 |
 | --- | --- |
-| **上行**（bridge → 平台） | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`pong` |
+| **上行**（bridge → 平台） | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`capacity_update`、`pong` |
 | **下行**（平台 → bridge） | `run_task`、`cancel_task`、`scan`、`ping` |
 
 所有上行报文都经唯一出口 `Emitter`，所以幂等、脱敏、审计这些保证一致成立。
@@ -23,6 +23,8 @@ sidebar:
 - 新增**可选字段**不算版本变更：老平台忽略它，新平台使用它。
 - 新增**状态值**是破坏性变更：不认识该值的平台无法渲染。正因如此，排队语义用 `phase` 而不是 `status: "queued"`。
 - 握手时比对 `protocolVersion`，不一致即以 `protocol_incompatible` 失败。
+- v2 收紧身份语义：`hello.deviceId` 必填、非空，匹配 `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`；
+  必须与 WS URL query 和授权请求中的本地持久化 ID 同值。空 ID 与仅凭 Bearer 反查都不是降级路径。
 
 ## 能力协商
 
@@ -35,6 +37,8 @@ sidebar:
 | `queue` | 上报 `phase: "queued"` + `queuePosition`，而不是拒绝 |
 | `scan-progress` | 扫描期间流式推送 `scan_progress` |
 | `cloud-events` | 上行报文带 CloudEvents 1.0 信封 |
+| `capacity` | `hello.capacity` 上报额度上限，调度变化时推 `capacity_update` |
+| `task-step` | 结构化工具实时回传 `task_step` 步骤流（`steps: false` 的工具降级为仅状态） |
 
 ## 受控错误码
 
@@ -68,7 +72,23 @@ sidebar:
   "phase": "queued", "queuePosition": 2 }
 ```
 
-真正开始执行时 `phase` 变为 `"running"`。并发上限是 `max_tasks`（默认 3）。
+真正开始执行时 `phase` 变为 `"running"`。并发上限是 `max_tasks`（默认 30）。
+
+## 容量水位与幂等
+
+- `hello.capacity` 携带本次会话生效的 `{ maxTasks, maxQueued }`；此后每次调度状态变化
+  （入队 / 启动 / 终态）都会推一条 `capacity_update { running, queued, maxTasks, maxQueued }`，
+  平台据此做有水位线的派发，而不是靠 `device_busy` 试错。
+- `run_task` 按 `taskId` 幂等：重复下发的同一 `taskId` 不会重复执行 —— 未终态回当前状态快照，
+  已终态回放终态快照。平台断线重发是安全的。
+
+## 步骤流
+
+全部 12 个工具（2026-10-24 全量实测 + 官方文档核定）都会把子进程的 JSONL 事件
+解析成动态步骤流上行：`task_step { taskId, seq, action, label?, state, ok?, ref?, at }`。
+步骤由模型实时决定，没有预定义总步数 —— 平台渲染「已发生的步骤序列 + 当前步骤」。
+事件格式分 6 族：claude 同构 5 个（claude-code / codebuddy-cli / grok-cli / qoder-cli / trae-cli）、
+opencode 同构 2 个（opencode / mimo-code）、codex / gemini / kimi-code / ds-harness / minimax-code 各自一族。
 
 ## 服务身份
 

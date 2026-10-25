@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The wire protocol is version 1 (`PROTOCOL_VERSION = 1`). It is deliberately small: 11 message
+The wire protocol is version 2 (`PROTOCOL_VERSION = 2`). It is deliberately small: 13 message
 types over one outbound WebSocket. The normative description is
 [`contracts/asyncapi-3.0.yaml`](/agent-bridge/asyncapi-3.0.yaml); this page explains the rules
 around it.
@@ -14,7 +14,7 @@ around it.
 
 | Direction | Messages |
 | --- | --- |
-| **Up** (bridge → platform) | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `pong` |
+| **Up** (bridge → platform) | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `capacity_update`, `pong` |
 | **Down** (platform → bridge) | `run_task`, `cancel_task`, `scan`, `ping` |
 
 Every upstream message leaves through a single `Emitter`, so guarantees (idempotency, redaction,
@@ -28,6 +28,9 @@ code — never silently ignored.
   value cannot render it. This is why queuing uses `phase` instead of `status: "queued"`.
 - Bridge and platform compare `protocolVersion` at handshake time; a mismatch fails with
   `protocol_incompatible`.
+- v2 tightens identity semantics: `hello.deviceId` is required, non-empty, and matches
+  `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`. It must be the same locally persisted ID sent in the WS URL
+  query and authorization requests. Empty IDs and Bearer-only identity lookup are not fallbacks.
 
 ## Capability negotiation
 
@@ -41,6 +44,8 @@ numbers.**
 | `queue` | Reports `phase: "queued"` + `queuePosition` instead of refusing |
 | `scan-progress` | Streams `scan_progress` during a scan |
 | `cloud-events` | Upstream messages carry a CloudEvents 1.0 envelope |
+| `capacity` | `hello.capacity` advertises the caps; `capacity_update` streams the water level |
+| `task-step` | Structured agents stream `task_step` (`steps: false` agents degrade to status only) |
 
 ## Controlled error codes
 
@@ -75,7 +80,25 @@ never see a status value they do not know. Two optional fields carry the extra t
 ```
 
 When it actually starts, `phase` becomes `"running"`. The concurrency cap is `max_tasks`
-(default 3).
+(default 30).
+
+## Capacity water level and idempotency
+
+- `hello.capacity` carries the effective `{ maxTasks, maxQueued }` for the session; every
+  scheduling change (enqueue / launch / settle) then pushes a
+  `capacity_update { running, queued, maxTasks, maxQueued }`, so the platform dispatches against
+  a known water level instead of probing with `device_busy`.
+- `run_task` is idempotent by `taskId`: a re-sent command never spawns twice — a live task gets
+  a current-state snapshot, a settled task replays its terminal snapshot. Reconnect retries are safe.
+
+## Step stream
+
+All 12 agents (verified 2026-10-24 via live runs plus official docs) parse their child's JSONL
+events into a dynamic step flow: `task_step { taskId, seq, action, label?, state, ok?, ref?, at }`.
+Steps are decided by the model at runtime — no predefined total; the platform renders "steps so far
+plus the current one". Six format families: claude-style ×5 (claude-code / codebuddy-cli / grok-cli /
+qoder-cli / trae-cli), opencode-style ×2 (opencode / mimo-code), plus codex / gemini / kimi-code /
+ds-harness / minimax-code.
 
 ## Service identity
 

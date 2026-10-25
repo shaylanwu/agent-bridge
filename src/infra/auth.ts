@@ -14,15 +14,33 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
+import { DEVICE_ID_PATTERN } from '../core/device-identity.js';
+
+export interface AuthContext {
+  platformUrl: string;
+  deviceId: string;
+  hostname: string;
+  platform: NodeJS.Platform;
+  cliVersion: string;
+}
 
 export interface AuthResult {
   platformUrl: string;
-  deviceId: string;
   deviceToken: string;
   refreshToken?: string;
 }
 
-export class AuthError extends Error {}
+export class AuthError extends Error {
+  readonly httpStatus?: number;
+  readonly code?: string;
+
+  constructor(message: string, options: { httpStatus?: number; code?: string } = {}) {
+    super(message);
+    this.name = 'AuthError';
+    this.httpStatus = options.httpStatus;
+    this.code = options.code;
+  }
+}
 
 const CALLBACK_TIMEOUT_MS = 180_000;
 
@@ -92,6 +110,90 @@ async function postJson(url: string, body: unknown, timeoutMs = 15_000): Promise
   }
 }
 
+async function readPublicErrorCode(res: Response): Promise<string | undefined> {
+  try {
+    const body: unknown = await res.json();
+    if (typeof body !== 'object' || body === null) return undefined;
+    const code = (body as { code?: unknown }).code;
+    return typeof code === 'string' && code.length > 0 ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function authErrorFromResponse(res: Response, endpoint: string, code?: string): AuthError {
+  const options = { httpStatus: res.status, code };
+  if (res.status === 404) {
+    const hint = endpoint === '/api/bridge/device-code'
+      ? '（且本机无法打开浏览器）'
+      : '（bridge 配套接口未上线）';
+    return new AuthError(`平台还没有实现 ${endpoint}${hint}`, options);
+  }
+  if (res.status === 400 && code === 'invalid_device_id') {
+    return new AuthError(
+      '本地设备身份格式无效，平台拒绝该 deviceId；请检查本地身份，不会自动更换设备 ID。',
+      options,
+    );
+  }
+  if (res.status === 409 && code === 'device_bound_to_other_account') {
+    return new AuthError(
+      '设备已绑定其他账号；请联系平台管理员处理设备所有权，不会自动更换设备 ID。',
+      options,
+    );
+  }
+  if (res.status === 409 && code === 'device_identity_ambiguous') {
+    return new AuthError(
+      '平台存在设备身份历史重复；请联系平台管理员处理，不会自动合并或更换设备 ID。',
+      options,
+    );
+  }
+  if (res.status === 401 || res.status === 403) {
+    return new AuthError(
+      `平台授权或凭证失败（HTTP ${res.status}）；本地设备身份已保留，请重新发起授权。`,
+      options,
+    );
+  }
+  return new AuthError(
+    `授权请求失败：HTTP ${res.status}。请检查平台状态后重新发起授权。`,
+    options,
+  );
+}
+
+function protocolError(detail: string): AuthError {
+  return new AuthError(`平台授权响应协议错误：${detail}`);
+}
+
+async function parseTokenResponse(res: Response, context: AuthContext): Promise<AuthResult> {
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw protocolError('响应不是有效 JSON。');
+  }
+  if (typeof body !== 'object' || body === null) throw protocolError('响应必须是 JSON 对象。');
+  const value = body as Record<string, unknown>;
+  const deviceToken = value['device_token'];
+  const refreshToken = value['refresh_token'];
+  const deviceId = value['device_id'];
+  if (typeof deviceToken !== 'string' || deviceToken.length === 0) {
+    throw protocolError('device_token 缺失或不是非空字符串。');
+  }
+  if (refreshToken !== undefined && (typeof refreshToken !== 'string' || refreshToken.length === 0)) {
+    throw protocolError('refresh_token 必须是非空字符串。');
+  }
+  if (typeof deviceId !== 'string' || !DEVICE_ID_PATTERN.test(deviceId)) {
+    throw protocolError('device_id 缺失或格式无效。');
+  }
+  if (deviceId !== context.deviceId) {
+    throw protocolError(`device_id 与本地身份不一致（预期 ${context.deviceId}，实际 ${deviceId}）。`);
+  }
+  return {
+    platformUrl: normalizeBase(context.platformUrl),
+    deviceToken,
+    ...(refreshToken === undefined ? {} : { refreshToken }),
+  };
+}
+
 /** 起临时回调服务，返回 { port, waitForCode } */
 async function startCallbackServer(): Promise<{
   port: number;
@@ -139,40 +241,34 @@ async function startCallbackServer(): Promise<{
 }
 
 async function exchangeCode(
-  platform: string,
+  context: AuthContext,
   body: { code: string; codeVerifier: string; redirectUri: string },
 ): Promise<AuthResult> {
+  const platform = normalizeBase(context.platformUrl);
   const res = await postJson(`${platform}/api/bridge/token`, {
     ...body,
     clientId: 'agent-bridge',
+    deviceId: context.deviceId,
+    hostname: context.hostname,
+    platform: context.platform,
+    cliVersion: context.cliVersion,
   });
-  if (res.status === 404) {
-    throw new AuthError('平台还没有实现 /api/bridge/token（bridge 配套接口未上线）');
-  }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new AuthError(`换取 device_token 失败：HTTP ${res.status} ${text.slice(0, 200)}`);
+    const code = await readPublicErrorCode(res);
+    throw authErrorFromResponse(res, '/api/bridge/token', code);
   }
-  const j = (await res.json()) as {
-    device_token?: string;
-    refresh_token?: string;
-    device_id?: string;
-  };
-  if (!j.device_token || !j.device_id) throw new AuthError('平台返回缺少 device_token / device_id');
-  return {
-    platformUrl: platform,
-    deviceId: j.device_id,
-    deviceToken: j.device_token,
-    refreshToken: j.refresh_token,
-  };
+  return parseTokenResponse(res, context);
 }
 
 /** 回环回调授权（主路径）：用户只需确认浏览器里的授权框 */
 export async function authorizeWithBrowser(
-  platformUrl: string,
-  opts: { onPrompt?: (url: string) => void } = {},
+  context: AuthContext,
+  opts: {
+    onPrompt?: (url: string) => void;
+    openBrowser?: (url: string) => void | Promise<void>;
+  } = {},
 ): Promise<AuthResult> {
-  const platform = normalizeBase(platformUrl);
+  const platform = normalizeBase(context.platformUrl);
   const { verifier, challenge } = createPkce();
   const cb = await startCallbackServer();
   const redirectUri = `http://127.0.0.1:${cb.port}/callback`;
@@ -180,40 +276,48 @@ export async function authorizeWithBrowser(
     `${platform}/bridge/authorize?client_id=agent-bridge` +
     `&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}&state=${randomUUID()}`;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   try {
     opts.onPrompt?.(authUrl);
-    openBrowser(authUrl);
-    const timeout = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new AuthError('等待浏览器授权超时（180s）')), CALLBACK_TIMEOUT_MS),
-    );
+    if (opts.openBrowser) await opts.openBrowser(authUrl);
+    else openBrowser(authUrl);
+    const timeout = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new AuthError('等待浏览器授权超时（180s）')), CALLBACK_TIMEOUT_MS);
+    });
     const code = await Promise.race([cb.waitForCode, timeout]);
-    return await exchangeCode(platform, { code, codeVerifier: verifier, redirectUri });
+    return await exchangeCode(context, { code, codeVerifier: verifier, redirectUri });
   } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     cb.close();
   }
 }
 
 /** Device Code 兜底（SSH / 打不开浏览器）：平台返回验证码，用户去任意浏览器确认 */
 export async function authorizeWithDeviceCode(
-  platformUrl: string,
+  context: AuthContext,
   opts: { onPrompt?: (verificationUri: string, userCode: string) => void } = {},
 ): Promise<AuthResult> {
-  const platform = normalizeBase(platformUrl);
+  const platform = normalizeBase(context.platformUrl);
   const start = await postJson(`${platform}/api/bridge/device-code`, {
     clientId: 'agent-bridge',
   });
-  if (start.status === 404) {
-    throw new AuthError('平台还没有实现 /api/bridge/device-code（且本机无法打开浏览器）');
+  if (!start.ok) {
+    const code = await readPublicErrorCode(start);
+    throw authErrorFromResponse(start, '/api/bridge/device-code', code);
   }
-  if (!start.ok) throw new AuthError(`申请设备码失败：HTTP ${start.status}`);
-  const j = (await start.json()) as {
+  let j: {
     device_code: string;
     user_code: string;
     verification_uri: string;
     interval?: number;
     expires_in?: number;
   };
+  try {
+    j = (await start.json()) as typeof j;
+  } catch {
+    throw protocolError('设备码申请响应不是有效 JSON。');
+  }
   opts.onPrompt?.(j.verification_uri, j.user_code);
 
   const deadline = Date.now() + (j.expires_in ?? 600) * 1000;
@@ -223,24 +327,16 @@ export async function authorizeWithDeviceCode(
     const res = await postJson(`${platform}/api/bridge/device-token`, {
       device_code: j.device_code,
       clientId: 'agent-bridge',
+      deviceId: context.deviceId,
+      hostname: context.hostname,
+      platform: context.platform,
+      cliVersion: context.cliVersion,
     });
-    if (res.ok) {
-      const t = (await res.json()) as {
-        device_token?: string;
-        device_id?: string;
-        refresh_token?: string;
-      };
-      if (t.device_token && t.device_id) {
-        return {
-          platformUrl: platform,
-          deviceId: t.device_id,
-          deviceToken: t.device_token,
-          refreshToken: t.refresh_token,
-        };
-      }
-    }
-    // 404/400 继续等；401 视为用户拒绝
-    if (res.status === 401) throw new AuthError('设备码已被拒绝或过期');
+    if (res.ok) return parseTokenResponse(res, context);
+
+    const code = await readPublicErrorCode(res);
+    if (res.status === 428 && code === 'authorization_pending') continue;
+    throw authErrorFromResponse(res, '/api/bridge/device-token', code);
   }
   throw new AuthError('设备码授权超时');
 }

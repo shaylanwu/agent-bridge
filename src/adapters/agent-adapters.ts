@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import type { AgentCapability, AgentListItem, AgentStatus } from '../protocol.js';
 import { logoDataUri } from './agent-logos.js';
+import type { StepFormat } from './step-parsers.js';
 import { buildWinCommandLine, isWinShim } from './win-exec.js';
 
 export interface AgentDef {
@@ -26,6 +27,8 @@ export interface AgentDef {
   capability: AgentCapability;
   /** 非交互任务参数模板，`{{prompt}}` 由 runner 替换 */
   taskArgs: string[];
+  /** 步骤流格式：有值 = 该工具支持 task_step（taskArgs 必须产出对应 JSONL 事件流） */
+  steps?: StepFormat;
   credential: {
     /** 平台可代管 Key 的注入变量（有值才允许"绑定 Key"） */
     envKey?: string;
@@ -47,7 +50,9 @@ export const AGENTS: AgentDef[] = [
     display: 'Claude Code',
     bin: 'claude',
     capability: 'non_interactive',
-    taskArgs: ['-p', '{{prompt}}', '--output-format', 'text'],
+    // 步骤流（B 批次）：stream-json 事件流喂 task_step；task_log 上行内容随之变为 JSONL
+    taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
+    steps: 'claude-json',
     credential: {
       envKey: 'ANTHROPIC_API_KEY',
       envs: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'],
@@ -57,13 +62,14 @@ export const AGENTS: AgentDef[] = [
   },
   {
     // 腾讯 CodeBuddy CLI（@tencent-ai/codebuddy-code），命令名 codebuddy，别名 cbc。
-    // 接口与 Claude Code 同构：-p 非交互 + --output-format text；登录后凭据落 ~/.codebuddy。
+    // 接口与 Claude Code 同构（实测 help 确认支持 stream-json）；登录后凭据落 ~/.codebuddy。
     kind: 'codebuddy-cli',
     display: 'CodeBuddy CLI',
     bin: 'codebuddy',
     altBins: ['cbc'],
     capability: 'non_interactive',
-    taskArgs: ['-p', '{{prompt}}', '--output-format', 'text'],
+    taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
+    steps: 'claude-json',
     credential: {
       envs: [],
       files: [join(home(), '.codebuddy')],
@@ -75,7 +81,9 @@ export const AGENTS: AgentDef[] = [
     display: 'Codex',
     bin: 'codex',
     capability: 'non_interactive',
+    // exec --json 已是 JSONL 事件流（item.started/item.completed）；stdin 由 spawn 关闭（stdio ignore）
     taskArgs: ['exec', '--json', '{{prompt}}'],
+    steps: 'codex-json',
     credential: {
       envKey: 'OPENAI_API_KEY',
       envs: ['OPENAI_API_KEY'],
@@ -89,7 +97,10 @@ export const AGENTS: AgentDef[] = [
     bin: 'dsh',
     npxSpec: '@deepseek-ai/dsh',
     capability: 'non_interactive',
-    taskArgs: ['--profile', 'headless', '{{prompt}}'],
+    // 官方文档：headless 加 --json 出 NDJSON 事件流（tool_call/tool_result 按 callId 配对）；
+    // 需 dsh ≥ 0.2.x（0.1.5 实测 --json 是 unknown option）
+    taskArgs: ['--profile', 'headless', '--json', '{{prompt}}'],
+    steps: 'dsh-json',
     credential: {
       envKey: 'DEEPSEEK_API_KEY',
       envs: ['DEEPSEEK_API_KEY'],
@@ -102,7 +113,9 @@ export const AGENTS: AgentDef[] = [
     display: 'Gemini CLI',
     bin: 'gemini',
     capability: 'interactive_only',
-    taskArgs: ['-p', '{{prompt}}'],
+    // 步骤流：官方文档确认 stream-json（init/message/tool_use/tool_result/result）
+    taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
+    steps: 'gemini-json',
     credential: {
       envKey: 'GEMINI_API_KEY',
       envs: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
@@ -115,7 +128,9 @@ export const AGENTS: AgentDef[] = [
     display: 'opencode',
     bin: 'opencode',
     capability: 'interactive_only',
-    taskArgs: ['run', '--json', '{{prompt}}'],
+    // 修 bug（B 批次实测发现）：opencode 只认 `--format json`，原先写的 `--json` 是无效参数
+    taskArgs: ['run', '--format', 'json', '{{prompt}}'],
+    steps: 'opencode-json',
     credential: {
       envs: ['OPENCODE_API_KEY'],
       files: [
@@ -131,23 +146,32 @@ export const AGENTS: AgentDef[] = [
     bin: 'mimo',
     altBins: ['mimo-code'],
     capability: 'interactive_only',
-    taskArgs: ['run', '{{prompt}}'],
+    // opencode fork（官方 drive-mimo skill 确认事件同构）：run --format json 出 JSONL
+    taskArgs: ['run', '--format', 'json', '{{prompt}}'],
+    steps: 'opencode-json',
     credential: { envs: ['MIMO_API_KEY'], files: [], loginCommand: 'mimo' },
   },
   {
     kind: 'qoder-cli',
     display: 'Qoder CLI',
-    bin: 'qoder',
+    // 修 bug（B 批次实测发现）：真 CLI 是 qodercli；bin 'qoder' 命中的是 Qoder IDE 的
+    // Electron 入口（.qoder/entry/qoder.cmd），把 IDE 当 CLI 探测属于误报
+    bin: 'qodercli',
     capability: 'interactive_only',
-    taskArgs: ['exec', '{{prompt}}'],
-    credential: { envs: [], files: [join(home(), '.qoder')], loginCommand: 'qoder' },
+    // 官方文档（docs.qoder.com/cli/run-in-scripts）：-p + --output-format stream-json；实测 claude 同构
+    taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
+    steps: 'claude-json',
+    credential: { envs: [], files: [join(home(), '.qoder')], loginCommand: 'qodercli' },
   },
   {
     kind: 'grok-cli',
     display: 'Grok CLI',
     bin: 'grok',
     capability: 'interactive_only',
-    taskArgs: ['run', '{{prompt}}'],
+    // 修 bug（B 批次实测发现）：grok 没有 run 子命令（'run' 会被当成 prompt）；
+    // 非交互是 --single，streaming-messages-json 输出与 claude 同构（实测 init/result 骨架）
+    taskArgs: ['--single', '{{prompt}}', '--output-format', 'streaming-messages-json'],
+    steps: 'claude-json',
     credential: {
       envKey: 'XAI_API_KEY',
       envs: ['XAI_API_KEY', 'GROK_API_KEY'],
@@ -159,7 +183,10 @@ export const AGENTS: AgentDef[] = [
     display: 'Kimi Code',
     bin: 'kimi',
     capability: 'interactive_only',
-    taskArgs: ['--headless', '{{prompt}}'],
+    // 修 bug（B 批次实测发现）：kimi 没有 --headless（unknown option）；
+    // 非交互是 -p，stream-json 为 OpenAI tool_calls 风格（已实测）
+    taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
+    steps: 'kimi-json',
     credential: {
       envKey: 'MOONSHOT_API_KEY',
       envs: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
@@ -172,7 +199,11 @@ export const AGENTS: AgentDef[] = [
     display: 'MiniMax Code',
     bin: 'mcode',
     capability: 'interactive_only',
-    taskArgs: ['run', '{{prompt}}'],
+    // 修 bug（B 批次查证发现）：mcode 的非交互子命令是 exec 不是 run；
+    // 官方 FAQ 确认 exec --output-format stream-json 出 NDJSON 事件流（0.6.13 实测：
+    // item.started/completed + item.type=tool_call，toolCall{name,input}）
+    taskArgs: ['exec', '--output-format', 'stream-json', '{{prompt}}'],
+    steps: 'mcode-json',
     credential: { envs: ['MINIMAX_API_KEY'], files: [], loginCommand: 'mcode' },
   },
   {
@@ -180,7 +211,10 @@ export const AGENTS: AgentDef[] = [
     display: 'Trae CLI',
     bin: 'traecli',
     capability: 'interactive_only',
-    taskArgs: ['run', '{{prompt}}'],
+    // 修 bug（B 批次实测发现）：原 `run` 子命令不存在；实测 `exec --print --output-format stream-json`
+    // 输出 claude 同构事件流（v0.211.1）
+    taskArgs: ['exec', '--print', '--output-format', 'stream-json', '{{prompt}}'],
+    steps: 'claude-json',
     credential: { envs: [], files: [join(home(), '.trae')], loginCommand: 'traecli' },
   },
 ];
@@ -450,6 +484,8 @@ export async function probeAgent(def: AgentDef): Promise<AgentListItem> {
     display: def.display,
     status: 'not_installed',
     capability: def.capability,
+    // 步骤流能力如实标注：纯文本工具 false，平台的步骤面板对它降级为空状态
+    steps: def.steps !== undefined,
     ...(logo ? { logo } : {}),
   };
   if (!binPath) {

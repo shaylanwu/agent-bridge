@@ -23,7 +23,7 @@ import { AGENTS, agentDefOf, probeCredential } from '../src/adapters/agent-adapt
 import { buildWinCommandLine } from '../src/adapters/win-exec';
 import { isUnder, startTask } from '../src/runner';
 import { loadConfig, normalizeAllowedCwd, resolveMaxQueued, resolveMaxTasks } from '../src/infra/config';
-import { resolveDeviceId, wsUrlOf } from '../src/transport/bridge-client';
+import { wsUrlOf } from '../src/transport/bridge-client';
 import { Outbox } from '../src/transport/outbox';
 import { logoDataUri } from '../src/adapters/agent-logos';
 
@@ -171,31 +171,25 @@ describe('凭据探测', () => {
   });
 });
 
-describe('WS 地址与 deviceId 解析', () => {
-  it('有 deviceId 时拼查询参数，https → wss', () => {
-    expect(wsUrlOf('https://platform.example.com', 'bd_9f1c')).toBe(
-      'wss://platform.example.com/api/bridge/ws?deviceId=bd_9f1c',
+describe('WS 地址与 deviceId 校验', () => {
+  it('始终携带合法 deviceId 查询参数，https → wss', () => {
+    expect(wsUrlOf('https://platform.example.com', 'bd_0123456789ab')).toBe(
+      'wss://platform.example.com/api/bridge/ws?deviceId=bd_0123456789ab',
+    );
+    expect(wsUrlOf('https://platform.example.com', 'bd_0123456789abcdef0123456789abcdef')).toBe(
+      'wss://platform.example.com/api/bridge/ws?deviceId=bd_0123456789abcdef0123456789abcdef',
     );
   });
 
-  it('deviceId 为空时省略查询参数（不发空值）', () => {
-    expect(wsUrlOf('https://platform.example.com', '')).toBe('wss://platform.example.com/api/bridge/ws');
+  it('空或非法 deviceId 直接拒绝，不再降级为 Bearer 反查', () => {
+    expect(() => wsUrlOf('https://platform.example.com', '')).toThrow(/设备 ID 格式无效/);
+    expect(() => wsUrlOf('https://platform.example.com', 'bd_x')).toThrow(/设备 ID 格式无效/);
   });
 
   it('http → ws 且保留端口', () => {
-    expect(wsUrlOf('http://127.0.0.1:8899', 'bd_x')).toBe('ws://127.0.0.1:8899/api/bridge/ws?deviceId=bd_x');
-  });
-
-  it('解析优先级：授权响应 > flag > env > 已存配置', () => {
-    expect(resolveDeviceId({ fromAuth: 'bd_auth', flag: 'bd_flag', env: 'bd_env', saved: 'bd_saved' })).toBe('bd_auth');
-    expect(resolveDeviceId({ flag: 'bd_flag', env: 'bd_env', saved: 'bd_saved' })).toBe('bd_flag');
-    expect(resolveDeviceId({ env: 'bd_env', saved: 'bd_saved' })).toBe('bd_env');
-    expect(resolveDeviceId({ saved: 'bd_saved' })).toBe('bd_saved');
-  });
-
-  it('全是空/空白时返回空串（调用方提示平台按 token 反查）', () => {
-    expect(resolveDeviceId({})).toBe('');
-    expect(resolveDeviceId({ fromAuth: '  ', flag: '', env: '   ', saved: undefined })).toBe('');
+    expect(wsUrlOf('http://127.0.0.1:8899', 'bd_fedcba987654')).toBe(
+      'ws://127.0.0.1:8899/api/bridge/ws?deviceId=bd_fedcba987654',
+    );
   });
 });
 
@@ -221,15 +215,16 @@ describe('品牌图标', () => {
 });
 
 describe('并发上限配置', () => {
-  it('默认 3；config 给值就用 config', () => {
-    expect(resolveMaxTasks()).toBe(3);
+  it('默认 30；config 给值就用 config', () => {
+    expect(resolveMaxTasks()).toBe(30);
     expect(resolveMaxTasks(5)).toBe(5);
   });
 
-  it('夹在 1~32（0/负数回落默认，过大截断）', () => {
-    expect(resolveMaxTasks(0)).toBe(3);
-    expect(resolveMaxTasks(-2)).toBe(3);
-    expect(resolveMaxTasks(100)).toBe(32);
+  it('夹在 1~128（0/负数回落默认，过大截断）', () => {
+    expect(resolveMaxTasks(0)).toBe(30);
+    expect(resolveMaxTasks(-2)).toBe(30);
+    expect(resolveMaxTasks(100)).toBe(100);
+    expect(resolveMaxTasks(200)).toBe(128);
     expect(resolveMaxTasks(2.7)).toBe(2);
   });
 
@@ -244,12 +239,37 @@ describe('并发上限配置', () => {
     }
   });
 
-  it('队列上限：默认 32，允许 0（不排队），过大截断', () => {
-    expect(resolveMaxQueued()).toBe(32);
+  it('启动参数（override）优先于环境变量与 config', () => {
+    const saved = process.env['AGENT_BRIDGE_MAX_TASKS'];
+    process.env['AGENT_BRIDGE_MAX_TASKS'] = '4';
+    try {
+      expect(resolveMaxTasks(5, 9)).toBe(9);
+      expect(resolveMaxTasks(undefined, 200)).toBe(128);
+      expect(resolveMaxTasks(5, 0)).toBe(4);
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_MAX_TASKS'];
+      else process.env['AGENT_BRIDGE_MAX_TASKS'] = saved;
+    }
+  });
+
+  it('队列上限：默认 60，允许 0（不排队），过大截断', () => {
+    expect(resolveMaxQueued()).toBe(60);
     expect(resolveMaxQueued(0)).toBe(0);
     expect(resolveMaxQueued(8)).toBe(8);
     expect(resolveMaxQueued(99999)).toBe(1024);
-    expect(resolveMaxQueued(-1)).toBe(32);
+    expect(resolveMaxQueued(-1)).toBe(60);
+  });
+
+  it('队列上限：启动参数（override）优先，0 是合法 override', () => {
+    const saved = process.env['AGENT_BRIDGE_MAX_QUEUE'];
+    process.env['AGENT_BRIDGE_MAX_QUEUE'] = '5';
+    try {
+      expect(resolveMaxQueued(8, 7)).toBe(7);
+      expect(resolveMaxQueued(8, 0)).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env['AGENT_BRIDGE_MAX_QUEUE'];
+      else process.env['AGENT_BRIDGE_MAX_QUEUE'] = saved;
+    }
   });
 
   it('队列上限：环境变量优先，空字符串视为未设置', () => {
@@ -270,7 +290,7 @@ describe('并发上限配置', () => {
     const file = join(dir, 'config.toml');
     writeFileSync(
       file,
-      ['platformUrl = "https://p.example.com"', 'deviceId = "bd_x"', 'deviceToken = "tok_x"', 'max_tasks = 6', ''].join('\n'),
+      ['platformUrl = "https://p.example.com"', 'deviceId = "bd_0123456789ab"', 'deviceToken = "tok_x"', 'max_tasks = 6', ''].join('\n'),
       'utf8',
     );
     const saved = process.env['AGENT_BRIDGE_CONFIG'];
@@ -398,9 +418,9 @@ describe('目录白名单（allowed_cwd）', () => {
       file,
       [
         'platformUrl = "https://platform.example.com"',
-        'deviceId = "bd_smoke"',
+        'deviceId = "bd_0123456789ab"',
         'deviceToken = "tok_smoke"',
-        `allowed_cwd = ["${posixBase}", ""]`,
+        `allowed_cwd = ["${posixBase}"]`,
         '',
       ].join('\n'),
       'utf8',
@@ -421,7 +441,7 @@ describe('目录白名单（allowed_cwd）', () => {
     const file = join(dir, 'config.toml');
     writeFileSync(
       file,
-      ['platformUrl = "https://p.example.com"', 'deviceId = "bd_x"', 'deviceToken = "tok_x"', ''].join('\n'),
+      ['platformUrl = "https://p.example.com"', 'deviceId = "bd_0123456789ab"', 'deviceToken = "tok_x"', ''].join('\n'),
       'utf8',
     );
     const saved = process.env['AGENT_BRIDGE_CONFIG'];
@@ -737,6 +757,79 @@ describe('任务调度 TaskSupervisor（架构第二期）', () => {
     );
     expect(await h.done).toBe('failed');
     expect(infos[0]?.errorCode).toBe('cwd_not_allowed');
+  });
+
+  it('幂等：运行中重发同一 taskId 回当前状态，不重复 spawn', () => {
+    if (!installed) return;
+    const sup = new TaskSupervisor(1);
+    const replayed: string[] = [];
+    const base = { taskId: 'dup-run', agentType: 'claude-code', cwd: tmpdir(), args: ['--version'] as string[] };
+    const h1 = sup.submit(base, { onLog: () => undefined, onStatus: () => undefined });
+    const h2 = sup.submit(base, {
+      onLog: () => undefined,
+      onStatus: (s) => replayed.push(s),
+    });
+    expect(sup.runningCount).toBe(1);
+    expect(replayed).toEqual(['running']);
+    h1.cancel();
+    h2.cancel();
+  });
+
+  it('幂等：排队中重发回 phase=queued + 当前位次，队列不变长', () => {
+    if (!installed) return;
+    const sup = new TaskSupervisor(1);
+    const base = { taskId: 'x', agentType: 'claude-code', cwd: tmpdir(), args: ['--version'] as string[] };
+    const h1 = sup.submit({ ...base, taskId: 'head' }, { onLog: () => undefined, onStatus: () => undefined });
+    const h2 = sup.submit({ ...base, taskId: 'dup-q' }, { onLog: () => undefined, onStatus: () => undefined });
+    const replayed: { status: string; phase?: string; queuePosition?: number }[] = [];
+    sup.submit(
+      { ...base, taskId: 'dup-q' },
+      {
+        onLog: () => undefined,
+        onStatus: (s, i) => replayed.push({ status: s, phase: i?.phase, queuePosition: i?.queuePosition }),
+      },
+    );
+    expect(sup.queuedCount).toBe(1);
+    expect(replayed[0]).toMatchObject({ status: 'running', phase: 'queued', queuePosition: 1 });
+    h1.cancel();
+    h2.cancel();
+  });
+
+  it('幂等：终态后重发放终态快照，不产生新进程', async () => {
+    if (!installed) return;
+    const sup = new TaskSupervisor(1);
+    const base = { taskId: 'x', agentType: 'claude-code', cwd: tmpdir(), args: ['--version'] as string[] };
+    const h1 = sup.submit({ ...base, taskId: 'occupy' }, { onLog: () => undefined, onStatus: () => undefined });
+    const h2 = sup.submit({ ...base, taskId: 'dup-term' }, { onLog: () => undefined, onStatus: () => undefined });
+    h2.cancel();
+    expect(await h2.done).toBe('cancelled');
+    const replayed: { status: string; errorCode?: string }[] = [];
+    const h3 = sup.submit(
+      { ...base, taskId: 'dup-term' },
+      { onLog: () => undefined, onStatus: (s, i) => replayed.push({ status: s, errorCode: i?.errorCode }) },
+    );
+    expect(replayed).toEqual([{ status: 'cancelled', errorCode: 'cancelled' }]);
+    expect(await h3.done).toBe('cancelled');
+    expect(sup.runningCount).toBe(1);
+    h1.cancel();
+  });
+
+  it('容量水位：提交/排队/终态各触发一次快照，数值正确', async () => {
+    if (!installed) return;
+    const sup = new TaskSupervisor(1);
+    const snaps: { running: number; queued: number; maxTasks: number }[] = [];
+    sup.subscribeCapacity((s) => snaps.push({ running: s.running, queued: s.queued, maxTasks: s.maxTasks }));
+    const base = { taskId: 'x', agentType: 'claude-code', cwd: tmpdir(), args: ['--version'] as string[] };
+    const h1 = sup.submit({ ...base, taskId: 'c1' }, { onLog: () => undefined, onStatus: () => undefined });
+    const h2 = sup.submit({ ...base, taskId: 'c2' }, { onLog: () => undefined, onStatus: () => undefined });
+    expect(snaps[0]).toMatchObject({ running: 1, queued: 0, maxTasks: 1 });
+    expect(snaps[1]).toMatchObject({ running: 1, queued: 1 });
+    h2.cancel();
+    await h2.done;
+    expect(snaps[2]).toMatchObject({ running: 1, queued: 0 });
+    h1.cancel();
+    await h1.done;
+    expect(snaps.at(-1)).toMatchObject({ running: 0, queued: 0 });
   });
 });
 

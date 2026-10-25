@@ -11,6 +11,7 @@ sidebar:
 
 - **建连方向**：设备 → 平台。设备从不监听。
 - **协议**：生产用 `wss://`；`ws://` 仅限本地开发。
+- **地址**：`wss://<platform>/api/bridge/ws?deviceId=<stable-id>`；query ID 必填且等于 `hello.deviceId`。
 - **鉴权**：绑定阶段拿到的 `device_token`，握手时以 Bearer 凭据带上。平台侧只存令牌的 SHA-256。
 
 ## 握手
@@ -20,17 +21,18 @@ socket 一打开，设备立即发 `hello`：
 ```json
 {
   "type": "hello",
-  "protocolVersion": 1,
-  "deviceId": "bd_9f1c…",
-  "cliVersion": "0.1.0",
+  "protocolVersion": 2,
+  "deviceId": "bd_001122334455",
+  "cliVersion": "0.2.3",
   "platform": "darwin",
   "hostname": "dev-laptop",
-  "capabilities": ["diff", "service-token", "queue", "scan-progress", "cloud-events"]
+  "capabilities": ["diff", "service-token", "queue", "scan-progress", "cloud-events", "capacity", "task-step"]
 }
 ```
 
-若 `deviceId` 为空串，请按 Bearer 令牌反查设备。若你的平台说的是另一个 `protocolVersion`，
-请以 `protocol_incompatible` 关闭连接 —— 不要硬着头皮继续。
+协议 v2 要求非空 `deviceId` 匹配 `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`；它是本地持久化身份，
+不是从 Bearer 令牌推导的值。缺失、非法或 URL/hello 不一致的 ID 都应拒绝。若平台使用另一个
+`protocolVersion`，请以 `protocol_incompatible` 关闭连接 —— 不要硬着头皮继续。
 
 `hello` 之后设备紧接着发 `agent_list`（本机探测到的 AI Agent 清单）。
 

@@ -9,6 +9,8 @@
 
 import { Emitter } from '../core/emitter.js';
 import { scanAgents } from '../core/scan.js';
+import { defaultSupervisor } from '../core/task-supervisor.js';
+import type { TaskRegistry } from './task-registry.js';
 import { assertServerMessage, ProtocolError, type ClientMessage } from '../protocol.js';
 import type { TaskHandle } from '../runner.js';
 import { createBridgeClient } from '../transport/bridge-client.js';
@@ -28,6 +30,8 @@ export interface SessionOptions {
   /** 平台未指定 captureDiff 时的本地默认（config.toml 的 diff_default） */
   captureDiffByDefault: boolean;
   requireServiceToken: boolean;
+  /** 任务注册表（面板/台账共用视图；由 bootstrap 创建） */
+  registry: TaskRegistry;
   log: SessionLog;
 }
 
@@ -36,6 +40,8 @@ export interface BridgeSession {
   isConnected: () => boolean;
   /** 唯一上行出口（本地控制面订阅它看全部任务事件，不另开出口） */
   readonly emitter: Emitter;
+  /** 任务注册表（终端面板 / 控制面台账的共享视图） */
+  readonly registry: TaskRegistry;
   /** 在跑/排队的任务数（状态展示与控制面用） */
   activeTasks: () => number;
   /** 取消指定任务（无此任务返回 false） */
@@ -56,6 +62,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     deviceId: opts.deviceId,
     cliVersion: opts.cliVersion,
     hostname: opts.hostname,
+    capacity: { maxTasks: opts.maxConcurrent, maxQueued: opts.maxQueued },
     log: (line) => opts.log('info', line),
     onOpen: async () => {
       // 流式上报：每完成一个工具就推一条 scan_progress，平台可以边收边亮卡片
@@ -108,6 +115,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
       const dispatchOpts = {
         emitter,
         tasks,
+        registry: opts.registry,
         allowedCwd: opts.allowedCwd,
         maxConcurrent: opts.maxConcurrent,
         maxQueued: opts.maxQueued,
@@ -126,9 +134,16 @@ export function createSession(opts: SessionOptions): BridgeSession {
     sink: (msg) => client.send(msg as ClientMessage),
   });
 
+  // 容量水位（A2）：每次调度状态变化广播一条 capacity_update。
+  // 平台与控制面任务共用 defaultSupervisor（都经 runner.startTask），一处订阅覆盖双通道。
+  defaultSupervisor.subscribeCapacity((s) => {
+    emitter?.emit({ type: 'capacity_update', ...s });
+  });
+
   return {
     // 循环依赖的解法：client 的回调只在连接建立后触发，此时 emitter 必然已赋值
     emitter,
+    registry: opts.registry,
     close: () => client.close(),
     isConnected: () => client.isOpen(),
     activeTasks: () => tasks.size,

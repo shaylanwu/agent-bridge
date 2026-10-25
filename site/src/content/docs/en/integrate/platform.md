@@ -18,14 +18,23 @@ Two things to build, and they are separate:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /bridge/authorize` | Browser page where the logged-in user approves the binding, then 302s back with `code` |
-| `POST /api/bridge/token` | Exchange `code` + `code_verifier` (PKCE S256) for a `device_token` |
+| `POST /api/bridge/token` | Exchange `code` + `codeVerifier` (PKCE S256) for a `device_token` |
 | `POST /api/bridge/device-code` | Issue a short `user_code` for browserless / SSH setups |
 | `POST /api/bridge/device-token` | Poll that device code until the user confirms |
 
 Non-negotiables:
 
-- **Verify PKCE.** `base64url(sha256(code_verifier))` must equal the `code_challenge` you issued.
-- **Store only the SHA-256 of `device_token`** — never the token itself.
+- **Verify PKCE.** `base64url(sha256(codeVerifier))` must equal the `code_challenge` you issued.
+- **Rebind the requested stable identity.** Both token endpoints require `deviceId`, `hostname`,
+  `platform`, and `cliVersion`; the PKCE endpoint also sends `redirectUri` and both use `clientId`.
+  `/device-code` still sends only `clientId`. A successful `device_id` must equal the request `deviceId`,
+  or the bridge rejects the response without saving credentials or connecting.
+- **Return public error codes at JSON top level.** `400 invalid_device_id` preserves local identity;
+  `409 device_bound_to_other_account` and `409 device_identity_ambiguous` require a platform administrator
+  (no automatic ID change, merge, or ownership transfer); `401`/`403` are terminal credential failures;
+  only `428 authorization_pending` tells device-code polling to continue at the server interval.
+- **Store only the SHA-256 of `device_token`** — never the token itself. `refresh_token` is optional;
+  the current bridge saves it but does not use it for automatic renewal.
 - The redirect target is a loopback URL (`http://127.0.0.1:<random port>/callback`) — do not
   restrict `redirect_uri` to a registered HTTPS origin.
 - Returning `404` for `device-code` / `device-token` is allowed: the bridge then tells the user your
@@ -38,13 +47,16 @@ live on the [interactive page](/agent-bridge/en/api/index).
 ## 2. The task channel (WebSocket)
 
 Accept from the device: `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`,
-`task_status`, `pong`.
+`task_status`, `capacity_update`, `pong`.
 Send to the device: `run_task`, `cancel_task`, `scan`, `ping`.
 
 Field-level reference: [Protocol messages](/agent-bridge/en/protocol/messages).
 
 Rules that bite in production:
 
+- **Require protocol v2 identity.** `hello.protocolVersion` is `2`; its non-empty `deviceId` matches
+  `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$` and must equal the WS URL query. There is no empty-ID/Bearer
+  reverse-lookup fallback.
 - **Degrade on `capabilities`, not on version numbers.** If `diff` is absent, never ask for it and
   never render a diff pane.
 - **Branch on `errorCode`, never on prose.** See the 15 codes in
@@ -58,7 +70,7 @@ Rules that bite in production:
 
 ## 3. Concurrency
 
-`max_tasks` on the device (default 3) covers **both** channels — platform tasks and locally created
+`max_tasks` on the device (default 30) covers **both** channels — platform tasks and locally created
 ones share the cap. A task beyond the cap is queued, not rejected; if you need to show "queued",
 read `phase`.
 
@@ -79,8 +91,9 @@ act for this user?); the bridge authenticates (is this token real, in scope, un-
 
 ## 5. Go-live checklist
 
-- [ ] PKCE S256 verified; only token hashes stored
-- [ ] `hello` version check; unknown capabilities degraded gracefully
+- [ ] PKCE S256 verified; stable request ID rebound idempotently; response `device_id` checked; only token hashes stored
+- [ ] Public `code` returned for `invalid_device_id`, both 409 conflicts, credential failures, and `authorization_pending`
+- [ ] `hello` v2 and URL/hello ID equality checked; unknown capabilities degraded gracefully
 - [ ] Terminal `task_status` handled idempotently (it can arrive twice after a reconnect)
 - [ ] All 15 error codes mapped to something a human can act on
 - [ ] Queued tasks rendered via `phase`, not by inventing a status

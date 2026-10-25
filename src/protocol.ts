@@ -7,7 +7,7 @@
  * Direction: bridge → platform uses `ClientMessage`; platform → bridge uses `ServerMessage`.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /**
  * 能力协商清单（hello.capabilities）
@@ -21,6 +21,8 @@ export const PROTOCOL_CAPABILITIES = [
   'queue',
   'scan-progress',
   'cloud-events',
+  'capacity',
+  'task-step',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -55,6 +57,8 @@ export interface AgentListItem {
   installedButBroken?: boolean;
   /** 品牌图标：`data:image/svg+xml;base64,…`（24×24 单色）；资产缺失时省略。平台应按 kind 缓存 */
   logo?: string;
+  /** 是否支持步骤流（task_step）：纯文本输出的工具为 false，平台应隐藏其步骤面板而不是空转 */
+  steps?: boolean;
 }
 
 export type ClientMessage =
@@ -67,6 +71,8 @@ export type ClientMessage =
       hostname: string;
       /** 本机支持的可选能力（见 PROTOCOL_CAPABILITIES）；平台据此降级，而不是猜版本 */
       capabilities?: string[];
+      /** 本次会话生效的调度额度：平台据此做有水位线的派发，而不是靠 device_busy 试错 */
+      capacity?: { maxTasks: number; maxQueued: number };
     }
   | { type: 'agent_list'; agents: AgentListItem[]; scannedAt: string }
   | {
@@ -91,6 +97,8 @@ export type ClientMessage =
       changedFiles?: string[];
       /** diff 是否因超过 diff_max_bytes 被截断 */
       diffTruncated?: boolean;
+      /** 终态最终回答文本（步骤流工具从 result 事件提取；≤16KB） */
+      result?: string;
       /** 回显本次调用的服务身份，供平台落 requested_by 审计 */
       requestedBy?: string;
       /**
@@ -103,6 +111,36 @@ export type ClientMessage =
       queuePosition?: number;
     }
   | { type: 'task_log'; taskId: string; stream: 'stdout' | 'stderr'; data: string; isAnsi: boolean }
+  | {
+      /**
+       * 动态步骤流（task-step 能力）：AI CLI 的步骤由模型实时决定，无预定义总步数。
+       * `seq` 从 1 单调递增；`ref` 配对 started/finished（源事件的 tool_use_id / item.id）；
+       * `label` ≤160 字符且与日志同口径脱敏；任务终态后该 task 的步骤一律丢弃（同 task_log）。
+       */
+      type: 'task_step';
+      taskId: string;
+      seq: number;
+      /** 动作名：Bash / Edit / Read / command_execution / file_change…（依工具而定） */
+      action: string;
+      label?: string;
+      state: 'started' | 'finished';
+      /** state=finished 时给出成败 */
+      ok?: boolean;
+      ref?: string;
+      /** ISO 时间戳 */
+      at: string;
+    }
+  | {
+      /**
+       * 容量水位：每次调度状态变化（入队/启动/终态）后发送一次，
+       * 反映平台与控制面两条通道的**合计**占用（它们共用同一调度器）。
+       */
+      type: 'capacity_update';
+      running: number;
+      queued: number;
+      maxTasks: number;
+      maxQueued: number;
+    }
   | { type: 'pong'; at: number }
   | { type: 'scan_result'; requestId?: string; agents: AgentListItem[]; scannedAt: string };
 

@@ -111,6 +111,11 @@ export class Emitter {
       // —— 2. 脱敏（只动日志正文，不动 diff 这类产物）——
       if (this.redactLogs) out = { ...msg, data: redact(msg.data, { home: this.home }) };
     }
+    if (out.type === 'task_step' && typeof out.label === 'string') {
+      // 步骤摘要同口径脱敏，并按协议上限截断（160 字符）
+      const redacted = this.redactLogs ? redact(out.label, { home: this.home }) : out.label;
+      out = { ...out, label: redacted.length > 160 ? `${redacted.slice(0, 157)}...` : redacted };
+    }
 
     // 终态登记放在**发送之后**的必要之前：先记住，再发，避免重入导致重复终态
     if (out.type === 'task_status' && isTerminal(out.status)) this.remember(out.taskId);

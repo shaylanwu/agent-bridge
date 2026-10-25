@@ -5,21 +5,23 @@
  * 只显示尾号与设备 id。
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+import { assertDeviceId } from '../core/device-identity.js';
+import { writeAtomicFile } from './atomic-file.js';
 
 export interface BridgeConfig {
   platformUrl: string;
   deviceId: string;
-  deviceToken: string;
+  deviceToken?: string;
   refreshToken?: string;
   /** 任务只允许在这些目录下执行（缺省 = 不限制；见 runner 的 allowedCwd 校验） */
   allowedCwd?: string[];
-  /** 同时运行的任务数上限（缺省 3；见 resolveMaxTasks） */
+  /** 同时运行的任务数上限（缺省 30；见 resolveMaxTasks） */
   maxTasks?: number;
-  /** 排队等待的任务数上限（缺省 32；见 resolveMaxQueued） */
+  /** 排队等待的任务数上限（缺省 60；见 resolveMaxQueued） */
   maxQueued?: number;
   /** diff 文本上限（字节，缺省 256 KB；见 resolveDiffMaxBytes） */
   diffMaxBytes?: number;
@@ -41,28 +43,47 @@ export interface BridgeConfig {
   boundAt?: string;
 }
 
-/**
- * 并发上限解析：`AGENT_BRIDGE_MAX_TASKS`（临时/CI 覆盖）> config.toml 的 `max_tasks` > 默认 3。
- * 夹在 1~32：0 或负数会让 bridge 一个任务都跑不了，过大则回到"并发打爆开发机"的老问题。
- */
-export const DEFAULT_MAX_TASKS = 3;
-const MAX_TASKS_CEILING = 32;
+export interface BoundBridgeConfig extends BridgeConfig {
+  deviceToken: string;
+}
 
-export function resolveMaxTasks(fromConfig?: number): number {
+/**
+ * 并发上限解析：启动参数 `--max-tasks` > `AGENT_BRIDGE_MAX_TASKS`（临时/CI 覆盖）
+ * > config.toml 的 `max_tasks` > 默认 30。
+ * 夹在 1~128：0 或负数会让 bridge 一个任务都跑不了；128 是防手滑的保险丝，
+ * 批量调度场景的默认值是 30（2026-10-24 调整，原为 3），真需要更高请先评估本机资源。
+ */
+export const DEFAULT_MAX_TASKS = 30;
+const MAX_TASKS_CEILING = 128;
+
+export function resolveMaxTasks(fromConfig?: number, override?: number): number {
   const envRaw = Number(process.env['AGENT_BRIDGE_MAX_TASKS'] ?? '');
-  const chosen = Number.isFinite(envRaw) && envRaw > 0 ? envRaw : fromConfig;
+  const chosen =
+    override !== undefined && Number.isFinite(override) && override > 0
+      ? override
+      : Number.isFinite(envRaw) && envRaw > 0
+        ? envRaw
+        : fromConfig;
   if (!Number.isFinite(chosen ?? NaN) || (chosen ?? 0) <= 0) return DEFAULT_MAX_TASKS;
   return Math.min(MAX_TASKS_CEILING, Math.max(1, Math.floor(chosen as number)));
 }
 
-/** 队列上限：默认 32，夹在 0~1024（0 = 不允许排队，超限直接失败） */
-export const DEFAULT_MAX_QUEUED = 32;
+/**
+ * 队列上限：默认 60，夹在 0~1024（0 = 不允许排队，超限直接失败）。
+ * 优先级：启动参数 `--max-queue` > `AGENT_BRIDGE_MAX_QUEUE` > config.toml 的 `max_queue` > 默认。
+ */
+export const DEFAULT_MAX_QUEUED = 60;
 const MAX_QUEUED_CEILING = 1024;
 
-export function resolveMaxQueued(fromConfig?: number): number {
+export function resolveMaxQueued(fromConfig?: number, override?: number): number {
   const rawEnv = process.env['AGENT_BRIDGE_MAX_QUEUE'];
   const envValue = rawEnv === undefined || rawEnv.trim() === '' ? undefined : Number(rawEnv);
-  const chosen = envValue !== undefined && Number.isFinite(envValue) && envValue >= 0 ? envValue : fromConfig;
+  const chosen =
+    override !== undefined && Number.isFinite(override) && override >= 0
+      ? override
+      : envValue !== undefined && Number.isFinite(envValue) && envValue >= 0
+        ? envValue
+        : fromConfig;
   if (chosen === undefined || !Number.isFinite(chosen) || chosen < 0) return DEFAULT_MAX_QUEUED;
   return Math.min(MAX_QUEUED_CEILING, Math.floor(chosen));
 }
@@ -147,78 +168,171 @@ export function configPath(): string {
   return join(base, '.agent-bridge', 'config.toml');
 }
 
-export function loadConfig(): BridgeConfig | null {
-  const file = configPath();
-  if (!existsSync(file)) return null;
-  try {
-    const raw = parseToml(readFileSync(file, 'utf8')) as Record<string, unknown>;
-    if (!raw['platformUrl'] || !raw['deviceId']) return null;
-    // 白名单：文档口径是 snake_case（allowed_cwd），同时兼容早期手写的 camelCase
-    const allowedCwd = normalizeAllowedCwd(raw['allowed_cwd'] ?? raw['allowedCwd']);
-    const maxTasksRaw = Number(raw['max_tasks'] ?? raw['maxTasks'] ?? '');
-    const maxTasks = Number.isFinite(maxTasksRaw) && maxTasksRaw > 0 ? Math.floor(maxTasksRaw) : undefined;
-    const maxQueuedRaw = Number(raw['max_queue'] ?? raw['maxQueued'] ?? '');
-    const maxQueued = Number.isFinite(maxQueuedRaw) && maxQueuedRaw >= 0 ? Math.floor(maxQueuedRaw) : undefined;
-    const diffRaw = Number(raw['diff_max_bytes'] ?? raw['diffMaxBytes'] ?? '');
-    const diffMaxBytes = Number.isFinite(diffRaw) && diffRaw > 0 ? Math.floor(diffRaw) : undefined;
-    const diffDefault = raw['diff_default'] === true || raw['diffDefault'] === true;
-    const requireServiceToken = raw['require_service_token'] === true || raw['requireServiceToken'] === true;
-    // 控制面：[control_plane] 表；也兼容 `control_plane_enabled = true` 这种扁平写法
-    const cpRaw = (raw['control_plane'] ?? {}) as Record<string, unknown>;
-    const cpEnabled = cpRaw['enabled'] === true || raw['control_plane_enabled'] === true;
-    const controlPlane = {
-      enabled: cpEnabled,
-      host: typeof cpRaw['host'] === 'string' ? cpRaw['host'] : undefined,
-      port: Number.isFinite(Number(cpRaw['port'])) ? Math.floor(Number(cpRaw['port'])) : undefined,
-      requireToken: cpRaw['require_token'] !== false,
-    };
-    return {
-      ...(raw as unknown as BridgeConfig),
-      allowedCwd,
-      maxTasks,
-      maxQueued,
-      diffMaxBytes,
-      diffDefault,
-      requireServiceToken,
-      controlPlane,
-    };
-  } catch {
-    return null;
-  }
+function errorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
 }
 
-export function saveConfig(cfg: BridgeConfig): string {
-  const file = configPath();
-  mkdirSync(dirname(file), { recursive: true });
-  // 显式构造输出对象：避免写入 undefined 字段，且白名单统一落 snake_case（与 README 一致）
+function invalidConfig(file: string, detail: string): Error {
+  return new Error(`配置无效：${file}。${detail}；请修复该文件后重试。`);
+}
+
+function optionalString(raw: Record<string, unknown>, key: string, file: string): string | undefined {
+  const value = raw[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.trim() === '') throw invalidConfig(file, `${key} 必须是非空字符串`);
+  return value;
+}
+
+function optionalNumber(
+  value: unknown,
+  name: string,
+  file: string,
+  minimum: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) {
+    throw invalidConfig(file, `${name} 必须是不小于 ${minimum} 的有限数字`);
+  }
+  return Math.floor(value);
+}
+
+function optionalBoolean(value: unknown, name: string, file: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') throw invalidConfig(file, `${name} 必须是布尔值`);
+  return value;
+}
+
+function serializeConfig(cfg: BridgeConfig): string {
   const out: Record<string, unknown> = {
     platformUrl: cfg.platformUrl,
     deviceId: cfg.deviceId,
-    deviceToken: cfg.deviceToken,
   };
-  if (cfg.refreshToken) out['refreshToken'] = cfg.refreshToken;
+  if (cfg.deviceToken !== undefined) out['deviceToken'] = cfg.deviceToken;
+  if (cfg.refreshToken !== undefined) out['refreshToken'] = cfg.refreshToken;
   if (cfg.allowedCwd?.length) out['allowed_cwd'] = cfg.allowedCwd;
-  if (cfg.maxTasks) out['max_tasks'] = cfg.maxTasks;
+  if (cfg.maxTasks !== undefined) out['max_tasks'] = cfg.maxTasks;
   if (cfg.maxQueued !== undefined) out['max_queue'] = cfg.maxQueued;
-  if (cfg.diffMaxBytes) out['diff_max_bytes'] = cfg.diffMaxBytes;
-  if (cfg.diffDefault) out['diff_default'] = true;
-  if (cfg.requireServiceToken) out['require_service_token'] = true;
-  if (cfg.label) out['label'] = cfg.label;
-  if (cfg.boundAt) out['boundAt'] = cfg.boundAt;
-  const body = stringifyToml(out);
-  writeFileSync(file, `${body}\n`, { encoding: 'utf8', mode: 0o600 });
-  try {
-    chmodSync(file, 0o600);
-  } catch {
-    // Windows 上 chmod 只改只读位；文件仍在用户目录内，属可接受范围
+  if (cfg.diffMaxBytes !== undefined) out['diff_max_bytes'] = cfg.diffMaxBytes;
+  if (cfg.diffDefault !== undefined) out['diff_default'] = cfg.diffDefault;
+  if (cfg.requireServiceToken !== undefined) out['require_service_token'] = cfg.requireServiceToken;
+  if (cfg.controlPlane !== undefined) {
+    const controlPlane: Record<string, unknown> = {};
+    if (cfg.controlPlane.enabled !== undefined) controlPlane['enabled'] = cfg.controlPlane.enabled;
+    if (cfg.controlPlane.host !== undefined) controlPlane['host'] = cfg.controlPlane.host;
+    if (cfg.controlPlane.port !== undefined) controlPlane['port'] = cfg.controlPlane.port;
+    if (cfg.controlPlane.requireToken !== undefined) controlPlane['require_token'] = cfg.controlPlane.requireToken;
+    out['control_plane'] = controlPlane;
   }
+  if (cfg.label !== undefined) out['label'] = cfg.label;
+  if (cfg.boundAt !== undefined) out['boundAt'] = cfg.boundAt;
+  const body = stringifyToml(out);
+  return body.endsWith('\n') ? body : `${body}\n`;
+}
+
+export function loadConfig(): BridgeConfig | null {
+  const file = configPath();
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return null;
+    throw new Error(`读取配置失败（${errorCode(error) ?? 'UNKNOWN'}）：${file}；请检查文件权限和路径后重试。`);
+  }
+
+  let raw: Record<string, unknown>;
+  try {
+    raw = parseToml(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`解析配置失败：${file}；请修复 TOML 语法后重试。`);
+  }
+
+  const platformUrl = optionalString(raw, 'platformUrl', file);
+  if (!platformUrl) throw invalidConfig(file, 'platformUrl 必须是非空字符串');
+
+  const currentId = optionalString(raw, 'deviceId', file);
+  const legacyId = optionalString(raw, 'device_id', file);
+  if (currentId !== undefined && legacyId !== undefined && currentId !== legacyId) {
+    throw invalidConfig(file, 'deviceId 与 legacy device_id 镜像冲突');
+  }
+  const deviceId = currentId ?? legacyId;
+  if (deviceId === undefined) throw invalidConfig(file, '缺少 deviceId');
+  try {
+    assertDeviceId(deviceId);
+  } catch {
+    throw invalidConfig(file, 'deviceId 格式非法');
+  }
+
+  const deviceToken = optionalString(raw, 'deviceToken', file);
+  const refreshToken = optionalString(raw, 'refreshToken', file);
+  const boundAt = optionalString(raw, 'boundAt', file);
+  if (deviceToken === undefined && (refreshToken !== undefined || boundAt !== undefined)) {
+    throw invalidConfig(file, 'refreshToken/boundAt 只能与 deviceToken 同时存在');
+  }
+
+  const allowedRaw = raw['allowed_cwd'] ?? raw['allowedCwd'];
+  if (allowedRaw !== undefined && (!Array.isArray(allowedRaw) || allowedRaw.some((value) => typeof value !== 'string' || value.trim() === ''))) {
+    throw invalidConfig(file, 'allowed_cwd 必须是非空字符串数组');
+  }
+  const allowedCwd = normalizeAllowedCwd(allowedRaw);
+  const maxTasks = optionalNumber(raw['max_tasks'] ?? raw['maxTasks'], 'max_tasks', file, 1);
+  const maxQueued = optionalNumber(raw['max_queue'] ?? raw['maxQueued'], 'max_queue', file, 0);
+  const diffMaxBytes = optionalNumber(raw['diff_max_bytes'] ?? raw['diffMaxBytes'], 'diff_max_bytes', file, 1);
+  const diffDefault = optionalBoolean(raw['diff_default'] ?? raw['diffDefault'], 'diff_default', file);
+  const requireServiceToken = optionalBoolean(
+    raw['require_service_token'] ?? raw['requireServiceToken'],
+    'require_service_token',
+    file,
+  );
+  const label = optionalString(raw, 'label', file);
+
+  const cpValue = raw['control_plane'];
+  if (cpValue !== undefined && (typeof cpValue !== 'object' || cpValue === null || Array.isArray(cpValue))) {
+    throw invalidConfig(file, 'control_plane 必须是 TOML 表');
+  }
+  const cpRaw = (cpValue ?? {}) as Record<string, unknown>;
+  const flatEnabled = optionalBoolean(raw['control_plane_enabled'], 'control_plane_enabled', file);
+  const controlPlane = cpValue !== undefined || flatEnabled !== undefined
+    ? {
+        enabled: optionalBoolean(cpRaw['enabled'], 'control_plane.enabled', file) ?? flatEnabled,
+        host: optionalString(cpRaw, 'host', file),
+        port: optionalNumber(cpRaw['port'], 'control_plane.port', file, 0),
+        requireToken: optionalBoolean(cpRaw['require_token'], 'control_plane.require_token', file),
+      }
+    : undefined;
+
+  return {
+    platformUrl,
+    deviceId,
+    ...(deviceToken !== undefined ? { deviceToken } : {}),
+    ...(refreshToken !== undefined ? { refreshToken } : {}),
+    ...(allowedCwd !== undefined ? { allowedCwd } : {}),
+    ...(maxTasks !== undefined ? { maxTasks } : {}),
+    ...(maxQueued !== undefined ? { maxQueued } : {}),
+    ...(diffMaxBytes !== undefined ? { diffMaxBytes } : {}),
+    ...(diffDefault !== undefined ? { diffDefault } : {}),
+    ...(requireServiceToken !== undefined ? { requireServiceToken } : {}),
+    ...(controlPlane !== undefined ? { controlPlane } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...(boundAt !== undefined ? { boundAt } : {}),
+  };
+}
+
+export async function saveConfig(cfg: BoundBridgeConfig): Promise<string> {
+  const file = configPath();
+  await writeAtomicFile(file, serializeConfig(cfg));
   return file;
 }
 
-export function clearConfig(): boolean {
+export async function clearConfig(): Promise<boolean> {
   const file = configPath();
-  if (!existsSync(file)) return false;
-  writeFileSync(file, '', { encoding: 'utf8', mode: 0o600 });
+  const cfg = loadConfig();
+  if (!cfg) return false;
+  delete cfg.deviceToken;
+  delete cfg.refreshToken;
+  delete cfg.boundAt;
+  await writeAtomicFile(file, serializeConfig(cfg));
   return true;
 }
 

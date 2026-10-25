@@ -6,9 +6,10 @@
 核心事实：
 
 - 传输：bridge 主动连出 `wss://<platform>/api/bridge/ws?deviceId=<id>`，握手带 `Authorization: Bearer <device_token>`。平台永不向设备发起入站连接。
-- 协议版本：`PROTOCOL_VERSION = 1`。新增可选字段 = 版本不变；语义变更 = 版本 +1。
+- 协议版本：`PROTOCOL_VERSION = 2`。新增可选字段 = 版本不变；语义变更 = 版本 +1。
+- 稳定身份：`hello.deviceId` 必须匹配 `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`，且与 WS URL query 同值；不允许空 ID 或仅凭 Bearer 反查。预签发 token 无可迁移/显式 ID 时启动失败。
 - 能力协商：`hello.capabilities` = diff / service-token / queue / scan-progress / cloud-events。第三方应据此降级，不要猜 CLI 版本号。
-- 并发：默认同时跑 3 个（`max_tasks`），其余 FIFO 排队（`max_queue` 默认 32），超时从**入队**开始算。
+- 并发：默认同时跑 30 个（`max_tasks`），其余 FIFO 排队（`max_queue` 默认 60），超时从**入队**开始算。
 - diff：`run_task.captureDiff = true` 时终态回传 `diff` / `changedFiles` / `diffTruncated`；非 git 目录返回空而不报错。
 - 服务身份：`abs_<kid>_<secret>` 的 scoped 服务令牌，本地只存 SHA-256；scope 为 task:create / task:cancel / task:read / device:read。
 - 安全：平台下发的 `env` 一律忽略；参数以数组传递不经 shell；凭据文件只读"存在性"。

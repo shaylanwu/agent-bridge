@@ -21,20 +21,21 @@ Sent immediately after the WebSocket opens. The platform must implement the hand
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `string` = `hello` | ✓ |  |
-| `protocolVersion` | `integer` = `1` | ✓ |  |
+| `protocolVersion` | `integer` = `2` | ✓ |  |
 | `deviceId` | `string` | ✓ |  |
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
 | `capabilities` | array&lt;string&gt; |  |  |
+| `capacity` | `object` |  |  |
 
 **Example**
 
 ```json
 {
   "type": "hello",
-  "protocolVersion": 1,
-  "deviceId": "string",
+  "protocolVersion": 2,
+  "deviceId": "bd_001122334455",
   "cliVersion": "string",
   "platform": "win32",
   "hostname": "string"
@@ -211,6 +212,7 @@ State transitions, and the only message that carries terminal results: exit code
 | `diff` | `string` |  |  |
 | `changedFiles` | array&lt;string&gt; |  |  |
 | `diffTruncated` | `boolean` |  |  |
+| `result` | `string` |  |  |
 | `requestedBy` | `string` |  |  |
 
 **Example**
@@ -224,7 +226,71 @@ State transitions, and the only message that carries terminal results: exit code
   "errorCode": "string",
   "phase": "queued",
   "diff": "string",
+  "result": "string",
   "requestedBy": "string"
+}
+```
+
+
+<a id="msg-capacity_update"></a>
+
+### capacity_update — 容量水位
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `capacity_update` | ✓ |  |
+| `running` | `integer` | ✓ |  |
+| `queued` | `integer` | ✓ |  |
+| `maxTasks` | `integer` | ✓ |  |
+| `maxQueued` | `integer` | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "capacity_update",
+  "running": 1,
+  "queued": 1,
+  "maxTasks": 1,
+  "maxQueued": 1
+}
+```
+
+
+<a id="msg-task_step"></a>
+
+### task_step — 任务步骤（动态步骤流）
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_step` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `seq` | `integer` | ✓ |  |
+| `action` | `string` | ✓ |  |
+| `label` | `string` |  |  |
+| `state` | `started` \| `finished` | ✓ |  |
+| `ok` | `boolean` |  |  |
+| `ref` | `string` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "task_step",
+  "taskId": "string",
+  "seq": 1,
+  "action": "string",
+  "label": "string",
+  "state": "started",
+  "ref": "string",
+  "at": "string"
 }
 ```
 

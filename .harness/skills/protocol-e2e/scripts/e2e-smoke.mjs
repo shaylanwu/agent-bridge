@@ -38,6 +38,7 @@ const argOf = (name, def) => {
 const AGENT = argOf('--agent', process.env.E2E_AGENT || 'claude-code');
 const PORT = Number(argOf('--port', '8899'));
 const TOKEN = 'tok_smoke';
+const DEVICE_ID = 'bd_0123456789abcdef0123456789abcdef';
 const TIMEOUT_MS = 60_000;
 
 const results = [];
@@ -58,20 +59,26 @@ http.on('upgrade', (req, socket, head) => {
     return;
   }
   record('WS 升级（Bearer 鉴权通过）', true, req.url);
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws));
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
 
 const logs = new Map();
 const seen = new Set();
 let bridge;
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const urlDeviceId = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('deviceId');
+  record('WS deviceId query 与 hello 一致', urlDeviceId === DEVICE_ID, `deviceId=${JSON.stringify(urlDeviceId)}`);
   ws.on('message', (d) => {
     const m = JSON.parse(String(d));
     seen.add(m.type);
 
     if (m.type === 'hello') {
-      record('hello.protocolVersion = 1', m.protocolVersion === 1, `deviceId=${JSON.stringify(m.deviceId)}`);
+      record(
+        'hello.protocolVersion = 2 且 deviceId 与 URL query 一致',
+        m.protocolVersion === 2 && m.deviceId === urlDeviceId,
+        `protocolVersion=${m.protocolVersion}, deviceId=${JSON.stringify(m.deviceId)}`,
+      );
       ws.send(JSON.stringify({ type: 'ping', at: Date.now() }));
     }
     if (m.type === 'pong') record('ping → pong 往返', true);
@@ -132,7 +139,7 @@ function finish(code) {
 http.listen(PORT, '127.0.0.1', () => {
   const cfg = mkdtempSync(join(tmpdir(), 'agent-bridge-e2e-'));
   console.log(`[e2e] mock 平台监听 127.0.0.1:${PORT}，拉起 bridge…`);
-  bridge = spawn(process.execPath, ['dist/cli.js', 'connect', `http://127.0.0.1:${PORT}`, `--token=${TOKEN}`], {
+  bridge = spawn(process.execPath, ['dist/cli.js', 'connect', `http://127.0.0.1:${PORT}`, `--token=${TOKEN}`, `--device-id=${DEVICE_ID}`], {
     cwd: ROOT,
     env: { ...process.env, AGENT_BRIDGE_CONFIG: join(cfg, 'config.toml') },
     stdio: ['ignore', 'pipe', 'pipe'],

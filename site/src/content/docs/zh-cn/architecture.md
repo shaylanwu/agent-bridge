@@ -15,10 +15,10 @@ cli.ts                    入口：argv → dispatch()
   └─ cli/                 展示层：命令表、参数解析、渲染、帮助
        └─ commands/       一命令一文件
             └─ app/       用例：会话、任务分发、服务校验、控制面
-                 ├─ core/       领域：Emitter、任务调度、错误码、脱敏、扫描
+                 ├─ core/       领域：Emitter、任务调度、设备身份、错误码、脱敏、扫描
                  ├─ transport/  出站：bridge client、outbox
                  ├─ adapters/   边缘：agent 适配器、Windows exec、图标
-                 └─ infra/      平台设施：配置、鉴权、git、审计、服务令牌
+                 └─ infra/      平台设施：身份/配置存储、profile 锁、鉴权、git、审计、服务令牌
 ```
 
 依赖**只能向下**：`core` 不导入 `transport` / `adapters` / `infra` / `app` 任何东西。
@@ -50,11 +50,21 @@ cli.ts                    入口：argv → dispatch()
 
 `core/task-supervisor.ts` 持有状态机：`queued → running → settled`。
 
-- 并发上限：`config.toml` 的 `max_tasks`（默认 3，上限 32）；CI 可用 `AGENT_BRIDGE_MAX_TASKS` 覆盖；
+- 并发上限：`config.toml` 的 `max_tasks`（默认 30，上限 128）；启动参数 `--max-tasks` / `--max-queue`
+  或环境变量 `AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` 可覆盖；
 - **排队用可选字段表达，不新增状态值**：排队中的任务上报 `status: "running"` +
   `phase: "queued"` + `queuePosition`。老平台不会收到不认识的状态值，新平台能读到排队信息；
 - 取消是 SIGTERM，2 秒后 SIGKILL；
 - 长时间无动静的任务由看门狗置为 `lost` —— 这个值属于平台侧账本，不在 wire 上。
+
+## 稳定身份与协议 v2
+
+`infra/device-identity-store.ts` 在交互授权前持久化 `identity.toml`；`config.toml` 只保存同值兼容镜像、
+凭证与设置。所配置 `config.toml` 的父目录就是 profile。profile 锁串行保护身份迁移、授权、凭证写入
+和 logout，但不会延伸到 WebSocket 生命周期。
+
+授权请求、WS URL query 与 `hello.deviceId` 都使用这一个本地 ID。协议 v2 要求它非空且合法；
+预签发 token 没有已持久化、可迁移或显式 ID 时直接失败，不创建身份。logout 清凭证但保留身份与设置。
 
 ## 契约即真源
 

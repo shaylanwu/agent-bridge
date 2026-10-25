@@ -21,20 +21,21 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string` = `hello` | ✓ |  |
-| `protocolVersion` | `integer` = `1` | ✓ |  |
-| `deviceId` | `string` | ✓ | 解析不到时为空串，平台须按 Bearer 反查设备 |
+| `protocolVersion` | `integer` = `2` | ✓ |  |
+| `deviceId` | `string` | ✓ | 本地持久化的稳定身份；必须与 WS URL 的 `deviceId` query 完全相等，不允许空 ID 或仅凭 Bearer 反查 |
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step。 |
+| `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
 
 ```json
 {
   "type": "hello",
-  "protocolVersion": 1,
-  "deviceId": "string",
+  "protocolVersion": 2,
+  "deviceId": "bd_001122334455",
   "cliVersion": "string",
   "platform": "win32",
   "hostname": "string"
@@ -211,6 +212,7 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
 | `diff` | `string` |  | unified diff，仅当 `run_task.captureDiff` 为 true 时出现 |
 | `changedFiles` | array&lt;string&gt; |  | 仓库相对路径，上限 500 条 |
 | `diffTruncated` | `boolean` |  |  |
+| `result` | `string` |  | 终态最终回答文本（步骤流工具从 result 事件提取；≤16KB） |
 | `requestedBy` | `string` |  | 回显调用方身份，供平台落 requested_by 审计 |
 
 **示例**
@@ -224,7 +226,75 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
   "errorCode": "string",
   "phase": "queued",
   "diff": "string",
+  "result": "string",
   "requestedBy": "string"
+}
+```
+
+
+<a id="msg-capacity_update"></a>
+
+### capacity_update — 容量水位
+
+每次调度状态变化（入队 / 启动 / 终态）后发送一次，反映平台与控制面 两条通道的合计占用。平台据此知道「还能不能再派任务」，无需等 device_busy。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `capacity_update` | ✓ |  |
+| `running` | `integer` | ✓ | 正在执行的任务数 |
+| `queued` | `integer` | ✓ | 排队中的任务数 |
+| `maxTasks` | `integer` | ✓ |  |
+| `maxQueued` | `integer` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "capacity_update",
+  "running": 1,
+  "queued": 1,
+  "maxTasks": 1,
+  "maxQueued": 1
+}
+```
+
+
+<a id="msg-task_step"></a>
+
+### task_step — 任务步骤（动态步骤流）
+
+AI CLI 的步骤由模型实时决定，没有预定义总步数；平台拿到的是「已发生的步骤序列 + 当前步骤」。 仅 `agent_list` 中 `steps: true` 的工具会产生本消息。终态后该 task 的步骤一律丢弃（同 task_log）。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `task_step` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `seq` | `integer` | ✓ | 从 1 单调递增 |
+| `action` | `string` | ✓ | Bash / Edit / Read / command_execution / file_change… |
+| `label` | `string` |  | 目标摘要，与日志同口径脱敏 |
+| `state` | `started` \| `finished` | ✓ |  |
+| `ok` | `boolean` |  | 仅 state=finished 时给出 |
+| `ref` | `string` |  | 源事件关联 id（started/finished 配对） |
+| `at` | `string` (date-time) | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "task_step",
+  "taskId": "string",
+  "seq": 1,
+  "action": "string",
+  "label": "string",
+  "state": "started",
+  "ref": "string",
+  "at": "string"
 }
 ```
 

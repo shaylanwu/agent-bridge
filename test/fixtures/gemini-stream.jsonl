@@ -1,0 +1,8 @@
+{"type":"init","session_id":"gem-test","model":"gemini-3-pro"}
+{"type":"message","role":"user","content":"List files"}
+{"type":"tool_use","tool_name":"run_shell_command","tool_id":"call_abc","parameters":{"command":"ls -la"}}
+{"type":"tool_result","tool_id":"call_abc","status":"success","output":"a.txt"}
+{"type":"tool_use","name":"write_file","id":"call_def","args":{"file_path":"b.txt"}}
+{"type":"tool_result","tool_id":"call_def","status":"error","output":"denied"}
+{"type":"message","role":"assistant","content":"done"}
+{"type":"result","stats":{"totalTokens":10}}

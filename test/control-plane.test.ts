@@ -7,7 +7,11 @@
 
 import { describe, expect, it } from 'vitest';
 import { request as httpRequest } from 'node:http';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Emitter } from '../src/core/emitter.js';
+import { TaskRegistry } from '../src/app/task-registry.js';
 import { startControlPlane, type ControlPlaneDeps } from '../src/transport/control-plane.js';
 import type { RunTaskRequest, TaskFinishInfo, TaskHandle, TaskHooks } from '../src/core/task-supervisor.js';
 
@@ -56,6 +60,7 @@ function makeDeps(overrides: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps {
   const emitter = new Emitter({ sink: () => undefined, ringSize: 64 });
   return {
     emitter,
+    registry: new TaskRegistry(),
     startTask: (req: RunTaskRequest, hooks: TaskHooks): TaskHandle => {
       // 立即成功：测试关心的是 HTTP 层契约，不是真跑 CLI
       hooks.onStatus('success', { exitCode: 0 } satisfies TaskFinishInfo);
@@ -221,6 +226,122 @@ describe('本地回环控制面', () => {
 
     expect(chunks).toContain('event: hello');
     expect(chunks).toContain(taskId);
+    plane.close();
+  });
+
+  it('Web 面板壳 GET / 免令牌（页面本身不含数据），且内嵌脚本语法合法', async () => {
+    const plane = await start();
+    const res = await call(plane.port, 'GET', '/');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    expect(res.body).toContain('任务面板');
+    // 官网品牌资产与主题色（2026-10-25 用户要求）：同一几何 Logo、同一品牌绿，不再使用 AB 蓝色替代标
+    expect(res.body).toContain('<rect x="4" y="10" width="11" height="12" rx="2.5" fill="none" stroke="#1A2029"');
+    expect(res.body).toContain('fill="#17A67F"');
+    expect(res.body).toContain('--brand:#17A67F');
+    expect(res.body).not.toContain('brand-mark">AB');
+    // 红线不变：面板壳也不返回 CORS 头
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    // 2026-10-25 白屏事故护栏：模板串转义曾把正则写坏。提取 <script> 做 parse-only 校验
+    const m = res.body.match(/<script>([\s\S]*?)<\/script>/);
+    expect(m).not.toBeNull();
+    expect(() => new Function(m![1])).not.toThrow();
+    plane.close();
+  });
+
+  it('/v1/board：无令牌 401；带令牌返回计数 + 容量 + 任务视图（与注册表同源）', async () => {
+    const plane = await start({
+      verify: (token) => (token ? { ok: true } : { ok: false, reason: 'missing', message: '缺令牌' }),
+    });
+    const denied = await call(plane.port, 'GET', '/v1/board');
+    expect(denied.status).toBe(401);
+
+    const created = await call(plane.port, 'POST', '/v1/tasks', {
+      body: { agentType: 'codex', cwd: process.cwd() },
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    const { taskId } = created.json<{ taskId: string }>();
+
+    const board = await call(plane.port, 'GET', '/v1/board', { headers: { authorization: 'Bearer abs_x_y' } });
+    expect(board.status).toBe(200);
+    const data = board.json<{ counts: { success: number }; capacity: { maxTasks: number }; tasks: Array<{ taskId: string; status: string }> }>();
+    expect(data.capacity.maxTasks).toBe(1);
+    expect(data.tasks.map((t) => t.taskId)).toContain(taskId);
+    expect(data.tasks.find((t) => t.taskId === taskId)?.status).toBe('success');
+    expect(data.counts.success).toBe(1);
+    plane.close();
+  });
+
+  it('?token= 兜底：EventSource 场景可从 query 取令牌（与 Bearer 同口径校验）', async () => {
+    const seen: string[] = [];
+    const plane = await start({
+      verify: (token, _scope) => {
+        if (token) seen.push(token);
+        return { ok: true };
+      },
+    });
+    const res = await call(plane.port, 'GET', '/v1/board?token=abs_q_uery');
+    expect(res.status).toBe(200);
+    expect(seen).toContain('abs_q_uery');
+    plane.close();
+  });
+
+  it('平台任务的 diff 端点从注册表兜底（无控制面 records 也不 404）', async () => {
+    const registry = new TaskRegistry();
+    const plane = await start({ registry, verify: () => ({ ok: true }) });
+    registry.register('platform-task', { agentType: 'claude-code', cwd: process.cwd(), source: 'platform' });
+    registry.updateStatus('platform-task', 'success', { diff: 'diff --git a/x b/x', changedFiles: ['x.ts'], diffTruncated: false });
+    const res = await call(plane.port, 'GET', '/v1/tasks/platform-task/diff', { headers: { authorization: 'Bearer abs_x_y' } });
+    expect(res.status).toBe(200);
+    expect(res.json<{ diff: string; changedFiles: string[] }>()).toMatchObject({ diff: 'diff --git a/x b/x', changedFiles: ['x.ts'] });
+    plane.close();
+  });
+
+  it('步骤时间线端点：未知任务 404；已跟踪任务返回步骤序列', async () => {
+    const plane = await start({ verify: () => ({ ok: true }) });
+    const missing = await call(plane.port, 'GET', '/v1/tasks/nope/steps', { headers: { authorization: 'Bearer abs_x_y' } });
+    expect(missing.status).toBe(404);
+
+    const created = await call(plane.port, 'POST', '/v1/tasks', {
+      body: { agentType: 'codex', cwd: process.cwd() },
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    const { taskId } = created.json<{ taskId: string }>();
+    const steps = await call(plane.port, 'GET', `/v1/tasks/${taskId}/steps`, { headers: { authorization: 'Bearer abs_x_y' } });
+    expect(steps.status).toBe(200);
+    const data = steps.json<{ taskId: string; status: string; steps: unknown[] }>();
+    expect(data.taskId).toBe(taskId);
+    expect(data.status).toBe('success');
+    expect(Array.isArray(data.steps)).toBe(true);
+    plane.close();
+  });
+
+  it('文件预览端点：穿越路径 403；存在文件 200 且 content-type 按扩展名', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-preview-'));
+    writeFileSync(join(dir, 'note.md'), '# 标题\n内容');
+    const plane = await start({ verify: () => ({ ok: true }) });
+    const created = await call(plane.port, 'POST', '/v1/tasks', {
+      body: { agentType: 'codex', cwd: dir },
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    const { taskId } = created.json<{ taskId: string }>();
+
+    const escape = await call(plane.port, 'GET', `/v1/tasks/${taskId}/file?path=../../etc/passwd`, {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(escape.status).toBe(403);
+
+    const ok = await call(plane.port, 'GET', `/v1/tasks/${taskId}/file?path=note.md`, {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.headers['content-type']).toContain('text/markdown');
+    expect(ok.body).toContain('# 标题');
+
+    const missing = await call(plane.port, 'GET', `/v1/tasks/${taskId}/file?path=nope.txt`, {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(missing.status).toBe(404);
     plane.close();
   });
 });

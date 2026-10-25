@@ -14,23 +14,29 @@ sidebar:
 
 ```bash
 agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-browser] [--label=name]
+    [--max-tasks=30] [--max-queue=60]
 ```
 
 | 参数 | 含义 |
 | --- | --- |
-| `--token` | 用已有设备令牌，跳过浏览器流程（CI / 批量装机）。建议同时给 `--device-id`。 |
-| `--device-id` | 设备 id，形如 `bd_9f1c…`；也可设 `AGENT_BRIDGE_DEVICE_ID`。 |
+| `--token` | 用已有设备令牌，跳过浏览器流程（CI / 批量装机）。必须有已持久化、可迁移或显式稳定 ID，否则启动失败。 |
+| `--device-id` | 匹配 `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$` 的稳定设备 ID；也可设 `AGENT_BRIDGE_DEVICE_ID`。只能迁移或确认身份，不能覆盖不同的已存 ID。 |
 | `--no-browser` | 走设备码流程而不开浏览器（SSH、无头环境）。 |
 | `--label` | 给设备一个人类可读的名字。 |
+| `--max-tasks` | 本次会话的并发上限（默认 30，夹 1–128）。 |
+| `--max-queue` | 本次会话的排队上限（默认 60，夹 0–1024；0 = 不排队）。 |
 
-不带任何参数时：开浏览器 → 完成 PKCE → 令牌以 `0600` 落盘 → 建立出站 WebSocket。
+优先级：启动参数 > 环境变量（`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE`）> config.toml > 默认值。
+
+不带任何参数时：先持久化或复用稳定身份，再开浏览器完成 PKCE、保存令牌并建立出站 WebSocket。
+授权请求、WS URL query 与 `hello.deviceId` 都使用同一个 ID。预签发 `--token` 绝不会触发生成新 ID。
 
 ## serve
 
 主流程与 `connect` 相同，**额外**提供可选的本地回环控制面。
 
 ```bash
-agent-bridge serve <platformUrl> [--port=8787]
+agent-bridge serve <platformUrl> [--port=8787] [--max-tasks=30] [--max-queue=60]
 ```
 
 - 带 `--port`（或配置里 `[control_plane] enabled = true`）时，为同机程序开一个回环 HTTP API；
@@ -54,7 +60,8 @@ agent-bridge status [--json] [--fresh]
 
 ## logout
 
-清除本地设备凭证。之后必须重新绑定才能使用。
+清除本地设备凭证，但保留 `identity.toml`、配置镜像和设置。凭证吊销后执行 `logout` → `connect`，
+仍用原设备 ID 重新绑定。
 
 ```bash
 agent-bridge logout

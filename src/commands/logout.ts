@@ -6,15 +6,18 @@
  */
 
 import { out } from '../cli/render.js';
-import { clearConfig, loadConfig } from '../infra/config.js';
+import { clearConfig, loadConfig, stateDir } from '../infra/config.js';
+import { withProfileLock } from '../infra/profile-lock.js';
 
-export function cmdLogout(): void {
-  const cfg = loadConfig();
-  if (!cfg) {
-    out.info('[agent-bridge] 未绑定任何平台');
-    return;
-  }
-  clearConfig();
-  out.ok(`✅ 已清除本地设备凭证（${cfg.deviceId}）`);
-  out.info('提示：如需让平台侧同步下线，请到「设备管理」里吊销该设备。');
+export async function cmdLogout(): Promise<void> {
+  await withProfileLock(stateDir(), async () => {
+    const cfg = loadConfig();
+    if (!cfg) {
+      out.info('[agent-bridge] 未绑定任何平台');
+      return;
+    }
+    await clearConfig();
+    out.ok(`✅ 已清除本地设备凭证（${cfg.deviceId}），设备身份与业务设置已保留`);
+    out.info('提示：如需让平台侧同步下线，请到「设备管理」里吊销该设备。');
+  });
 }

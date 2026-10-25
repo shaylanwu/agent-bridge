@@ -10,25 +10,31 @@
  * 不是远程平台 —— 远程平台永远走那条出站 WebSocket。
  */
 
+import { hostname } from 'node:os';
 import { startBridge } from '../app/bootstrap.js';
 import type { SessionLog } from '../app/session-log.js';
-import { numFlag, type Flags } from '../cli/flags.js';
+import { numFlag, numFlagMin, type Flags } from '../cli/flags.js';
 import { hold } from '../cli/hold.js';
+import { panelLog, startPanel } from '../cli/panel.js';
 import { C, out } from '../cli/render.js';
 import { scanAgents } from '../core/scan.js';
+import { defaultSupervisor } from '../core/task-supervisor.js';
 import { resolveControlPlane, resolveDiffMaxBytes, resolveMaxQueued, resolveMaxTasks } from '../infra/config.js';
+import { verifyServiceToken, type ServiceScope } from '../infra/service-token.js';
 import { PROTOCOL_CAPABILITIES } from '../protocol.js';
+import { randomBytes } from 'node:crypto';
 import { version } from '../cli/meta.js';
 import { startTask } from '../runner.js';
 import { startControlPlane } from '../transport/control-plane.js';
 
 export async function cmdServe(flags: Flags): Promise<void> {
-  const log: SessionLog = (level, line) => {
+  // 两阶段：授权/建连期逐行日志；会话起来后（TTY）切面板模式
+  let log: SessionLog = (level, line) => {
     if (level === 'info') console.log(C.dim(line));
     else console.error(level === 'error' ? C.red(line) : C.yellow(line));
   };
 
-  const { session, config } = await startBridge(flags, log);
+  const { session, config } = await startBridge(flags, (level, line) => log(level, line));
 
   const settings = resolveControlPlane(config?.controlPlane);
   const portFlag = numFlag(flags, 'port', -1);
@@ -38,37 +44,71 @@ export async function cmdServe(flags: Flags): Promise<void> {
   if (!settings.enabled && portFlag <= 0) {
     out.warn('[agent-bridge] 控制面默认关闭，本次未启动 —— 主流程行为与 connect 一致');
     out.info('启用：`[control_plane] enabled = true` 写入配置，或本次带 --port=8787');
-    await hold(() => session.close());
+    const panel = startPanel({
+      registry: session.registry,
+      capacity: () => defaultSupervisor.capacitySnapshot(),
+      platformUrl: config?.platformUrl ?? '',
+      deviceName: config?.label ?? hostname(),
+    });
+    if (panel) log = panelLog(panel);
+    await hold(() => {
+      panel?.stop();
+      session.close();
+    });
     return;
   }
+  // Web 面板的只读内存令牌（2026-10-25 用户拍板）：进程内生成、不落盘、随进程退出失效，
+  // scope 只放行 task:read / device:read —— 面板 URL 直接拼上它，点开即用；
+  // 需要写操作（下发/取消任务）的调用方仍走 `services issue` 签发的落盘令牌。
+  const uiToken = `abs_ui_${randomBytes(16).toString('hex')}`;
+  const verifyWithUi = (token: string | undefined, scope: ServiceScope): ReturnType<typeof verifyServiceToken> => {
+    if (token === uiToken && (scope === 'task:read' || scope === 'device:read')) return { ok: true };
+    return verifyServiceToken(token, scope);
+  };
 
   const plane = await startControlPlane(
     { enabled: true, host: settings.host, port, requireToken: settings.requireToken },
     {
       emitter: session.emitter,
+      registry: session.registry,
       // 与平台下发的任务共用同一个 supervisor：并发上限不会因多开一条通道而翻倍
       startTask: (req, hooks) => startTask(req, hooks),
       scan: (opts) => scanAgents(opts),
       log,
+      verify: verifyWithUi,
       capabilities: PROTOCOL_CAPABILITIES,
       version: version(),
       defaults: {
         allowedCwd: config?.allowedCwd,
-        maxConcurrent: resolveMaxTasks(config?.maxTasks),
-        maxQueued: resolveMaxQueued(config?.maxQueued),
+        // 与主流程同一优先级链：--max-tasks/--max-queue > 环境变量 > config > 默认
+        maxConcurrent: resolveMaxTasks(config?.maxTasks, numFlagMin(flags, 'max-tasks', 1)),
+        maxQueued: resolveMaxQueued(config?.maxQueued, numFlagMin(flags, 'max-queue', 0)),
         diffMaxBytes: resolveDiffMaxBytes(config?.diffMaxBytes),
         captureDiffByDefault: config?.diffDefault === true,
       },
     },
   );
 
-  out.ok(`✅ 控制面已就绪 ${plane.url}/v1/health（只绑回环，不出网）`);
-  out.info(`   能力清单 ${plane.url}/v1/capabilities ；任务事件 ${plane.url}/v1/tasks/{id}/events`);
-  if (settings.requireToken) {
-    out.info('   调用需带 scoped 令牌：`agent-bridge services issue --scopes=task:create,task:read`');
+  const boardUrl = `${plane.url}/?token=${uiToken}`;
+
+  // 面板盒已承载这些信息；仅非 TTY（无面板）才逐行打印（2026-10-25 用户指出重复）
+  if (!process.stdout.isTTY) {
+    out.ok(`✅ 控制面已就绪 ${plane.url}/v1/health（只绑回环，不出网）`);
+    out.ok(`📊 Web 任务面板 ${boardUrl}`);
+    out.info('   ↑ 点开即用（内嵌只读令牌，本进程有效）；写操作仍需 `services issue` 签发的令牌');
   }
 
+  const panel = startPanel({
+    registry: session.registry,
+    capacity: () => defaultSupervisor.capacitySnapshot(),
+    platformUrl: config?.platformUrl ?? '',
+    deviceName: config?.label ?? hostname(),
+    webUrl: boardUrl,
+  });
+  if (panel) log = panelLog(panel);
+
   await hold(() => {
+    panel?.stop();
     plane.close();
     session.close();
   });

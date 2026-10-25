@@ -33,6 +33,7 @@ AI 编码 Agent（Claude Code、Codex、Gemini CLI 等）装在开发者的电�
 - **受控执行** —— 适配器白名单、参数数组（不拼 shell）、工作目录校验、单任务超时、优雅取消（`SIGTERM` → 2 秒 → `SIGKILL`）。
 - **流式日志** —— 输出按 4 KB 分片即时回传；已结束的运行可在平台侧回看。
 - **连接自愈** —— 15 秒心跳、指数退避（1 秒 → 30 秒）、断线期间的状态消息在重连后补发。
+- **终端任务面板** —— `connect` / `serve` 在 TTY 下显示常驻状态表（四态圆点、各任务当前步骤、耗时、容量水位），主窗口不滚动任务日志；每任务日志在 Web 面板（`serve` 启动控制面后给出地址）点击查看，执行中走 SSE 实时流。
 - **密钥不出本机** —— 不读取、不上传任何 API Key 或凭据文件，只上报「有 / 没有」。
 
 ## 安装
@@ -63,7 +64,7 @@ agent-bridge connect https://platform.example.com
 agent-bridge connect https://platform.example.com --no-browser
 
 # CI 或脚本化：使用平台签发的设备 token
-# （--device-id 可选，也可用 AGENT_BRIDGE_DEVICE_ID 环境变量）
+# 稳定 ID 必须来自本地状态、--device-id 或 AGENT_BRIDGE_DEVICE_ID
 agent-bridge connect https://platform.example.com --token=<device-token> --device-id=<device-id>
 
 # 只探测本机工具（不需要连接平台）
@@ -83,10 +84,10 @@ agent-bridge services revoke svc_9f1c2a
 > `agent-bridge daemon` **尚未实现**（Phase 3）。在此之前请用你自己的进程守护（systemd / launchd /
 > Windows 服务包装）托管前台运行的 `connect`。
 
-用 `--token` 时，只有显式给 `--device-id` 或设置 `AGENT_BRIDGE_DEVICE_ID` 才有 `deviceId`（解析顺序：
-授权响应 → `--device-id` → 环境变量 → 同平台的已保存配置）。都解析不到时，WS 地址会**省略** `deviceId`
-查询参数（而不是发一个空值），`hello.deviceId` 为空串 —— **此时平台必须按 `Authorization: Bearer` 反查设备**。
-从未交互式绑定过的 CI 机器就是这种情况。
+用 `--token` 时，bridge 必须从 `identity.toml`、已保存的 `config.toml` 镜像、`--device-id` 或
+`AGENT_BRIDGE_DEVICE_ID` 解析出稳定 `deviceId`。如果没有已持久化、可迁移或显式提供的 ID，启动会明确
+失败：不会为预签发 token 随机生成 ID，不会发送空 ID，也不会让平台仅凭 Bearer 反查身份。显式 ID 只能
+迁移缺失的本地状态或确认已持久化身份，不能覆盖一个不同的既有身份。
 
 `status` 输出示例：
 
@@ -105,8 +106,25 @@ Kimi Code          -                    未装
 共 12 个工具，可用 4 个
 ```
 
-配置位于 `~/.agent-bridge/config.toml`（Windows：`%APPDATA%\agent-bridge\config.toml`），权限 `0600`；
-设备 token 从不明文完整打印。
+### 稳定设备身份与本地状态
+
+| 状态 | POSIX | Windows |
+| --- | --- | --- |
+| 身份（唯一真源） | `~/.agent-bridge/identity.toml` | `%APPDATA%\.agent-bridge\identity.toml` |
+| 凭证、设置、身份镜像 | `~/.agent-bridge/config.toml` | `%APPDATA%\.agent-bridge\config.toml` |
+
+`identity.toml` 保存稳定 `deviceId`；`config.toml` 只保留同值兼容镜像。状态文件仅当前用户可读写
+（POSIX 为 `0600`，Windows 使用受限 ACL），设备 token 从不明文完整打印。`AGENT_BRIDGE_CONFIG` 指向
+某个 profile 的 `config.toml`，其**父目录就是该 profile**，`identity.toml` 与其他状态文件都在这个目录；
+不同 profile 必须使用不同父目录。
+
+重新授权、切换授权方式，以及保留该状态目录的卸载重装都不会改变 ID。只删除 `identity.toml` 时会从
+配置镜像恢复原 ID；删除整个 profile（或身份与所有可迁移镜像）后，下次交互绑定才属于新安装并生成新 ID。
+`logout` 只清凭证，保留身份和设置；凭证吊销后执行 `logout` → `connect`，仍用原 ID 重新绑定。
+
+平台返回 `409 device_bound_to_other_account` 表示 ID 属于其他账号，`409 device_identity_ambiguous`
+表示平台历史身份重复；两者都需平台管理员处理。bridge 不会换 ID 规避冲突，也不会自动合并重复设备或
+转移跨账号所有权。
 
 可选的**工作目录白名单**——把任务执行收窄到指定目录：
 
@@ -118,16 +136,21 @@ allowed_cwd = ["/Users/me/work", "/Users/me/repos"]
 `{"status":"failed","error":"工作目录不在允许范围内：…"}`。条目会被解析成绝对路径、按**目录边界**比较，
 因此 `/Users/me/work-old` **不会**被 `/Users/me/work` 放行。不写这个键则保持原有行为（只校验目录存在）。
 
-同时跑几个任务、允许多少个排队——默认 3 和 32：
+同时跑几个任务、允许多少个排队——默认 30 和 60：
 
 ```toml
-max_tasks = 3
-max_queue = 32   # 0 表示完全不排队
+max_tasks = 30
+max_queue = 60   # 0 表示完全不排队
 ```
 
 超出 `max_tasks` 的任务进入 FIFO 队列，有空位就依次启动；只有队列也满了，新任务才会立即失败
 （`任务队列已满（并发 N，排队 M）`）。`timeoutMs` 从**入队**开始计时，避免任务在队列里等几小时再跑十分钟。
-`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` 优先于配置文件（CI 里方便）。
+生效优先级：启动参数 `--max-tasks` / `--max-queue`（connect 与 serve 都支持）>
+环境变量 `AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` > 配置文件 > 默认值。
+
+同一 `taskId` 的 `run_task` 重复下发是安全的：bridge 按 `taskId` 幂等 —— 未终态回当前状态快照、
+已终态回放终态快照，绝不重复 spawn。设备的水位对平台透明：`hello.capacity` 携带生效额度，
+此后每次调度变化都会推一条 `capacity_update { running, queued, maxTasks, maxQueued }`。
 
 任务终态要不要回传 diff、以及要不要强制校验服务令牌：
 
@@ -145,7 +168,7 @@ require_service_token = false # true = 无有效服务令牌的任务一律拒�
 | 能执行什么     | 仅限白名单内的工具类型，未知 `agentType` 在本地直接拒绝              |
 | 怎么执行       | 参数以数组传入，不做 shell 拼接（Windows `.cmd` 垫片单独做引号处理） |
 | 平台下发的 env | **不接受**：`run_task` 里的 `env` 一律忽略，子进程只用 bridge 自身的环境 |
-| 并发           | 同时最多 `max_tasks` 个（默认 3），其余按 FIFO 排队（`max_queue` 默认 32），排满才失败；`timeoutMs` 从入队开始算 |
+| 并发           | 同时最多 `max_tasks` 个（默认 30），其余按 FIFO 排队（`max_queue` 默认 60），排满才失败；`timeoutMs` 从入队开始算 |
 | 本地控制面     | 可选扩展，**默认关闭**；开启后只绑回环、强制 scoped Bearer、不返回 CORS 头 |
 | 在哪里执行     | `cwd` 必须存在且是目录；可用 `allowed_cwd` 白名单进一步收窄范围      |
 | diff 捕获      | 只在 `captureDiff: true`（或 `diff_default`）时跑一次 `git diff`；未跟踪文件用完即还原索引，不提交、不改动工作区 |
@@ -218,9 +241,13 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 协议（单连接上的 JSON 消息）：
 
+| 协议 | 握手要求 | bridge 发布版本 |
+| --- | --- | --- |
+| **v2** | `PROTOCOL_VERSION = 2`（`hello.protocolVersion = 2`）；`deviceId` 为非空稳定 ID，且与 WS URL query 同值 | **下一 major：`≥1.0.0`**（当前包为 `0.2.3`；实际发布版本由 semantic-release 决定） |
+
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`pong` |
+| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`capacity_update`、`pong` |
 | 平台 → bridge | `run_task`、`cancel_task`、`scan`、`ping`                               |
 
 ### 能力协商（hello.capabilities）
@@ -234,6 +261,23 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 | `queue`          | 超出并发上限的任务排队而非拒绝（会先发 `running`）        |
 | `scan-progress`  | 扫描过程流式回传 `scan_progress`                          |
 | `cloud-events`   | 上行报文可包成 CloudEvents 1.0 信封（CNCF 标准）           |
+| `capacity`       | `hello.capacity` 上报额度上限，调度变化时推 `capacity_update` |
+| `task-step`      | 结构化工具实时回传 `task_step` 步骤流（能力分级见下）          |
+
+### 步骤流（task_step）
+
+具备结构化事件输出的工具会把**动态步骤流**实时上行（`seq` 递增、`ref` 配对 started/finished、
+`label` 脱敏截断）。AI CLI 的步骤由模型实时决定，没有预定义总步数——平台拿到的是
+「已发生的步骤序列 + 当前步骤」。能力按工具分级，并在 `agent_list` 逐项以 `steps: true/false` 如实标注：
+
+| 级别 | 工具 | 说明 |
+| --- | --- | --- |
+| 结构化（`steps: true`） | 全部 12 个工具 | 按事件格式分 6 族解析（claude 同构 5 个、opencode 同构 2 个、codex / gemini / kimi / dsh / minimax 各一） |
+| 纯文本（`steps: false`） | 无 | 降级位保留给未来不支持结构化输出的工具 |
+
+⚠️ 行为变化：claude-code / codebuddy-cli / kimi-code / qoder-cli / trae-cli / ds-harness / minimax-code
+的任务输出（`task_log`）从纯文本变为 **JSONL 事件流**（信息更全，`task_step` 提供结构化视图）；
+codex / opencode / mimo-code / grok-cli / gemini 本来就是（或转为）JSONL。
 
 演进规则：新增可选字段 = 协议版本不变；语义变更或新增必填字段 = 版本 +1。
 
@@ -329,18 +373,28 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | --- | --- |
 | 绑定 | 只绑 `127.0.0.1` / `::1`，非回环直接在启动时拒绝 |
 | 默认 | **关闭**。用 `[control_plane] enabled = true` 写进配置，或本次带 `--port` 临时开 |
-| 鉴权 | scoped Bearer（`abs_<kid>_<secret>`，与 P0-8 同一套令牌）；只有 `/v1/health` 免鉴权 |
+| 鉴权 | scoped Bearer（`abs_<kid>_<secret>`，与 P0-8 同一套令牌）；`/v1/health` 与面板页壳 `/` 免鉴权；EventSource 场景允许 `?token=` 兜底（仅回环，勿外发）。**Web 面板零操作**：serve 启动时自动生成一个只读（task:read/device:read）内存令牌并拼进面板地址，进程退出即失效 |
 | CORS | 一律不返回 —— 浏览器脚本无法静默调用本机端口 |
 | 调度 | 任务走同一个 `TaskSupervisor`，`max_tasks` 对两条通道**同时**生效 |
 | 上行 | 控制面下发的任务也经同一个 `Emitter` 回传，平台侧视图不会出现"半边失踪" |
+| 面板 | `GET /` 内嵌 Web 任务面板（产品化任务表 + **结构化日志事件卡**（7 族事件归一化、工具调用与结果合并、原始 JSON 折叠）+ 执行待办 + 步骤时间线 + 结果预览；三个弹窗均支持 vw/vh 自适应与全屏；日志 600 条有界缓存、SSE 合帧渲染、后台标签页暂停轮询）；`GET /v1/board` 是其数据源（与终端面板同一注册表） |
 
 | 方法 | 路径 | scope |
 | --- | --- | --- |
+| GET | `/` | 无（Web 任务面板壳；数据走 /v1/*） |
 | GET | `/v1/health` | 无（存活/就绪/版本） |
 | GET | `/v1/capabilities` | `device:read` |
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |
+| GET | `/v1/board` | `task:read`（面板聚合视图：任务 + 计数 + 容量） |
 | POST | `/v1/tasks` | `task:create` |
+| GET | `/v1/tasks` | `task:read`（游标分页） |
+| GET | `/v1/tasks/{id}` | `task:read` |
+| POST | `/v1/tasks/{id}:cancel` | `task:cancel`（幂等） |
+| GET | `/v1/tasks/{id}/events` | `task:read`（SSE：日志 + 状态 + 步骤） |
+| GET | `/v1/tasks/{id}/steps` | `task:read`（步骤时间线 + 最终回答） |
+| GET | `/v1/tasks/{id}/file?path=` | `task:read`（产物文件预览：锁任务 cwd + allowed_cwd，≤512KB） |
+| GET | `/v1/tasks/{id}/diff` | `task:read`（只取产物，不重跑任务） |
 | GET | `/v1/tasks` | `task:read`（游标分页） |
 | GET | `/v1/tasks/{id}` | `task:read` |
 | POST | `/v1/tasks/{id}:cancel` | `task:cancel`（幂等） |

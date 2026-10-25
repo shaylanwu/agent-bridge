@@ -12,6 +12,7 @@ import { startTask, type TaskHandle } from '../runner.js';
 import type { ServerMessage } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
 import type { SessionLog } from './session-log.js';
+import type { TaskRegistry } from './task-registry.js';
 
 export type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 export type CancelTaskMessage = Extract<ServerMessage, { type: 'cancel_task' }>;
@@ -21,6 +22,8 @@ export interface TaskDispatchOptions {
   emitter: Emitter;
   /** 在跑/排队的任务句柄（取消用；终态后由 session 摘除） */
   tasks: Map<string, TaskHandle>;
+  /** 任务注册表（终端面板 / Web 面板的共享视图） */
+  registry: TaskRegistry;
   allowedCwd?: string[];
   maxConcurrent: number;
   maxQueued: number;
@@ -59,6 +62,8 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
   const who = msg.requestedBy ? `（${msg.requestedBy}${msg.purpose ? ` / ${msg.purpose}` : ''}）` : '';
   o.log('info', `\n▶ 执行任务 ${msg.taskId}：${msg.agentType}${who}`);
 
+  o.registry.register(msg.taskId, { agentType: msg.agentType, cwd: msg.cwd, source: 'platform' });
+
   const handle = startTask(
     {
       taskId: msg.taskId,
@@ -79,7 +84,16 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
         if (text.trim()) o.log('info', `[${stream}] ${text.trimEnd()}`);
         o.emitter.emit({ type: 'task_log', taskId: msg.taskId, stream, data, isAnsi: true });
       },
+      // 步骤流（B 批次）：仅 steps:true 的工具会触发；label 的截断与脱敏在 Emitter 收口
+      onStep: (step) => {
+        o.registry.updateStep(msg.taskId, step);
+        o.emitter.emit({ type: 'task_step', taskId: msg.taskId, ...step, at: new Date().toISOString() });
+      },
+      onPlan: (items) => {
+        o.registry.updatePlan(msg.taskId, items);
+      },
       onStatus: (status, info) => {
+        o.registry.updateStatus(msg.taskId, status, info);
         if (info?.changedFiles?.length) {
           o.log(
             'info',

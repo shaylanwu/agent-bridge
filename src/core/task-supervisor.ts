@@ -24,6 +24,7 @@ import { agentDefOf, resolveBin } from '../adapters/agent-adapters.js';
 import { captureWorktreeDiff, type DiffCapture } from '../infra/git.js';
 import { chunkLog, type TaskStatus } from '../protocol.js';
 import { buildWinCommandLine, isWinShim } from '../adapters/win-exec.js';
+import { createStepParser, type ParsedStep, type PlanItem, type StepFormat } from '../adapters/step-parsers.js';
 import { BridgeError, type BridgeErrorCode } from './errors.js';
 
 export interface RunTaskRequest {
@@ -53,6 +54,8 @@ export interface TaskFinishInfo {
   diff?: string;
   changedFiles?: string[];
   diffTruncated?: boolean;
+  /** 最终回答文本（步骤流解析器从 result 事件提取；仅结构化输出的工具） */
+  result?: string;
   /** 排队语义（v1 兼容：status 仍为 running，phase 区分排队/执行中） */
   phase?: 'queued' | 'running';
   /** 队列位次（从 1 开始） */
@@ -62,6 +65,10 @@ export interface TaskFinishInfo {
 export interface TaskHooks {
   onLog: (stream: 'stdout' | 'stderr', data: string) => void;
   onStatus: (status: TaskStatus, info?: TaskFinishInfo) => void;
+  /** 步骤流（仅适配器声明了 steps 格式的工具会触发；seq 从 1 单调递增，finished 按 ref 配对不另占号） */
+  onStep?: (step: ParsedStep & { seq: number }) => void;
+  /** 待办计划快照（TodoWrite 类工具；每次调用覆盖，items 为空表示无计划能力/未调用） */
+  onPlan?: (items: PlanItem[]) => void;
 }
 
 export interface TaskHandle {
@@ -75,10 +82,10 @@ export type TaskState = 'queued' | 'running' | 'settled';
 
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 export const KILL_GRACE_MS = 2000;
-/** 默认并发上限：几个大模型 CLI 同时跑就能卡死整机 */
-export const DEFAULT_MAX_TASKS = 3;
-/** 默认队列上限：再长的排队对调用方也没意义 */
-export const DEFAULT_MAX_QUEUED = 32;
+/** 默认并发上限：30（2026-10-24 面向平台批量调度调整，原为 3）；防呆夹取上限见 config.ts */
+export const DEFAULT_MAX_TASKS = 30;
+/** 默认队列上限：再长的排队对调用方也没意义（2026-10-24 由 32 调整为 60） */
+export const DEFAULT_MAX_QUEUED = 60;
 
 interface Entry {
   req: RunTaskRequest;
@@ -87,11 +94,29 @@ interface Entry {
   argv: string[];
   state: TaskState;
   status: TaskStatus;
+  /** 终态快照（含 diff 产物）：settle 时计算一次，幂等重放直接复用，不重跑 git */
+  finishInfo?: TaskFinishInfo;
+  /** 步骤流格式（适配器声明）；有值时 launch 挂解析器 */
+  stepFormat?: StepFormat;
+  /** 步骤解析器实例（launch 时创建；settle 时用于提取最终回答） */
+  stepParser?: import('../adapters/step-parsers.js').StepParser;
+  /** 已发出的步骤数（seq 分配器） */
+  stepSeq: number;
+  /** ref → seq：finished 事件配对回同一步，不另占序号（tool_use/tool_result 不拆成两步） */
+  stepRefs: Map<string, number>;
   child?: ChildProcess;
   timer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
   resolve: (s: TaskStatus) => void;
   done: Promise<TaskStatus>;
+}
+
+/** 容量水位快照：每次调度状态变化后广播一次（A2） */
+export interface CapacitySnapshot {
+  running: number;
+  queued: number;
+  maxTasks: number;
+  maxQueued: number;
 }
 
 /**
@@ -143,6 +168,15 @@ export class TaskSupervisor {
   private running = 0;
   private readonly queue: Entry[] = [];
   private maxTasks: number;
+  /**
+   * 幂等去重表（A1）：WS 重发同一 taskId 不重复 spawn。
+   * 终态条目保留用于终态回放；有界 LRU（只淘汰已终态的，活跃任务绝不被挤出）。
+   */
+  private readonly byId = new Map<string, Entry>();
+  private static readonly MAX_TRACKED = 1000;
+  /** 最近一次提交生效的队列上限（上限本是请求级字段，水位上报取最近值） */
+  private lastMaxQueued = DEFAULT_MAX_QUEUED;
+  private readonly capacityListeners = new Set<(s: CapacitySnapshot) => void>();
 
   constructor(maxConcurrent = DEFAULT_MAX_TASKS) {
     this.maxTasks = maxConcurrent > 0 ? Math.floor(maxConcurrent) : DEFAULT_MAX_TASKS;
@@ -156,8 +190,80 @@ export class TaskSupervisor {
     return this.queue.length;
   }
 
+  /** 订阅容量水位（每次调度状态变化后回调一次；回调异常不影响调度） */
+  subscribeCapacity(fn: (s: CapacitySnapshot) => void): () => void {
+    this.capacityListeners.add(fn);
+    return () => this.capacityListeners.delete(fn);
+  }
+
+  capacitySnapshot(): CapacitySnapshot {
+    return {
+      running: this.running,
+      queued: this.queue.length,
+      maxTasks: this.maxTasks,
+      maxQueued: this.lastMaxQueued,
+    };
+  }
+
+  private notifyCapacity(): void {
+    const snap = this.capacitySnapshot();
+    for (const fn of this.capacityListeners) {
+      try {
+        fn(snap);
+      } catch {
+        /* 观察者绝不阻断调度 */
+      }
+    }
+  }
+
+  /** 登记任务并按 LRU 淘汰最旧的已终态条目（活跃任务不淘汰，宁可暂时超限） */
+  private track(entry: Entry): void {
+    this.byId.set(entry.req.taskId, entry);
+    if (this.byId.size <= TaskSupervisor.MAX_TRACKED) return;
+    for (const [id, e] of this.byId) {
+      if (e.state === 'settled') {
+        this.byId.delete(id);
+        break;
+      }
+    }
+  }
+
+  /** 取消逻辑收口：首个句柄与幂等重放句柄共用（取消本身是幂等的） */
+  private cancelEntry(entry: Entry): void {
+    if (entry.state === 'settled') return;
+    if (entry.state === 'queued') {
+      this.settle(entry, 'cancelled', { error: '任务已取消（排队中被取消）', errorCode: 'cancelled' });
+      return;
+    }
+    entry.status = 'cancelled';
+    this.terminate(entry);
+  }
+
+  /**
+   * 幂等重放（A1）：同一 taskId 重复提交时不再 spawn。
+   * 未终态回当前状态快照；已终态回放终态快照。平台断线重发场景靠它对账。
+   */
+  private replay(entry: Entry, hooks: TaskHooks): TaskHandle {
+    if (entry.state === 'settled') {
+      hooks.onStatus(entry.status, entry.finishInfo ?? {});
+    } else if (entry.state === 'queued') {
+      hooks.onStatus('running', {
+        phase: 'queued',
+        queuePosition: this.queue.indexOf(entry) + 1,
+        error: '任务已存在（幂等去重，未重复执行）',
+      });
+    } else {
+      hooks.onStatus('running');
+    }
+    return { taskId: entry.req.taskId, cancel: () => this.cancelEntry(entry), done: entry.done };
+  }
+
   /** 提交任务：校验 → 排队或立即启动。返回句柄（可取消、可 await 终态） */
   submit(req: RunTaskRequest, hooks: TaskHooks): TaskHandle {
+    // 幂等去重在最前：重发一律回放，不重复校验、不重复 spawn
+    const dup = this.byId.get(req.taskId);
+    if (dup) return this.replay(dup, hooks);
+
     const def = agentDefOf(req.agentType);
     if (!def) {
       return reject(req, hooks, 'tool_not_installed', `不支持的工具：${req.agentType}`);
@@ -187,6 +293,7 @@ export class TaskSupervisor {
     if (req.maxConcurrent && req.maxConcurrent > 0) this.maxTasks = Math.floor(req.maxConcurrent);
     const maxQueued =
       req.maxQueued !== undefined && req.maxQueued >= 0 ? Math.floor(req.maxQueued) : DEFAULT_MAX_QUEUED;
+    this.lastMaxQueued = maxQueued;
 
     if (this.running >= this.maxTasks && this.queue.length >= maxQueued) {
       return reject(
@@ -208,9 +315,13 @@ export class TaskSupervisor {
       argv,
       state: 'queued',
       status: 'running',
+      stepFormat: def.steps,
+      stepSeq: 0,
+      stepRefs: new Map(),
       resolve,
       done,
     };
+    this.track(entry);
 
     // timeoutMs 从入队开始算：排队也是调用方的等待时间
     entry.timer = setTimeout(() => {
@@ -232,18 +343,11 @@ export class TaskSupervisor {
         error: `排队中（第 ${this.queue.length} 位，并发上限 ${this.maxTasks}）`,
       });
     }
+    this.notifyCapacity();
 
     return {
       taskId: req.taskId,
-      cancel: () => {
-        if (entry.state === 'settled') return;
-        if (entry.state === 'queued') {
-          this.settle(entry, 'cancelled', { error: '任务已取消（排队中被取消）', errorCode: 'cancelled' });
-          return;
-        }
-        entry.status = 'cancelled';
-        this.terminate(entry);
-      },
+      cancel: () => this.cancelEntry(entry),
       done,
     };
   }
@@ -281,8 +385,30 @@ export class TaskSupervisor {
         });
     entry.child = child;
 
+    // 步骤流解析器（B 批次）：仅声明了 steps 格式的工具；stdout 原样上行 task_log 不受影响
+    const stepParser = entry.stepFormat ? createStepParser(entry.stepFormat) : undefined;
+    entry.stepParser = stepParser;
+
     const emit = (stream: 'stdout' | 'stderr', buf: Buffer): void => {
-      for (const piece of chunkLog(buf.toString('utf8'))) entry.hooks.onLog(stream, piece);
+      const text = buf.toString('utf8');
+      for (const piece of chunkLog(text)) entry.hooks.onLog(stream, piece);
+      if (stepParser && stream === 'stdout' && entry.hooks.onStep) {
+        for (const step of stepParser.feed(text)) {
+          // finished 按 ref 配对回 started 的序号：tool_use/tool_result 是**同一步**的两半，
+          // 不能各占一个 seq（否则时间线会把一步显示成两步，且 started 永远悬在"进行中"）
+          const paired = step.state === 'finished' && step.ref !== undefined ? entry.stepRefs.get(step.ref) : undefined;
+          if (paired !== undefined) {
+            entry.hooks.onStep({ ...step, seq: paired });
+            continue;
+          }
+          entry.stepSeq += 1;
+          if (step.ref !== undefined) entry.stepRefs.set(step.ref, entry.stepSeq);
+          entry.hooks.onStep({ ...step, seq: entry.stepSeq });
+        }
+        // 待办计划（TodoWrite 类工具）：解析器每次产出最新快照即上行
+        const plan = stepParser.plan?.();
+        if (plan && entry.hooks.onPlan) entry.hooks.onPlan(plan);
+      }
     };
     child.stdout?.on('data', (b: Buffer) => emit('stdout', b));
     child.stderr?.on('data', (b: Buffer) => emit('stderr', b));
@@ -332,6 +458,12 @@ export class TaskSupervisor {
     if (entry.timer) clearTimeout(entry.timer);
     if (entry.killTimer) clearTimeout(entry.killTimer);
 
+    // 最终回答：步骤解析器从事件流提取（C 批次；面板结果视图与平台同享），上限 16KB
+    const resultText = entry.stepParser?.finalText?.();
+    if (resultText && info.result === undefined) {
+      info = { ...info, result: resultText.length > 16_384 ? `${resultText.slice(0, 16_384)}…` : resultText };
+    }
+
     if (entry.state === 'running') {
       this.running = Math.max(0, this.running - 1);
     } else {
@@ -340,9 +472,12 @@ export class TaskSupervisor {
     }
     entry.state = 'settled';
     entry.status = status;
-    entry.hooks.onStatus(status, withDiff(entry.req, info));
+    // 终态快照存 entry：幂等重放直接用，不重跑 git diff
+    entry.finishInfo = withDiff(entry.req, info);
+    entry.hooks.onStatus(status, entry.finishInfo);
     entry.resolve(status);
     this.pump();
+    this.notifyCapacity();
   }
 }
 

@@ -15,6 +15,8 @@ export const C = {
   green: (s: string) => paint('32', s),
   yellow: (s: string) => paint('33', s),
   red: (s: string) => paint('31', s),
+  blue: (s: string) => paint('34', s),
+  underline: (s: string) => paint('4', s),
   bold: (s: string) => paint('1', s),
 };
 

@@ -14,24 +14,30 @@ Bind this machine to a platform and stay connected.
 
 ```bash
 agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-browser] [--label=name]
+    [--max-tasks=30] [--max-queue=60]
 ```
 
 | Flag | Meaning |
 | --- | --- |
-| `--token` | Use an existing device token instead of the browser flow (CI / scripted rollouts). Pair it with `--device-id`. |
-| `--device-id` | Device id, e.g. `bd_9f1c…`. Also settable via `AGENT_BRIDGE_DEVICE_ID`. |
+| `--token` | Use an existing device token instead of the browser flow (CI / scripted rollouts). Requires a persisted, migratable, or explicit stable ID; startup fails without one. |
+| `--device-id` | Stable device id matching `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`. Also settable via `AGENT_BRIDGE_DEVICE_ID`; can migrate or confirm identity, never override a different stored ID. |
 | `--no-browser` | Use the device-code flow instead of opening a browser (SSH, headless). |
 | `--label` | A human label for the device. |
+| `--max-tasks` | Concurrency cap for this session (default 30, clamped 1–128). |
+| `--max-queue` | Queue cap for this session (default 60, clamped 0–1024; 0 = no queueing). |
 
-With no flags, it opens your browser, completes PKCE, stores the token `0600`, and opens the
-outbound WebSocket.
+Precedence: startup flags > env (`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE`) > config.toml > defaults.
+
+With no flags, it persists or reuses the stable identity before opening your browser, completes PKCE,
+stores the token, and opens the outbound WebSocket. The authorization request, WS URL query, and
+`hello.deviceId` all carry that same ID. A pre-issued `--token` never causes a new ID to be generated.
 
 ## serve
 
 Same main flow as `connect`, plus the **optional** loopback control plane.
 
 ```bash
-agent-bridge serve <platformUrl> [--port=8787]
+agent-bridge serve <platformUrl> [--port=8787] [--max-tasks=30] [--max-queue=60]
 ```
 
 - With `--port` (or `[control_plane] enabled = true` in config), a loopback HTTP API starts for
@@ -58,7 +64,8 @@ path and credential source.
 
 ## logout
 
-Delete the local device credential. The device must bind again before it can be used.
+Delete the local device credential while preserving `identity.toml`, the config mirror, and settings.
+After revocation, run `logout` → `connect`: authorization binds the same device ID again.
 
 ```bash
 agent-bridge logout

@@ -50,17 +50,20 @@ agent-bridge connect https://your-platform.example.com \
   --token=dt_xxx --device-id=bd_xxx
 ```
 
-用 `--token` 时请同时给 `--device-id`（或设 `AGENT_BRIDGE_DEVICE_ID`），否则平台要按令牌反查设备。
+预签发 token 本身不带身份。bridge 必须从本地状态取得稳定 ID，或从 `--device-id` /
+`AGENT_BRIDGE_DEVICE_ID` 迁移；都没有时启动明确失败，不会随机生成 ID、发送空 ID 或依赖 Bearer 反查。
 
 ## 状态文件在哪
 
 | 文件 | 路径 | 内容 |
 | --- | --- | --- |
-| 配置 | `~/.agent-bridge/config.toml`（Windows：`%APPDATA%\.agent-bridge\config.toml`） | `platformUrl`、`deviceId`、`max_tasks`、控制面设置 |
-| 设备凭据 | 同目录 | `device_token`，权限 `0600` |
+| 身份（唯一真源） | `~/.agent-bridge/identity.toml`（Windows：`%APPDATA%\.agent-bridge\identity.toml`） | 稳定 `deviceId` |
+| 配置 | `~/.agent-bridge/config.toml`（Windows：`%APPDATA%\.agent-bridge\config.toml`） | `platformUrl`、`deviceToken`、`deviceId` 兼容镜像、`max_tasks`、控制面设置 |
 | 服务令牌 | `~/.agent-bridge/services.toml` | 已签发的 `abs_…` 令牌（只存哈希） |
 
-用 `AGENT_BRIDGE_CONFIG` 可覆盖配置路径。
+`AGENT_BRIDGE_CONFIG` 指向某个 profile 的 `config.toml`，其父目录就是 profile，也保存 `identity.toml`。
+卸载重装时保留该目录即可复用原 ID。只删除 `identity.toml` 会从配置镜像恢复；删除整个 profile 才是新安装。
+`logout` 保留身份与设置，因此 `logout` → `connect` 会用原 ID 重新绑定。
 
 ## 跑第一个任务
 

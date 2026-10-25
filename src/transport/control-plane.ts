@@ -17,9 +17,14 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { extname, resolve as resolvePath, sep } from 'node:path';
 import { Emitter, type Upstream } from '../core/emitter.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
 import type { SessionLog } from '../app/session-log.js';
+import type { TaskRegistry } from '../app/task-registry.js';
+import { DASHBOARD_HTML } from './control-plane-page.js';
+import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
 import type { ClientMessage, AgentListItem } from '../protocol.js';
 import {
   verifyServiceToken,
@@ -41,6 +46,8 @@ export interface ControlPlaneDeps {
   emitter: Emitter;
   /** 任务提交（注入 `TaskSupervisor.submit`，便于单测替换） */
   startTask: (req: RunTaskRequest, hooks: TaskHooks) => TaskHandle;
+  /** 任务注册表（与终端面板共享同一视图） */
+  registry: TaskRegistry;
   scan: (opts: { fresh?: boolean }) => Promise<AgentListItem[]>;
   log: SessionLog;
   /** 能力清单（与 `hello.capabilities` 同源） */
@@ -215,7 +222,12 @@ export async function startControlPlane(
     if (!requireToken) return true;
     const header = ctx.req.headers['authorization'];
     const raw = Array.isArray(header) ? header[0] : header;
-    const token = raw?.startsWith('Bearer ') ? raw.slice(7).trim() : undefined;
+    let token = raw?.startsWith('Bearer ') ? raw.slice(7).trim() : undefined;
+    // EventSource 无法自定义请求头：回环面板允许 ?token= 兜底（仅本机回环，文档写明勿外发）
+    if (!token) {
+      const q = ctx.url.searchParams.get('token');
+      token = q && q.trim() ? q.trim() : undefined;
+    }
     const res = verify(token, scope);
     const at = new Date().toISOString();
     if (res.ok) {
@@ -273,6 +285,7 @@ export async function startControlPlane(
         '/v1/capabilities',
         '/v1/agents',
         '/v1/agents:scan',
+        '/v1/board',
         '/v1/tasks',
         '/v1/tasks/{id}',
         '/v1/tasks/{id}:cancel',
@@ -322,6 +335,7 @@ export async function startControlPlane(
       updatedAt: new Date().toISOString(),
     };
     remember(record);
+    deps.registry.register(taskId, { agentType, cwd, source: 'control-plane' });
     if (idem) {
       idempotency.set(idem, taskId);
       if (idempotency.size > MAX_IDEMPOTENCY_KEYS) {
@@ -348,7 +362,16 @@ export async function startControlPlane(
       {
         onLog: (_stream, data) =>
           deps.emitter.emit({ type: 'task_log', taskId, stream: _stream, data, isAnsi: true }),
+        // 步骤流（B 批次）：控制面任务与平台任务同口径上行
+        onStep: (step) => {
+          deps.registry.updateStep(taskId, step);
+          deps.emitter.emit({ type: 'task_step', taskId, ...step, at: new Date().toISOString() });
+        },
+        onPlan: (items) => {
+          deps.registry.updatePlan(taskId, items);
+        },
         onStatus: (status: TaskStatus, info?: TaskFinishInfo) => {
+          deps.registry.updateStatus(taskId, status, info);
           const prev = records.get(taskId) ?? record;
           remember({
             ...prev,
@@ -417,16 +440,127 @@ export async function startControlPlane(
 
   const handleDiff = (ctx: RouteContext, id: string): void => {
     const rec = records.get(id);
-    if (!rec) {
+    // 平台任务没有控制面 records 台账：用共享注册表兜底，保证结果页双通道一致
+    const viewFromRegistry = deps.registry.get(id);
+    if (!rec && !viewFromRegistry) {
       problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
       return;
     }
     json(ctx.res, 200, {
       taskId: id,
-      diff: rec.diff ?? '',
-      changedFiles: rec.changedFiles ?? [],
-      diffTruncated: rec.diffTruncated ?? false,
+      diff: rec?.diff ?? viewFromRegistry?.diff ?? '',
+      changedFiles: rec?.changedFiles ?? viewFromRegistry?.changedFiles ?? [],
+      diffTruncated: rec?.diffTruncated ?? viewFromRegistry?.diffTruncated ?? false,
     });
+  };
+
+  /** 步骤时间线（C 批次）：任务注册表出完整步骤序列 + 最终回答 */
+  const handleSteps = (ctx: RouteContext, id: string): void => {
+    const v = deps.registry.get(id);
+    if (!v) {
+      problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
+      return;
+    }
+    json(ctx.res, 200, {
+      taskId: id,
+      status: v.status,
+      phase: v.phase,
+      queuePosition: v.queuePosition,
+      stepCount: v.stepCount,
+      steps: v.steps,
+      plan: v.plan,
+      finalText: v.finalText,
+      error: v.error,
+    });
+  };
+
+  /** 文件预览（结果查看入口）：只读、锁任务 cwd、≤512KB、按扩展名给 content-type */
+  const MAX_FILE_PREVIEW = 512 * 1024;
+  const CONTENT_TYPES: Record<string, string> = {
+    '.md': 'text/markdown; charset=utf-8',
+    '.markdown': 'text/markdown; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.htm': 'text/html; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.json': 'application/json; charset=utf-8',
+    '.csv': 'text/csv; charset=utf-8',
+    '.tsv': 'text/tab-separated-values; charset=utf-8',
+    '.pdf': 'application/pdf',
+    '.docx': OFFICE_MIME_TYPES['.docx']!,
+    '.xlsx': OFFICE_MIME_TYPES['.xlsx']!,
+    '.pptx': OFFICE_MIME_TYPES['.pptx']!,
+  };
+  const handleFilePreview = (ctx: RouteContext, id: string): void => {
+    const cwd = deps.registry.cwdOf(id);
+    if (!cwd) {
+      problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
+      return;
+    }
+    const rel = ctx.url.searchParams.get('path') ?? '';
+    if (!rel) {
+      problem(ctx.res, 400, 'protocol_incompatible', '缺少 path 参数');
+      return;
+    }
+    const abs = resolvePath(cwd, rel);
+    // 防穿越：解析后必须仍在任务 cwd 内
+    if (abs !== cwd && !abs.startsWith(cwd.endsWith(sep) ? cwd : cwd + sep)) {
+      problem(ctx.res, 403, 'cwd_not_allowed', '路径越出任务工作目录');
+      return;
+    }
+    // allowed_cwd 白名单（配置时才生效）——任务提交时已查过，这里纵深再查一次
+    const allowed = deps.defaults.allowedCwd;
+    if (allowed && allowed.length > 0) {
+      const ok = allowed.some((root) => {
+        const r = resolvePath(root);
+        return abs === r || abs.startsWith(r.endsWith(sep) ? r : r + sep);
+      });
+      if (!ok) {
+        problem(ctx.res, 403, 'cwd_not_allowed', '路径不在 allowed_cwd 范围');
+        return;
+      }
+    }
+    let st;
+    try {
+      st = statSync(abs);
+    } catch {
+      problem(ctx.res, 404, 'internal', `文件不存在：${rel}`);
+      return;
+    }
+    if (!st.isFile()) {
+      problem(ctx.res, 400, 'protocol_incompatible', '不是文件');
+      return;
+    }
+    if (st.size > MAX_FILE_PREVIEW) {
+      problem(ctx.res, 413, 'internal', `文件超过 512KB 预览上限（${st.size} 字节）`);
+      return;
+    }
+    const ctype = CONTENT_TYPES[extname(abs).toLowerCase()] || 'application/octet-stream';
+    const isBinaryPreview = ctype.startsWith('image/') || ctype === 'application/pdf' || ctype.includes('officedocument');
+    const maxBytes = isBinaryPreview ? 20 * 1024 * 1024 : MAX_FILE_PREVIEW;
+    if (st.size > maxBytes) {
+      problem(ctx.res, 413, 'internal', `文件超过 ${maxBytes / 1024 / 1024}MB 预览上限（${st.size} 字节）`);
+      return;
+    }
+    if (ctx.url.searchParams.get('render') === '1') {
+      const html = renderOfficePreview(abs);
+      if (html) {
+        ctx.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        ctx.res.end(html);
+        return;
+      }
+    }
+    if (ctx.req.method === 'HEAD') {
+      ctx.res.writeHead(200, { 'content-type': ctype, 'content-length': String(st.size), 'cache-control': 'no-store' });
+      ctx.res.end();
+      return;
+    }
+    ctx.res.writeHead(200, { 'content-type': ctype, 'content-length': String(st.size), 'cache-control': 'no-store' });
+    ctx.res.end(readFileSync(abs));
   };
 
   const handleCancel = (ctx: RouteContext, id: string): void => {
@@ -463,7 +597,9 @@ export async function startControlPlane(
     const send = (msg: Upstream): void => {
       const m = msg as ClientMessage;
       const belongs =
-        (m.type === 'task_log' || m.type === 'task_status') && 'taskId' in m && m.taskId === id;
+        (m.type === 'task_log' || m.type === 'task_status' || m.type === 'task_step') &&
+        'taskId' in m &&
+        m.taskId === id;
       if (!belongs) return;
       try {
         ctx.res.write(`data: ${JSON.stringify(m)}\n\n`);
@@ -513,6 +649,32 @@ export async function startControlPlane(
         const ctx: RouteContext = { req, res, url, body };
 
         if (path === '/v1/health') return handleHealth(ctx);
+        if (path === '/favicon.ico' && req.method === 'GET') {
+          ctx.res.writeHead(204);
+          ctx.res.end();
+          return;
+        }
+        // Web 任务面板（C 批次）：页面壳免令牌（不含数据），数据仍走带鉴权的 /v1/* 端点
+        if (path === '/' && req.method === 'GET') {
+          ctx.res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          ctx.res.end(DASHBOARD_HTML);
+          return;
+        }
+        // 面板聚合视图：任务注册表（与终端面板同源）+ 计数 + 容量
+        if (path === '/v1/board' && req.method === 'GET') {
+          if (!authorize(ctx, 'task:read')) return;
+          json(ctx.res, 200, {
+            counts: deps.registry.counts(),
+            capacity: {
+              running: deps.registry.counts().running,
+              queued: deps.registry.counts().queued,
+              maxTasks: deps.defaults.maxConcurrent,
+              maxQueued: deps.defaults.maxQueued,
+            },
+            tasks: deps.registry.list(),
+          });
+          return;
+        }
         if (path === '/v1/capabilities') {
           if (!authorize(ctx, 'device:read')) return;
           return handleCapabilities(ctx);
@@ -534,13 +696,21 @@ export async function startControlPlane(
           return handleCreateTask(ctx);
         }
         // id 不含 `/` 与 `:`：否则 `:cancel` 会被贪婪的 id 部分吃掉
-        const m = path.match(/^\/v1\/tasks\/([^/:]+)(:cancel|\/events|\/diff)?$/);
+        const m = path.match(/^\/v1\/tasks\/([^/:]+)(:cancel|\/events|\/diff|\/steps|\/file)?$/);
         if (m) {
           const id = decodeURIComponent(m[1] as string);
           const suffix = m[2] ?? '';
           if (suffix === '/events') {
             if (!authorize(ctx, 'task:read')) return;
             return handleEvents(ctx, id);
+          }
+          if (suffix === '/steps') {
+            if (!authorize(ctx, 'task:read')) return;
+            return handleSteps(ctx, id);
+          }
+          if (suffix === '/file') {
+            if (!authorize(ctx, 'task:read')) return;
+            return handleFilePreview(ctx, id);
           }
           if (suffix === ':cancel' && req.method === 'POST') {
             if (!authorize(ctx, 'task:cancel')) return;

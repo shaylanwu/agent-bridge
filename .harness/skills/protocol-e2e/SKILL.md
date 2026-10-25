@@ -28,9 +28,9 @@ node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs
 | # | 断言 |
 | --- | --- |
 | 1 | WS 升级携带 `Authorization: Bearer` 才放行 |
-| 2 | `hello.protocolVersion === 1` |
+| 2 | `hello.protocolVersion === 2`，且 WS `deviceId` query 与 `hello.deviceId` 相同 |
 | 3 | `ping` → `pong` 往返 |
-| 4 | `agent_list` 上报 11 个工具 |
+| 4 | `agent_list` 上报数量与适配器注册表一致（当前 12 个） |
 | 5 | `scan` → `scan_result` 且 `requestId` 配对 |
 | 6 | 非法 `agentType` 被本地拒为 `failed`（不 spawn） |
 | 7 | 真实 CLI 任务 → `task_log` 非空 + `success` + `exitCode 0` |
@@ -49,6 +49,6 @@ node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs
 ## 已知坑（脚本已按此实现，改脚本时别退回去）
 
 1. **不能用首个 `task_status` 当终态**：`running` 先到，必须过滤掉（早期联调就是这样丢了 `exitCode`）；
-2. **`--token` 模式下 `deviceId` 是空串**：`?deviceId=` 与 `hello.deviceId=""`，mock 不能靠它路由；
+2. **`--token` 模式必须携带合法稳定 `deviceId`**：smoke 显式传 `--device-id=bd_0123456789abcdef0123456789abcdef`，并断言 WS query 与 hello 同值；空 ID 连接会被拒绝；
 3. **平台断线期间的 `task_log` 会被 bridge 丢弃**：mock 必须在同一条连接内完成断言；
 4. **`AGENT_BRIDGE_CONFIG` 必须指到临时目录**：否则会覆盖开发者真实的 `config.toml`。

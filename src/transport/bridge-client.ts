@@ -7,7 +7,8 @@
 
 import { WebSocket } from 'ws';
 import { Outbox } from './outbox.js';
-import { PROTOCOL_CAPABILITIES, type ClientMessage, type ServerMessage } from '../protocol.js';
+import { assertDeviceId } from '../core/device-identity.js';
+import { PROTOCOL_CAPABILITIES, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from '../protocol.js';
 
 export interface BridgeClientOptions {
   platformUrl: string;
@@ -15,6 +16,8 @@ export interface BridgeClientOptions {
   deviceId: string;
   cliVersion: string;
   hostname: string;
+  /** 本次会话生效的调度额度（随 hello 上报；平台据此做有水位线的派发） */
+  capacity?: { maxTasks: number; maxQueued: number };
   onMessage: (msg: ServerMessage) => void;
   onOpen?: () => void;
   onClose?: (reason: string) => void;
@@ -30,33 +33,14 @@ export interface BridgeClient {
 const HEARTBEAT_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;
 
-/**
- * WS 入口地址。`deviceId` 为空时**不拼查询参数**（发 `?deviceId=` 空值会让平台误以为设备 ID 是空串）。
- * 这时平台必须按 `Authorization: Bearer` 反查设备 —— 见 README 的 CI 用法。
- */
+/** WS 与 hello 共用同一个经过校验的稳定身份，不再允许空 ID 降级。 */
 export function wsUrlOf(platformUrl: string, deviceId: string): string {
+  const stableDeviceId = assertDeviceId(deviceId);
   const u = new URL(platformUrl);
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
   u.pathname = '/api/bridge/ws';
-  u.search = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
+  u.search = `?deviceId=${encodeURIComponent(stableDeviceId)}`;
   return u.toString();
-}
-
-/**
- * `--token` 模式下的设备 ID 解析：授权响应 > 显式 flag > 环境变量 > 已保存配置。
- * 全是空就返回空串（调用方负责提示平台按 token 反查），不阻断连接。
- */
-export function resolveDeviceId(input: {
-  fromAuth?: string;
-  flag?: string;
-  env?: string;
-  saved?: string;
-}): string {
-  for (const v of [input.fromAuth, input.flag, input.env, input.saved]) {
-    const t = (v ?? '').trim();
-    if (t) return t;
-  }
-  return '';
 }
 
 export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
@@ -101,13 +85,15 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       log('[agent-bridge] 已连接平台');
       send({
         type: 'hello',
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         deviceId: opts.deviceId,
         cliVersion: opts.cliVersion,
         platform: process.platform,
         hostname: opts.hostname,
         // 能力协商：让任意第三方平台自己判断能用哪些可选能力，而不是猜 CLI 版本号
         capabilities: [...PROTOCOL_CAPABILITIES],
+        // 容量水位（A2）：握手即知上限，不必等 device_busy 试错
+        ...(opts.capacity ? { capacity: opts.capacity } : {}),
       });
       flush();
       opts.onOpen?.();
@@ -140,7 +126,7 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       if (closedByUs) return;
       // 401/403 说明 token 失效或被吊销：不要无脑重连，交给上层提示重新绑定
       if (code === 4401 || code === 4403) {
-        log('[agent-bridge] 设备凭证被撤销，请重新执行 agent-bridge connect');
+        log('[agent-bridge] 设备凭证失效或被撤销，请先执行 agent-bridge logout，再重新 connect；设备身份保持不变');
         return;
       }
       const wait = backoff;

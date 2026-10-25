@@ -2,9 +2,9 @@
 
 > **第一红线：`.harness/` 下所有配置仅限人工维护，AI Agent 绝对禁止修改/删除**（`.harness/work/` 运行时目录除外）。见 `rules/always-on.md`。
 
-## 这个仓库的护栏重点（与 e2e-pilot 的差异）
+## 这个仓库的护栏重点
 
-e2e-pilot 是 monorepo，护栏重点是**分包依赖边界 + DB 迁移**。agent-bridge 是单包 CLI，真实风险完全不同：
+护栏重点是**分包依赖边界 + DB 迁移**。agent-bridge 是单包 CLI，真实风险完全不同：
 
 | 风险 | 对应护栏 |
 | --- | --- |

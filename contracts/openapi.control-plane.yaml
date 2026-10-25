@@ -26,6 +26,18 @@ tags:
   - name: device
   - name: tasks
 paths:
+  /:
+    get:
+      tags: [device]
+      summary: 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点）
+      description: |
+        终端面板（TTY 状态表）之外的交互表面：四态任务表 + 每行日志按钮
+        （执行中走 SSE 实时流，排队中置灰，终态看环形缓冲回放）。
+        EventSource 无法自定义请求头，故所有端点额外接受 `?token=` query 兜底
+        （与 Bearer 同口径校验；仅本机回环，令牌勿外发）。
+      security: []
+      responses:
+        '200': { description: text/html 页面壳 }
   /v1/health:
     get:
       tags: [device]
@@ -104,6 +116,36 @@ paths:
       summary: Trigger a fresh scan (same as GET /v1/agents?fresh=true)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/board:
+    get:
+      tags: [tasks]
+      summary: 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      running: { type: integer }
+                      queued: { type: integer }
+                      success: { type: integer }
+                      failed: { type: integer }
+                  capacity:
+                    type: object
+                    properties:
+                      running: { type: integer }
+                      queued: { type: integer }
+                      maxTasks: { type: integer }
+                      maxQueued: { type: integer }
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/BoardTask' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/tasks:
     get:
@@ -194,6 +236,61 @@ paths:
             text/event-stream:
               schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/tasks/{id}/steps:
+    get:
+      tags: [tasks]
+      summary: 步骤时间线（完整步骤序列 + 最终回答文本）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  taskId: { type: string }
+                  status: { type: string }
+                  phase: { type: string }
+                  stepCount: { type: integer }
+                  steps:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        seq: { type: integer }
+                        action: { type: string }
+                        label: { type: string }
+                        state: { type: string, enum: [started, finished] }
+                        ok: { type: boolean }
+                        at: { type: integer, format: int64 }
+                        finishedAt: { type: integer, format: int64 }
+                  plan:
+                    type: array
+                    description: 待办计划快照（TodoWrite 类工具；全部 12 个工具的 7 族解析器均支持）
+                    items:
+                      type: object
+                      properties:
+                        text: { type: string }
+                        state: { type: string, enum: [pending, in_progress, completed] }
+                  finalText: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/tasks/{id}/file:
+    get:
+      tags: [tasks]
+      summary: 任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string }, description: 相对任务 cwd 的路径 }
+      responses:
+        '200': { description: 文件内容（content-type 按扩展名：md/html/图片/文本） }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 路径越出任务工作目录或不在 allowed_cwd }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { description: 超过预览上限 }
   /v1/tasks/{id}/diff:
     get:
       tags: [tasks]
@@ -279,6 +376,7 @@ components:
         version: { type: [string, 'null'] }
         path: { type: [string, 'null'] }
         installedButBroken: { type: boolean }
+        steps: { type: boolean, description: 是否支持 task_step 步骤流 }
     CreateTask:
       type: object
       properties:
@@ -293,6 +391,29 @@ components:
         requestedBy: { type: string }
         purpose: { type: string }
       required: [agentType, cwd]
+    BoardTask:
+      type: object
+      description: 面板任务行（task-registry 的视图；与 TaskRecord 台账不同源——这是实时聚合）
+      properties:
+        taskId: { type: string }
+        agentType: { type: string }
+        cwdShort: { type: string, description: 目录 basename（面板不暴露全路径） }
+        source: { type: string, enum: [platform, control-plane] }
+        status: { type: string, enum: [running, success, failed, cancelled, timeout] }
+        phase: { type: string, enum: [queued, running] }
+        queuePosition: { type: integer }
+        error: { type: string }
+        currentStep:
+          type: object
+          properties:
+            seq: { type: integer }
+            action: { type: string }
+            label: { type: string }
+        stepCount: { type: integer }
+        createdAt: { type: integer, format: int64 }
+        startedAt: { type: integer, format: int64 }
+        settledAt: { type: integer, format: int64 }
+      required: [taskId, agentType, cwdShort, source, status, stepCount, createdAt]
     TaskRecord:
       type: object
       properties:

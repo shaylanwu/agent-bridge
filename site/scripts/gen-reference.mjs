@@ -140,8 +140,8 @@ const PLATFORM_I18N = {
     'zh-cn': ['浏览器授权页', 'bridge 会用系统默认浏览器打开该 URL。复用用户已有登录态，确认后带 `code` 302 回 `redirect_uri`。'],
   },
   'POST /api/bridge/token': {
-    en: ['Exchange the authorization code', 'The bridge calls this after receiving `code`. You MUST verify `code_verifier` against the S256 challenge: `base64url(sha256(code_verifier)) === code_challenge`.'],
-    'zh-cn': ['用授权码换取 device_token', 'bridge 拿到 `code` 后调用。**必须校验 code_verifier 满足 S256**：`base64url(sha256(code_verifier)) === 之前下发的 code_challenge`。'],
+    en: ['Exchange the authorization code', 'The bridge calls this after receiving `code`. You MUST verify `codeVerifier` against the S256 challenge: `base64url(sha256(codeVerifier)) === code_challenge`.'],
+    'zh-cn': ['用授权码换取 device_token', 'bridge 拿到 `code` 后调用。**必须校验 codeVerifier 满足 S256**：`base64url(sha256(codeVerifier)) === 之前下发的 code_challenge`。'],
   },
   'POST /api/bridge/device-code': {
     en: ['Request a device code', 'For browserless / SSH environments: hand out a short `user_code` the user confirms elsewhere.'],

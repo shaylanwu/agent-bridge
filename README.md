@@ -44,6 +44,10 @@ small JSON protocol over HTTP + WebSocket.
   replayed from the platform's history.
 - **Resilient connection** — 15 s heartbeat, exponential backoff (1 s → 30 s), buffered status messages
   replayed after reconnect.
+- **Terminal task board** — `connect` / `serve` show a resident status table in a TTY (four-state dots,
+  current step per task, elapsed, capacity water level); task logs never scroll the main window. Per-task
+  logs live behind a button in the Web dashboard (address printed when `serve` starts the control plane),
+  streamed live over SSE while a task is running.
 - **Secrets stay put** — the bridge never reads or uploads API keys or credential files; it only reports
   whether they exist.
 
@@ -75,7 +79,7 @@ agent-bridge connect https://platform.example.com
 agent-bridge connect https://platform.example.com --no-browser
 
 # CI or scripted setup: use a device token issued by the platform
-# (--device-id is optional; also read from AGENT_BRIDGE_DEVICE_ID)
+# A stable ID must come from local state, --device-id, or AGENT_BRIDGE_DEVICE_ID
 agent-bridge connect https://platform.example.com --token=<device-token> --device-id=<device-id>
 
 # Inspect the local toolchain only (no connection required)
@@ -95,11 +99,11 @@ agent-bridge services revoke svc_9f1c2a
 > `agent-bridge daemon` is **not implemented yet** (Phase 3). Until it lands, keep `connect` running in the
 > foreground under your own process manager (systemd / launchd / a Windows service wrapper).
 
-With `--token` the bridge has no `deviceId` unless you pass `--device-id` or set `AGENT_BRIDGE_DEVICE_ID`
-(resolution order: auth response → `--device-id` → env → saved config for the same platform URL). When it
-resolves to nothing, the WS URL omits the `deviceId` query parameter instead of sending an empty one, and
-`hello.deviceId` is an empty string — **the platform must then resolve the device from `Authorization: Bearer`**.
-That is the normal case for CI runners that were never bound interactively.
+With `--token`, the bridge must resolve a stable `deviceId` from `identity.toml`, the saved `config.toml`
+mirror, `--device-id`, or `AGENT_BRIDGE_DEVICE_ID`. If no persisted, migratable, or explicit ID exists,
+startup fails: the bridge never generates a random ID for a pre-issued token, sends an empty ID, or asks the
+platform to reverse-lookup identity from Bearer. An explicit ID may migrate missing local state or confirm
+the persisted ID; it cannot override a different identity that is already stored.
 
 Example `status` output:
 
@@ -118,8 +122,29 @@ Kimi Code           -                    not installed
 11 tools scanned, 4 usable
 ```
 
-Configuration lives in `~/.agent-bridge/config.toml` (Windows: `%APPDATA%\agent-bridge\config.toml`)
-with `0600` permissions. The device token is never printed in full.
+### Stable device identity and local state
+
+| State | POSIX | Windows |
+| --- | --- | --- |
+| Identity (source of truth) | `~/.agent-bridge/identity.toml` | `%APPDATA%\.agent-bridge\identity.toml` |
+| Credentials, settings, identity mirror | `~/.agent-bridge/config.toml` | `%APPDATA%\.agent-bridge\config.toml` |
+
+`identity.toml` stores the stable `deviceId`; `config.toml` keeps the same value only as a compatibility
+mirror. State files are private to the current user (`0600` on POSIX and a restricted ACL on Windows), and
+the device token is never printed in full. `AGENT_BRIDGE_CONFIG` points to a profile's `config.toml`; its
+**parent directory is the profile**, so `identity.toml` and the other state files live beside it. Use a
+different parent directory for each profile.
+
+Reauthorization, switching authorization methods, and uninstalling/reinstalling the package do not change
+the ID while this state directory is preserved. Deleting only `identity.toml` restores the same ID from the
+config mirror. Deleting the entire profile (or both the identity and every migratable mirror) makes the next
+interactive bind a new installation with a new ID. `logout` removes credentials but preserves identity and
+settings; after revocation, run `logout` → `connect` to bind the same ID again.
+
+The platform returns `409 device_bound_to_other_account` for an ID owned by another account and
+`409 device_identity_ambiguous` for duplicate platform history. Both require a platform administrator;
+the bridge never changes its ID to evade the conflict and never automatically merges devices or transfers
+cross-account ownership.
 
 Optional working-directory allow-list — confine task execution to specific directories:
 
@@ -132,17 +157,23 @@ When set, a `run_task` whose `cwd` is outside every listed directory fails befor
 compared by directory boundary, so `/Users/me/work-old` is **not** covered by `/Users/me/work`. Omit the key
 to keep the default behaviour (only "exists and is a directory" is checked).
 
-How many tasks may run at the same time, and how many may wait — defaults 3 and 32:
+How many tasks may run at the same time, and how many may wait — defaults 30 and 60:
 
 ```toml
-max_tasks = 3
-max_queue = 32   # 0 = no queueing at all
+max_tasks = 30
+max_queue = 60   # 0 = no queueing at all
 ```
 
 Tasks beyond `max_tasks` wait in a FIFO queue and start as slots free up; only when the queue is full does a new
 task fail immediately (`任务队列已满（并发 N，排队 M）`). `timeoutMs` is measured **from queueing**, so a task can
-never sit in the queue for hours and then run for ten more minutes. `AGENT_BRIDGE_MAX_TASKS` /
-`AGENT_BRIDGE_MAX_QUEUE` override the file (handy for CI).
+never sit in the queue for hours and then run for ten more minutes. Precedence: startup flags
+`--max-tasks` / `--max-queue` (both `connect` and `serve`) > `AGENT_BRIDGE_MAX_TASKS` /
+`AGENT_BRIDGE_MAX_QUEUE` > the config file > defaults.
+
+Re-sending a `run_task` with the same `taskId` is safe: the bridge is idempotent by `taskId` —
+a live task gets a current-state snapshot, a settled task replays its terminal snapshot, and nothing
+is spawned twice. The platform also gets a live water level: `hello.capacity` carries the effective
+caps, and every scheduling change pushes a `capacity_update { running, queued, maxTasks, maxQueued }`.
 
 Whether a finished task carries a diff, and whether a service token is mandatory:
 
@@ -160,7 +191,7 @@ require_service_token = false # true = reject any task without a valid service t
 | What can be executed   | Whitelisted agent kinds only; an unknown `agentType` is rejected locally.              |
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
 | Env from the platform  | **Not accepted**: any `env` inside `run_task` is ignored; children always run with the bridge's own environment. |
-| Concurrency            | `max_tasks` (default 3) run at once; the rest queue FIFO up to `max_queue` (default 32), then fail. `timeoutMs` counts from queueing. |
+| Concurrency            | `max_tasks` (default 30) run at once; the rest queue FIFO up to `max_queue` (default 60), then fail. `timeoutMs` counts from queueing. |
 | Local control plane     | Optional extension, **off by default**; when enabled it binds loopback only, requires a scoped Bearer token, and never sends CORS headers. |
 | Diff capture           | One `git diff` per task, only when `captureDiff` is set; untracked paths are restored afterwards. Nothing is committed and the index is left as it was. |
 | Service identity       | Service tokens are stored as SHA-256 only and checked per scope; `cancel_task` needs `task:cancel`, holding `task:create` is not enough. |
@@ -235,9 +266,13 @@ and the wire contract stay at the root. `src/cli.ts` contains **no business logi
 
 Protocol (JSON over one connection):
 
+| Protocol | Handshake | Bridge release |
+| --- | --- | --- |
+| **v2** | `PROTOCOL_VERSION = 2` (`hello.protocolVersion = 2`); `deviceId` is a non-empty stable ID matching the WS URL query | **Next major: `≥1.0.0`** (current package: `0.2.3`; semantic-release determines the exact release) |
+
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `pong` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `capacity_update`, `pong` |
 | platform → bridge | `run_task`, `cancel_task`, `scan`, `ping`                               |
 
 ### Capability negotiation (`hello.capabilities`)
@@ -252,6 +287,25 @@ should degrade on this list rather than guessing from a CLI version:
 | `queue`          | Tasks beyond the concurrency limit queue instead of being rejected         |
 | `scan-progress`  | Streams `scan_progress` while probing                                      |
 | `cloud-events`   | Can wrap upstream messages in a CloudEvents 1.0 envelope (CNCF standard)    |
+| `capacity`       | `hello.capacity` advertises the caps; `capacity_update` streams the water level on every scheduling change |
+| `task-step`      | Structured agents stream `task_step` (dynamic step flow; grading below)                     |
+
+### Step stream (`task_step`)
+
+Agents with structured event output stream a **dynamic step flow** (`seq` increments, `ref` pairs
+started/finished, `label` redacted and truncated). Steps are decided by the model at runtime — there
+is no predefined total count; the platform renders "steps so far + current step". Capability is graded
+per agent and reported honestly via `steps: true/false` in `agent_list`:
+
+| Grade | Agents | Behaviour |
+| --- | --- | --- |
+| Structured (`steps: true`) | all 12 agents | Steps parsed from JSONL event streams (6 format families: claude-style ×5, opencode-style ×2, codex / gemini / kimi / dsh / minimax) |
+| Plain text (`steps: false`) | none | Kept for future agents without structured output |
+
+⚠️ Behaviour change: `task_log` for claude-code / codebuddy-cli / kimi-code / qoder-cli / trae-cli /
+ds-harness / minimax-code switches from plain text to the **stream-json event stream** (richer;
+`task_step` provides the structured view). codex / opencode / mimo-code / grok-cli / gemini were
+already JSONL.
 
 Evolution rule: a new optional field keeps the protocol version; a semantic change or a new required field bumps it.
 
@@ -349,22 +403,27 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | --- | --- |
 | Bind | `127.0.0.1` / `::1` only — a non-loopback host is rejected at startup |
 | Default | **off**. Enable with `[control_plane] enabled = true` in `config.toml`, or `--port` for this run only |
-| Auth | scoped Bearer (`abs_<kid>_<secret>`, the same tokens as P0-8); `/v1/health` is the only open route |
+| Auth | scoped Bearer (`abs_<kid>_<secret>`, the same tokens as P0-8); `/v1/health` and the dashboard shell `/` are open; `?token=` is accepted for EventSource (loopback only — never share the URL). **Zero-setup dashboard**: `serve` mints a read-only in-memory token (`task:read`/`device:read`) at startup and embeds it in the printed dashboard URL; it dies with the process |
 | CORS | never sent — a browser script cannot call it silently |
 | Scheduling | tasks go through the same `TaskSupervisor`, so `max_tasks` covers both channels |
 | Upstream | control-plane tasks report through the same `Emitter`, so the platform view never half-disappears |
+| Dashboard | `GET /` serves an embedded Web task board (structured log event cards for all 7 event families, tool calls and results merged, raw JSON collapsed; agent todo plans + step timeline + result preview; vw/vh modals with fullscreen; bounded 600-event log cache, frame-batched SSE rendering, polling paused in background tabs); `GET /v1/board` is its data source (same registry as the terminal panel) |
 
 | Method | Path | Scope |
 | --- | --- | --- |
+| GET | `/` | — (Web dashboard shell; data flows through /v1/*) |
 | GET | `/v1/health` | — (liveness/readiness/version) |
 | GET | `/v1/capabilities` | `device:read` |
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |
+| GET | `/v1/board` | `task:read` (board aggregate: tasks + counts + capacity) |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read` (cursor-paginated) |
 | GET | `/v1/tasks/{id}` | `task:read` |
 | POST | `/v1/tasks/{id}:cancel` | `task:cancel` (idempotent) |
-| GET | `/v1/tasks/{id}/events` | `task:read` (SSE: log + status) |
+| GET | `/v1/tasks/{id}/events` | `task:read` (SSE: logs + status + steps) |
+| GET | `/v1/tasks/{id}/steps` | `task:read` (step timeline + final answer) |
+| GET | `/v1/tasks/{id}/file?path=` | `task:read` (artifact preview: confined to task cwd + allowed_cwd, ≤512KB) |
 | GET | `/v1/tasks/{id}/diff` | `task:read` (artifact only, task is not re-run) |
 
 ```bash

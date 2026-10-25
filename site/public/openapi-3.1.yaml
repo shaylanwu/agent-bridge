@@ -11,8 +11,8 @@ info:
     桥接方向请配合 `contracts/asyncapi-3.0.yaml`（WebSocket 通道）一起读：
     HTTP 只负责**绑定设备**，任务下发与事件回传全走那条出站 WebSocket。
 
-    错误响应建议统一为 RFC 9457（application/problem+json），bridge 侧只会把
-    HTTP 状态码与响应体前 200 字符用于报错文案，不解析特定字段。
+    公开 JSON 错误响应应在顶层提供非空字符串 `code`；bridge 只读取这个机器可读字段，
+    不会把响应正文写入日志。HTTP 状态码与 `code` 共同决定授权失败的处理方式。
   license:
     name: MIT
     identifier: MIT
@@ -68,39 +68,58 @@ paths:
       tags: [binding]
       summary: 用授权码换取 device_token（PKCE S256）
       description: |
-        bridge 拿到 `code` 后调用。**必须校验 `code_verifier` 满足 S256**：
-        base64url(sha256(code_verifier)) === 之前下发的 code_challenge。
-        平台侧只保存 `device_token` 的 SHA-256，不明文存储。
+        bridge 拿到 `code` 后调用。**必须校验 `codeVerifier` 满足 S256**：
+        base64url(sha256(codeVerifier)) === 之前下发的 code_challenge。
+        `deviceId` 是授权前已持久化的本地稳定身份；平台必须以它幂等重绑，不能另发新 ID。
+        平台侧只保存 `device_token` 的 SHA-256，不明文存储。授权码交换后不自动重放。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [code, code_verifier, redirect_uri, client_id]
+              required: [code, codeVerifier, redirectUri, clientId, deviceId, hostname, platform, cliVersion]
               properties:
-                code: { type: string }
-                code_verifier: { type: string }
-                redirect_uri: { type: string, format: uri }
-                client_id: { type: string, const: agent-bridge }
+                code: { type: string, minLength: 1 }
+                codeVerifier: { type: string, minLength: 1 }
+                redirectUri: { type: string, format: uri }
+                clientId: { type: string, const: agent-bridge }
+                deviceId: { $ref: '#/components/schemas/DeviceId' }
+                hostname: { type: string, minLength: 1 }
+                platform: { type: string, minLength: 1, examples: [win32, darwin, linux] }
+                cliVersion: { type: string, minLength: 1 }
       responses:
         '200':
-          description: 换取成功
+          description: 换取成功；`device_id` 必须等于请求中的 `deviceId`，否则 bridge 拒绝保存凭证或建立 WS
           content:
             application/json:
-              schema:
-                type: object
-                required: [device_token, device_id]
-                properties:
-                  device_token:
-                    type: string
-                    description: 后续 WS 握手的 Bearer 凭据；bridge 只落 0600 文件
-                  device_id: { type: string, description: '形如 bd_9f1c…' }
-                  refresh_token:
-                    type: string
-                    description: 可选。当前 bridge 会保存但尚未使用（未实现自动续期）
+              schema: { $ref: '#/components/schemas/TokenResponse' }
         '400':
-          description: code / verifier 校验失败
+          description: code / verifier 校验失败；`invalid_device_id` 表示平台拒绝该 ID 格式，bridge 保留本地身份且不更换 ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+              example: { code: invalid_device_id }
+        '401':
+          description: 授权或凭证失败；bridge 保留本地身份，不重放已交换的授权码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+        '403':
+          description: 授权或凭证被拒绝；bridge 保留本地身份，不重放已交换的授权码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+        '409':
+          description: '`device_bound_to_other_account`：设备属于其他账号；`device_identity_ambiguous`：平台历史身份重复。两者都需平台管理员处理；bridge 不换 ID，也不自动转移或合并'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+              examples:
+                boundToOtherAccount:
+                  value: { code: device_bound_to_other_account }
+                ambiguousIdentity:
+                  value: { code: device_identity_ambiguous }
         '404':
           description: 平台未实现该端点（bridge 会提示"平台配套接口未上线"）
   /api/bridge/device-code:
@@ -113,9 +132,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [client_id]
+              required: [clientId]
               properties:
-                client_id: { type: string, const: agent-bridge }
+                clientId: { type: string, const: agent-bridge }
       responses:
         '200':
           description: 返回给用户的验证码与确认页
@@ -137,35 +156,91 @@ paths:
       tags: [binding]
       summary: 轮询设备码换取结果
       description: |
-        用户尚未确认时返回 4xx（bridge 会按 `interval` 继续轮询直到 `expires_in`）；
-        确认后返回与 `/api/bridge/token` 相同的结构。
+        每次轮询都携带同一个本地稳定 `deviceId` 与元信息。只有 `428 authorization_pending`
+        表示可按服务端 `interval` 继续轮询；成功或终态错误后不自动重放该设备码。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [device_code, client_id]
+              required: [device_code, clientId, deviceId, hostname, platform, cliVersion]
               properties:
-                device_code: { type: string }
-                client_id: { type: string, const: agent-bridge }
+                device_code: { type: string, minLength: 1 }
+                clientId: { type: string, const: agent-bridge }
+                deviceId: { $ref: '#/components/schemas/DeviceId' }
+                hostname: { type: string, minLength: 1 }
+                platform: { type: string, minLength: 1, examples: [win32, darwin, linux] }
+                cliVersion: { type: string, minLength: 1 }
       responses:
         '200':
-          description: 已确认
+          description: 已确认；`device_id` 必须等于请求中的 `deviceId`，否则 bridge 拒绝保存凭证或建立 WS
           content:
             application/json:
-              schema:
-                type: object
-                required: [device_token, device_id]
-                properties:
-                  device_token: { type: string }
-                  device_id: { type: string }
-                  refresh_token: { type: string }
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400':
+          description: '`invalid_device_id` 表示平台拒绝该 ID 格式；bridge 保留本地身份，不更换 ID'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+              example: { code: invalid_device_id }
+        '401':
+          description: 授权或凭证失败；bridge 保留本地身份，不重放已终态交换的设备码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
         '403':
-          description: 等待用户确认（bridge 继续轮询）
+          description: 授权或凭证被拒绝；bridge 保留本地身份，不重放已终态交换的设备码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+        '409':
+          description: '`device_bound_to_other_account`：设备属于其他账号；`device_identity_ambiguous`：平台历史身份重复。两者都需平台管理员处理；bridge 不换 ID，也不自动转移或合并'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+              examples:
+                boundToOtherAccount:
+                  value: { code: device_bound_to_other_account }
+                ambiguousIdentity:
+                  value: { code: device_identity_ambiguous }
         '428':
-          description: 尚未确认（bridge 继续轮询）
+          description: 顶层 `code` 为 `authorization_pending` 时，用户尚未确认；bridge 按服务端 interval 继续轮询且不生成新 ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicError' }
+              example: { code: authorization_pending }
         '404':
           description: 平台未实现该端点
 components:
-  schemas: {}
+  schemas:
+    DeviceId:
+      type: string
+      minLength: 1
+      pattern: '^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$'
+      examples: [bd_001122334455]
+      description: 本地持久化的稳定设备身份；新 ID 为 32 位小写 hex，迁移兼容 12 位小写 hex
+    TokenResponse:
+      type: object
+      required: [device_token, device_id]
+      properties:
+        device_token:
+          type: string
+          minLength: 1
+          description: 后续 WS 握手的 Bearer 凭据；bridge 只落 0600 文件
+        device_id:
+          allOf:
+            - $ref: '#/components/schemas/DeviceId'
+          description: 必须与本次请求的 `deviceId` 完全相等
+        refresh_token:
+          type: string
+          minLength: 1
+          description: 可选。当前 bridge 只保存、不使用；未实现自动续期
+    PublicError:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: 公开机器可读错误码，位于 JSON 顶层；bridge 不记录响应正文
