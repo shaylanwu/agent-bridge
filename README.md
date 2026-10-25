@@ -420,6 +420,8 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |
 | GET | `/v1/board` | `task:read` (board aggregate: tasks + counts + capacity) |
+| GET | `/v1/sessions` | `task:read` (persistent sessions) |
+| GET | `/v1/sessions/{id}` | `task:read` (session snapshot + eventSeq window) |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read` (cursor-paginated) |
 | GET | `/v1/tasks/{id}` | `task:read` |

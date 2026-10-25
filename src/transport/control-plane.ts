@@ -23,6 +23,7 @@ import { Emitter, type Upstream } from '../core/emitter.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
 import type { SessionLog } from '../app/session-log.js';
 import type { TaskRegistry } from '../app/task-registry.js';
+import type { SessionStore } from '../core/session-store.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
 import type { ClientMessage, AgentListItem, TaskPhase } from '../protocol.js';
@@ -48,6 +49,8 @@ export interface ControlPlaneDeps {
   startTask: (req: RunTaskRequest, hooks: TaskHooks) => TaskHandle;
   /** 任务注册表（与终端面板共享同一视图） */
   registry: TaskRegistry;
+  /** 持久 Session/Turn/Event 权威源（只读查询） */
+  store: SessionStore;
   scan: (opts: { fresh?: boolean }) => Promise<AgentListItem[]>;
   log: SessionLog;
   /** 能力清单（与 `hello.capabilities` 同源） */
@@ -584,6 +587,33 @@ export async function startControlPlane(
     json(ctx.res, 200, view(records.get(id) ?? rec));
   };
 
+  const handleSessions = (ctx: RouteContext): void => {
+    if (!authorize(ctx, 'task:read')) return;
+    const limitRaw = Number(ctx.url.searchParams.get('limit') ?? '50');
+    const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, Math.floor(limitRaw))) : 50;
+    json(ctx.res, 200, {
+      sessions: deps.store.listSessions().slice(-limit).map((session) => {
+        const window = deps.store.eventWindow(session.sessionId);
+        return { ...session, ...window };
+      }),
+    });
+  };
+
+  const handleSessionSnapshot = (ctx: RouteContext, id: string): void => {
+    if (!authorize(ctx, 'task:read')) return;
+    try {
+      const afterRaw = Number(ctx.url.searchParams.get('afterEventSeq') ?? '0');
+      const limitRaw = Number(ctx.url.searchParams.get('limit') ?? '200');
+      const snapshot = deps.store.snapshot(id, {
+        afterEventSeq: Number.isFinite(afterRaw) ? Math.max(0, Math.floor(afterRaw)) : 0,
+        limit: Number.isFinite(limitRaw) ? Math.min(1000, Math.max(1, Math.floor(limitRaw))) : 200,
+      });
+      json(ctx.res, 200, snapshot);
+    } catch {
+      problem(ctx.res, 404, 'internal', `未找到会话：${id}`);
+    }
+  };
+
   /** SSE：晚订阅先从环形缓冲补发，再接实时事件 */
   const handleEvents = (ctx: RouteContext, id: string): void => {
     ctx.res.writeHead(200, {
@@ -661,6 +691,13 @@ export async function startControlPlane(
           return;
         }
         // 面板聚合视图：任务注册表（与终端面板同源）+ 计数 + 容量
+        if (path === '/v1/sessions' && req.method === 'GET') {
+          return handleSessions(ctx);
+        }
+        const sessionMatch = /^\/v1\/sessions\/([^/]+)$/.exec(path);
+        if (sessionMatch && req.method === 'GET') {
+          return handleSessionSnapshot(ctx, decodeURIComponent(sessionMatch[1] ?? ''));
+        }
         if (path === '/v1/board' && req.method === 'GET') {
           if (!authorize(ctx, 'task:read')) return;
           json(ctx.res, 200, {

@@ -11,6 +11,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Emitter } from '../src/core/emitter.js';
+import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
 import { startControlPlane, type ControlPlaneDeps } from '../src/transport/control-plane.js';
 import type { RunTaskRequest, TaskFinishInfo, TaskHandle, TaskHooks } from '../src/core/task-supervisor.js';
@@ -61,6 +62,7 @@ function makeDeps(overrides: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps {
   return {
     emitter,
     registry: new TaskRegistry(),
+    store: new SessionStore(':memory:'),
     startTask: (req: RunTaskRequest, hooks: TaskHooks): TaskHandle => {
       // 立即成功：测试关心的是 HTTP 层契约，不是真跑 CLI
       hooks.onStatus('success', { exitCode: 0 } satisfies TaskFinishInfo);
@@ -142,6 +144,26 @@ describe('本地回环控制面', () => {
     const second = replay.json<{ taskId: string; idempotentReplay?: boolean }>();
     expect(second.taskId).toBe(first.taskId);
     expect(second.idempotentReplay).toBe(true);
+    plane.close();
+  });
+
+  it('/v1/sessions 可列出持久会话并返回快照', async () => {
+    const store = new SessionStore(':memory:');
+    store.createSession({ sessionId: 'bt_persisted', mode: 'task', agentType: 'codex', cwd: process.cwd() });
+    store.appendEvent({ sessionId: 'bt_persisted', type: 'task_status', payload: { status: 'running' } });
+    const plane = await start({ store, verify: () => ({ ok: true }) });
+
+    const list = await call(plane.port, 'GET', '/v1/sessions', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(list.status).toBe(200);
+    expect(list.json<{ sessions: { sessionId: string }[] }>().sessions[0]?.sessionId).toBe('bt_persisted');
+
+    const snapshot = await call(plane.port, 'GET', '/v1/sessions/bt_persisted?afterEventSeq=0', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.json<{ events: unknown[] }>().events).toHaveLength(1);
     plane.close();
   });
 

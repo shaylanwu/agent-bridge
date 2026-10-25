@@ -15,6 +15,8 @@ description: Every endpoint of the optional loopback control plane — generated
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | Installed agents and their credential state (`?fresh=true` to re-probe) |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | Trigger a fresh scan (same as GET /v1/agents?fresh=true) |
 | `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
+| `GET` | [`/v1/sessions`](#op-get-v1-sessions) | 持久会话列表（按 created_at 升序，返回末尾 limit 条） |
+| `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | Task ledger, cursor-paginated (cursor, not offset — the list keeps moving) |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | Create a task |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | Task state plus terminal artifacts (diff / changedFiles) |
@@ -224,6 +226,122 @@ The only route that needs no token — safe for container and CI probes.
       "stepCount": 1,
       "createdAt": 1
     }
+  ]
+}
+```
+
+
+
+
+<a id="op-get-v1-sessions"></a>
+
+### GET /v1/sessions
+
+**持久会话列表（按 created_at 升序，返回末尾 limit 条）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `limit` | query | `integer` |  |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "sessions": [
+    {
+      "sessionId": "string",
+      "tenantId": "string",
+      "contextId": "string",
+      "mode": "task",
+      "status": "running",
+      "phase": "queued",
+      "agentType": "string",
+      "cwd": "string",
+      "createdAt": "string",
+      "updatedAt": "string",
+      "closedAt": "string"
+    }
+  ]
+}
+```
+
+
+
+
+<a id="op-get-v1-sessions-id"></a>
+
+### GET /v1/sessions/{id}
+
+**会话快照（Session + Turns + Events + Artifacts）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+| `afterEventSeq` | query | `integer` |  |  |
+| `limit` | query | `integer` |  |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK — Schema: SessionSnapshot |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+| `404` | Session does not exist — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "session": {
+    "sessionId": "string",
+    "tenantId": "string",
+    "contextId": "string",
+    "mode": "task",
+    "status": "running",
+    "phase": "queued",
+    "agentType": "string",
+    "cwd": "string",
+    "createdAt": "string",
+    "updatedAt": "string",
+    "closedAt": "string"
+  },
+  "turns": [
+    {}
+  ],
+  "events": [
+    {
+      "eventSeq": 1,
+      "type": "string",
+      "payload": {},
+      "createdAt": "string"
+    }
+  ],
+  "interactions": [
+    {}
+  ],
+  "artifacts": [
+    {}
   ]
 }
 ```
@@ -441,7 +559,7 @@ Late subscribers are backfilled from a bounded ring buffer before live events st
 | --- | --- |
 | `200` | OK |
 | `401` | Missing / invalid / expired token — Schema: Problem |
-| `404` |  |
+| `404` | Session does not exist — Schema: Problem |
 
 
 **Example**
@@ -500,7 +618,7 @@ Late subscribers are backfilled from a bounded ring buffer before live events st
 | `400` |  |
 | `401` | Missing / invalid / expired token — Schema: Problem |
 | `403` | 路径越出任务工作目录或不在 allowed_cwd |
-| `404` |  |
+| `404` | Session does not exist — Schema: Problem |
 | `413` | 超过预览上限 |
 
 

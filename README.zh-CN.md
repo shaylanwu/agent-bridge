@@ -390,6 +390,8 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |
 | GET | `/v1/board` | `task:read`（面板聚合视图：任务 + 计数 + 容量） |
+| GET | `/v1/sessions` | `task:read`（持久会话列表） |
+| GET | `/v1/sessions/{id}` | `task:read`（会话快照 + eventSeq 窗口） |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read`（游标分页） |
 | GET | `/v1/tasks/{id}` | `task:read` |

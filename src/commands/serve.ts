@@ -71,6 +71,7 @@ export async function cmdServe(flags: Flags): Promise<void> {
     {
       emitter: session.emitter,
       registry: session.registry,
+      store: session.store,
       // 与平台下发的任务共用同一个 supervisor：并发上限不会因多开一条通道而翻倍
       startTask: (req, hooks) => startTask(req, hooks),
       scan: (opts) => scanAgents(opts),

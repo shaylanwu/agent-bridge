@@ -15,6 +15,8 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | 已安装 AI Agent 及其凭据状态 |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | 触发一次全新扫描 |
 | `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
+| `GET` | [`/v1/sessions`](#op-get-v1-sessions) | 持久会话列表（按 created_at 升序，返回末尾 limit 条） |
+| `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | 任务台账（游标分页） |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | 创建任务 |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | 任务状态 + 终态产物 |
@@ -228,6 +230,122 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
       "stepCount": 1,
       "createdAt": 1
     }
+  ]
+}
+```
+
+
+
+
+<a id="op-get-v1-sessions"></a>
+
+### GET /v1/sessions
+
+**持久会话列表（按 created_at 升序，返回末尾 limit 条）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `limit` | query | `integer` |  |  |
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `401` |  — 结构: Problem |
+| `403` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "sessions": [
+    {
+      "sessionId": "string",
+      "tenantId": "string",
+      "contextId": "string",
+      "mode": "task",
+      "status": "running",
+      "phase": "queued",
+      "agentType": "string",
+      "cwd": "string",
+      "createdAt": "string",
+      "updatedAt": "string",
+      "closedAt": "string"
+    }
+  ]
+}
+```
+
+
+
+
+<a id="op-get-v1-sessions-id"></a>
+
+### GET /v1/sessions/{id}
+
+**会话快照（Session + Turns + Events + Artifacts）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+| `afterEventSeq` | query | `integer` |  |  |
+| `limit` | query | `integer` |  |  |
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  — 结构: SessionSnapshot |
+| `401` |  — 结构: Problem |
+| `403` |  — 结构: Problem |
+| `404` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "session": {
+    "sessionId": "string",
+    "tenantId": "string",
+    "contextId": "string",
+    "mode": "task",
+    "status": "running",
+    "phase": "queued",
+    "agentType": "string",
+    "cwd": "string",
+    "createdAt": "string",
+    "updatedAt": "string",
+    "closedAt": "string"
+  },
+  "turns": [
+    {}
+  ],
+  "events": [
+    {
+      "eventSeq": 1,
+      "type": "string",
+      "payload": {},
+      "createdAt": "string"
+    }
+  ],
+  "interactions": [
+    {}
+  ],
+  "artifacts": [
+    {}
   ]
 }
 ```
@@ -449,7 +567,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | --- | --- |
 | `200` |  |
 | `401` |  — 结构: Problem |
-| `404` |  |
+| `404` |  — 结构: Problem |
 
 
 **示例**
@@ -508,7 +626,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `400` |  |
 | `401` |  — 结构: Problem |
 | `403` |  |
-| `404` |  |
+| `404` |  — 结构: Problem |
 | `413` |  |
 
 

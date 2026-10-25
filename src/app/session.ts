@@ -51,6 +51,8 @@ export interface BridgeSession {
   readonly emitter: Emitter;
   /** 任务注册表（终端面板 / 控制面台账的共享视图） */
   readonly registry: TaskRegistry;
+  /** 持久 Session/Turn/Event 权威源（控制面只读查询用） */
+  readonly store: SessionStore;
   /** 在跑/排队的任务数（状态展示与控制面用） */
   activeTasks: () => number;
   /** 取消指定任务（无此任务返回 false） */
@@ -166,6 +168,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     // 循环依赖的解法：client 的回调只在连接建立后触发，此时 emitter 必然已赋值
     emitter,
     registry: opts.registry,
+    store: opts.store,
     close: () => {
       client.close();
       opts.store.close();
