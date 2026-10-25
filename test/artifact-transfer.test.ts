@@ -210,7 +210,11 @@ describe('ArtifactTransferManager', () => {
       sha256: whole,
     });
 
-    manager.startDownload({ sessionId: 'bt_art', artifactId: uploaded.artifactId ?? '' });
+    manager.startDownload({
+      sessionId: 'bt_art',
+      artifactId: uploaded.artifactId ?? '',
+      operationId: 'op_dl',
+    });
     const downloadReady = sent.find((m) => m.type === 'artifact_download_ready');
     const chunk = sent.find((m) => m.type === 'artifact_download_chunk');
     expect(downloadReady).toBeDefined();
@@ -219,6 +223,62 @@ describe('ArtifactTransferManager', () => {
       manager.ackDownload({ transferId: downloadReady.transferId, nextOffset: body.length });
     }
     expect(sent.at(-1)).toMatchObject({ type: 'artifact_download_result', status: 'completed' });
+  });
+
+  it('下载重启后从 nextOffset 续传', () => {
+    const { dir, store, manager, sent } = setup();
+    const body = Buffer.from('abcdefgh', 'utf8');
+    const whole = sha(body);
+    const up = manager.startUpload({
+      sessionId: 'bt_art',
+      operationId: 'op_dl_resume_up',
+      name: 'resume-dl.txt',
+      mimeType: 'text/plain',
+      size: body.length,
+      sha256: whole,
+    });
+    manager.writeChunk({
+      transferId: up.transferId,
+      offset: 0,
+      data: body.toString('base64'),
+      chunkSha256: sha(body),
+    });
+    const uploaded = manager.completeUpload({ transferId: up.transferId, size: body.length, sha256: whole });
+
+    manager.startDownload({
+      sessionId: 'bt_art',
+      artifactId: uploaded.artifactId ?? '',
+      operationId: 'op_dl_resume',
+      chunkSize: 4,
+    });
+    const ready = sent.find((m) => m.type === 'artifact_download_ready');
+    expect(ready).toBeDefined();
+    if (ready?.type === 'artifact_download_ready') {
+      manager.ackDownload({ transferId: ready.transferId, nextOffset: 4 });
+    }
+
+    const restartedSent: ClientMessage[] = [];
+    const restarted = new ArtifactTransferManager({
+      store,
+      rootDir: join(dir, 'artifacts'),
+      emit: (msg) => restartedSent.push(msg),
+    });
+    restarted.startDownload({
+      sessionId: 'bt_art',
+      artifactId: uploaded.artifactId ?? '',
+      operationId: 'op_dl_resume',
+      chunkSize: 4,
+    });
+    const resumedReady = restartedSent.find((m) => m.type === 'artifact_download_ready');
+    const resumedChunk = restartedSent.find((m) => m.type === 'artifact_download_chunk');
+    expect(resumedChunk).toMatchObject({ offset: 4 });
+    if (resumedReady?.type === 'artifact_download_ready') {
+      restarted.ackDownload({ transferId: resumedReady.transferId, nextOffset: 8 });
+    }
+    expect(restartedSent.at(-1)).toMatchObject({ type: 'artifact_download_result', status: 'completed' });
+    if (ready?.type === 'artifact_download_ready') {
+      expect(store.getTransfer(ready.transferId)).toBeUndefined();
+    }
   });
 
   it('chunk hash 不符/乱序拒绝', () => {

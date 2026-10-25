@@ -214,6 +214,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
           artifacts.startDownload({
             sessionId: msg.taskId,
             artifactId: msg.artifactId,
+            operationId: msg.operationId,
           });
         } catch (error) {
           emitter.emit({

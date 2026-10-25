@@ -48,6 +48,7 @@ interface DownloadTransfer {
   transferId: string;
   artifactId: string;
   sessionId: string;
+  operationId: string;
   path: string;
   size: number;
   sha256: string;
@@ -286,8 +287,14 @@ export class ArtifactTransferManager {
   startDownload(input: {
     sessionId: string;
     artifactId: string;
+    operationId: string;
     chunkSize?: number;
   }): { transferId: string; size: number; sha256: string; chunkSize: number } {
+    const persisted = this.deps.store.getTransferByOperation(
+      input.sessionId,
+      input.operationId,
+      this.tenant(),
+    );
     const artifact = this.deps.store.getArtifact(input.artifactId);
     if (!artifact || artifact.sessionId !== input.sessionId) {
       throw new ArtifactTransferError('artifact_not_found', `附件不存在：${input.artifactId}`);
@@ -296,23 +303,47 @@ export class ArtifactTransferManager {
     if (!statSync(path, { throwIfNoEntry: false })) {
       throw new ArtifactTransferError('artifact_missing', '附件内容不在 CAS 中');
     }
-    const transferId = `dt_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const transferId =
+      persisted?.state === 'uploading' &&
+      persisted.direction === 'download' &&
+      persisted.artifactId === input.artifactId
+        ? persisted.transferId
+        : `dt_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
     const chunkSize = Math.min(
       MAX_CHUNK_SIZE,
-      Math.max(1, Math.floor(input.chunkSize ?? DEFAULT_CHUNK_SIZE)),
+      Math.max(1, Math.floor(persisted?.chunkSize ?? input.chunkSize ?? DEFAULT_CHUNK_SIZE)),
     );
     const transfer: DownloadTransfer = {
       transferId,
       artifactId: artifact.artifactId,
       sessionId: input.sessionId,
+      operationId: input.operationId,
       path,
       size: artifact.size,
       sha256: artifact.sha256,
       chunkSize,
-      offset: 0,
+      offset:
+        persisted?.state === 'uploading' && persisted.direction === 'download'
+          ? Math.min(persisted.nextOffset, artifact.size)
+          : 0,
       lastLength: 0,
     };
     this.downloads.set(transferId, transfer);
+    this.deps.store.saveTransfer({
+      tenantId: this.tenant(),
+      transferId,
+      sessionId: input.sessionId,
+      operationId: input.operationId,
+      artifactId: artifact.artifactId,
+      direction: 'download',
+      name: artifact.name,
+      mimeType: artifact.mimeType,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      chunkSize,
+      nextOffset: transfer.offset,
+      state: 'uploading',
+    });
     this.deps.emit({
       type: 'artifact_download_ready',
       transferId,
@@ -321,8 +352,9 @@ export class ArtifactTransferManager {
       sha256: artifact.sha256,
       chunkSize,
     });
-    if (artifact.size === 0) {
+    if (transfer.offset >= artifact.size) {
       this.downloads.delete(transferId);
+      this.deps.store.deleteTransfer(transferId, this.tenant());
       this.deps.emit({ type: 'artifact_download_result', transferId, status: 'completed' });
     } else {
       this.sendNextDownloadChunk(transfer);
@@ -341,8 +373,10 @@ export class ArtifactTransferManager {
       );
     }
     transfer.offset = input.nextOffset;
+    this.deps.store.updateTransferOffset(transfer.transferId, transfer.offset, this.tenant());
     if (transfer.offset >= transfer.size) {
       this.downloads.delete(transfer.transferId);
+      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
       this.deps.emit({
         type: 'artifact_download_result',
         transferId: transfer.transferId,
