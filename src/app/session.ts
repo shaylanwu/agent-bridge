@@ -75,6 +75,12 @@ export function createSession(opts: SessionOptions): BridgeSession {
     emit: (msg) => emitter?.emit(msg),
     rootDir: opts.artifactRootDir,
   });
+  try {
+    const stale = artifacts.cleanupStaleTransfers();
+    if (stale > 0) opts.log('info', `[agent-bridge] 已回收 ${stale} 个超时未完成的附件上传`);
+  } catch (error) {
+    opts.log('error', `[agent-bridge] 附件上传 GC 失败：${(error as Error).message}`);
+  }
 
   const now = (): string => new Date().toISOString();
 

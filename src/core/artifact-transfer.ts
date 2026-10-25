@@ -234,6 +234,23 @@ export class ArtifactTransferManager {
     return { nextOffset: transfer.nextOffset };
   }
 
+  /**
+   * 回收超时未完成的上传：只删临时文件与 transfer 记录，已提交 artifact 不受影响。
+   */
+  cleanupStaleTransfers(olderThanMs = 24 * 60 * 60 * 1000, now = Date.now()): number {
+    const cutoff = now - olderThanMs;
+    let removed = 0;
+    for (const transfer of this.deps.store.listTransfers('uploading', this.tenant())) {
+      if (Date.parse(transfer.updatedAt) > cutoff) continue;
+      if (transfer.tempPath) rmSync(transfer.tempPath, { force: true });
+      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
+      this.transfers.delete(transfer.transferId);
+      this.byOperation.delete(`${transfer.sessionId}:${transfer.operationId}`);
+      removed += 1;
+    }
+    return removed;
+  }
+
   startDownload(input: {
     sessionId: string;
     artifactId: string;

@@ -128,6 +128,30 @@ describe('ArtifactTransferManager', () => {
     expect(store.getTransfer(ready.transferId)).toBeUndefined();
   });
 
+  it('GC 回收超时上传但保留已提交附件', () => {
+    const { manager, store } = setup();
+    const body = Buffer.from('stale', 'utf8');
+    const ready = manager.startUpload({
+      sessionId: 'bt_art',
+      operationId: 'op_stale',
+      name: 'stale.txt',
+      mimeType: 'text/plain',
+      size: body.length,
+      sha256: sha(body),
+    });
+    const persisted = store.getTransfer(ready.transferId);
+    expect(persisted).toBeDefined();
+    if (persisted) {
+      store.saveTransfer({
+        ...persisted,
+        updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+    }
+    expect(manager.cleanupStaleTransfers(24 * 60 * 60 * 1000)).toBe(1);
+    expect(store.getTransfer(ready.transferId)).toBeUndefined();
+    if (persisted?.tempPath) expect(existsSync(persisted.tempPath)).toBe(false);
+  });
+
   it('下载按 ready/chunk/ack/result 推送', () => {
     const { manager, sent } = setup();
     const body = Buffer.from('download me', 'utf8');

@@ -1101,6 +1101,22 @@ export class SessionStore {
       .run(tenantId, transferId);
   }
 
+  listTransfers(
+    state?: ArtifactTransferState,
+    tenantId = DEFAULT_TENANT,
+  ): ArtifactTransferRecord[] {
+    const rows = state
+      ? (this.db
+          .prepare(
+            'SELECT * FROM artifact_transfers WHERE tenant_id = ? AND state = ? ORDER BY updated_at',
+          )
+          .all(tenantId, state) as ArtifactTransferRow[])
+      : (this.db
+          .prepare('SELECT * FROM artifact_transfers WHERE tenant_id = ? ORDER BY updated_at')
+          .all(tenantId) as ArtifactTransferRow[]);
+    return rows.map(toTransfer);
+  }
+
   getArtifact(artifactId: string, tenantId = DEFAULT_TENANT): ArtifactRecord | undefined {
     const row = this.db
       .prepare('SELECT * FROM artifacts WHERE tenant_id = ? AND artifact_id = ?')
