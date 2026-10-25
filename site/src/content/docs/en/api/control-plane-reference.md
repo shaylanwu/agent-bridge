@@ -17,6 +17,7 @@ description: Every endpoint of the optional loopback control plane — generated
 | `GET` | [`/v1/board`](#op-get-v1-board) | 面板聚合视图：任务注册表 + 计数 + 容量（与终端面板同源） |
 | `GET` | [`/v1/sessions`](#op-get-v1-sessions) | 持久会话列表（按 created_at 升序，返回末尾 limit 条） |
 | `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
+| `GET` | [`/v1/sessions/{id}/events`](#op-get-v1-sessions-id-events) | 会话 SSE：先回放历史，再接实时事件 |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | Task ledger, cursor-paginated (cursor, not offset — the list keeps moving) |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | Create a task |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | Task state plus terminal artifacts (diff / changedFiles) |
@@ -345,6 +346,36 @@ The only route that needs no token — safe for container and CI probes.
   ]
 }
 ```
+
+
+
+
+<a id="op-get-v1-sessions-id-events"></a>
+
+### GET /v1/sessions/{id}/events
+
+**会话 SSE：先回放历史，再接实时事件**
+
+event 类型：snapshot / event / wire / heartbeat / done。 afterEventSeq 之后的持久事件先回放；终态会话回放后立即 done。
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+| `afterEventSeq` | query | `integer` |  |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | text/event-stream |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+| `404` | Session does not exist — Schema: Problem |
 
 
 

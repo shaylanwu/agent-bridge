@@ -614,6 +614,91 @@ export async function startControlPlane(
     }
   };
 
+  /**
+   * 会话 SSE：先回放 SQLite 历史（afterEventSeq 之后），再接实时上行。
+   * event: snapshot / event / wire / heartbeat / done
+   */
+  const handleSessionEvents = (ctx: RouteContext, id: string): void => {
+    if (!authorize(ctx, 'task:read')) return;
+    let snapshot: ReturnType<SessionStore['snapshot']>;
+    try {
+      snapshot = deps.store.snapshot(id, { afterEventSeq: 0, limit: 1000 });
+    } catch {
+      problem(ctx.res, 404, 'internal', `未找到会话：${id}`);
+      return;
+    }
+    const afterRaw = Number(ctx.url.searchParams.get('afterEventSeq') ?? '0');
+    const after = Number.isFinite(afterRaw) ? Math.max(0, Math.floor(afterRaw)) : 0;
+    ctx.res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    const writeEvent = (event: string, data: unknown): void => {
+      try {
+        ctx.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        /* 客户端已断开 */
+      }
+    };
+    writeEvent('snapshot', {
+      session: snapshot.session,
+      oldestEventSeq: snapshot.oldestEventSeq,
+      latestEventSeq: snapshot.latestEventSeq,
+    });
+
+    const replay = deps.store.listEvents(id, { afterEventSeq: after, limit: 1000 });
+    for (const item of replay) {
+      writeEvent('event', {
+        eventSeq: item.eventSeq,
+        type: item.type,
+        payload: item.payload,
+        createdAt: item.createdAt,
+      });
+    }
+    let lastSeq = replay.at(-1)?.eventSeq ?? after;
+    if (snapshot.session.status !== 'running') {
+      writeEvent('done', { taskId: id, status: snapshot.session.status });
+      ctx.res.end();
+      return;
+    }
+
+    let closed = false;
+    const cleanup = (): void => {
+      if (closed) return;
+      closed = true;
+      off();
+      clearInterval(heartbeat);
+      try {
+        ctx.res.end();
+      } catch {
+        /* already ended */
+      }
+    };
+    const send = (upstream: Upstream): void => {
+      if (closed) return;
+      const raw = upstream as ClientMessage & { specversion?: string; data?: ClientMessage };
+      const msg = raw.specversion && raw.data ? raw.data : raw;
+      if (!('taskId' in msg) || msg.taskId !== id) return;
+      const seq =
+        'eventSeq' in msg && typeof msg.eventSeq === 'number' ? msg.eventSeq : undefined;
+      if (seq !== undefined && seq <= lastSeq) return;
+      if (seq !== undefined) lastSeq = seq;
+      writeEvent('wire', msg);
+      const current = deps.store.getSession(id);
+      if (!current || current.status !== 'running') {
+        writeEvent('done', { taskId: id, status: current?.status ?? 'unknown' });
+        cleanup();
+      }
+    };
+    const off = deps.emitter.subscribe(send);
+    const heartbeat = setInterval(() => writeEvent('heartbeat', { at: Date.now() }), 15_000);
+    heartbeat.unref?.();
+    ctx.req.on('close', cleanup);
+    ctx.res.on('close', cleanup);
+  };
+
   /** SSE：晚订阅先从环形缓冲补发，再接实时事件 */
   const handleEvents = (ctx: RouteContext, id: string): void => {
     ctx.res.writeHead(200, {
@@ -693,6 +778,10 @@ export async function startControlPlane(
         // 面板聚合视图：任务注册表（与终端面板同源）+ 计数 + 容量
         if (path === '/v1/sessions' && req.method === 'GET') {
           return handleSessions(ctx);
+        }
+        const sessionEventsMatch = /^\/v1\/sessions\/([^/]+)\/events$/.exec(path);
+        if (sessionEventsMatch && req.method === 'GET') {
+          return handleSessionEvents(ctx, decodeURIComponent(sessionEventsMatch[1] ?? ''));
         }
         const sessionMatch = /^\/v1\/sessions\/([^/]+)$/.exec(path);
         if (sessionMatch && req.method === 'GET') {
