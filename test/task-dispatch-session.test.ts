@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
@@ -116,6 +116,13 @@ describe('task dispatch → SessionStore', () => {
       store,
       log: () => undefined,
     };
+    const respond = vi.fn(() => true);
+    options.tasks.set('bt_interaction', {
+      taskId: 'bt_interaction',
+      cancel: () => undefined,
+      done: Promise.resolve('running'),
+      respondInteraction: respond,
+    });
     const response = {
       type: 'task_interaction_response' as const,
       taskId: 'bt_interaction',
@@ -134,6 +141,7 @@ describe('task dispatch → SessionStore', () => {
       state: 'accepted',
       resultSeq: expect.any(Number),
     });
+    expect(respond).toHaveBeenCalledWith('ir_1', 'allow_once');
 
     dispatchInteractionResponse(response, options);
     expect(sent.filter((msg) => msg.type === 'task_interaction_result')).toHaveLength(2);

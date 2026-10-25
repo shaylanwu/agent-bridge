@@ -11,6 +11,7 @@ import type { Emitter } from '../core/emitter.js';
 import { startTask, type TaskHandle } from '../runner.js';
 import type { ServerMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
+import { hasCodebuddyAcpAuth } from '../adapters/acp-codebuddy.js';
 import type { SessionLog } from './session-log.js';
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionStore, TurnRecord } from '../core/session-store.js';
@@ -214,7 +215,7 @@ export function dispatchInteractionResponse(
     return;
   }
 
-  const payload = msg.payload;
+  const payload = msg.payload ?? {};
   const event = o.store.appendEvent({
     sessionId: msg.taskId,
     type: 'task_interaction_result',
@@ -233,6 +234,20 @@ export function dispatchInteractionResponse(
     resultSeq: event.eventSeq,
     resultPayload: payload,
   });
+  const explicitOption =
+    typeof payload['optionId'] === 'string'
+      ? (payload['optionId'] as string)
+      : typeof payload['option_id'] === 'string'
+        ? (payload['option_id'] as string)
+        : undefined;
+  const requestOptions = (interaction.payload as { options?: Array<Record<string, unknown>> }).options;
+  const fallbackOption =
+    msg.state === 'accepted' && Array.isArray(requestOptions)
+      ? requestOptions.find((option) => String(option['kind'] ?? '').startsWith('allow'))?.['optionId']
+      : undefined;
+  const optionId =
+    explicitOption ?? (typeof fallbackOption === 'string' ? fallbackOption : undefined);
+  o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, optionId);
   emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
     responseId: resolved.responseId,
     resultSeq: resolved.resultSeq,
@@ -366,6 +381,10 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       captureDiff: msg.captureDiff === true || o.captureDiffByDefault,
       diffMaxBytes: o.diffMaxBytes,
       interactive: msg.allowInteractive === true,
+      acp:
+        msg.agentType === 'codebuddy-cli' &&
+        Boolean(msg.prompt) &&
+        hasCodebuddyAcpAuth(),
     },
     {
       onLog: (stream, data) => {
@@ -418,6 +437,43 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
           o.store.updateSession(msg.taskId, { nativeSessionId });
         } catch (error) {
           o.log('error', `[agent-bridge] 保存 native session id 失败 ${msg.taskId}：${(error as Error).message}`);
+        }
+      },
+      onInteraction: (request) => {
+        try {
+          o.store.requestInteraction({
+            sessionId: msg.taskId,
+            requestId: request.requestId,
+            kind: request.kind,
+            payload: request.payload,
+            turnId: turn?.turnId,
+            expiresAt: request.expiresAt,
+          });
+          let eventSeq: number | undefined;
+          if (sessionCreated) {
+            eventSeq = o.store.appendEvent({
+              sessionId: msg.taskId,
+              type: 'task_interaction_request',
+              payload: {
+                requestId: request.requestId,
+                kind: request.kind,
+                payload: request.payload,
+                expiresAt: request.expiresAt,
+              },
+            }).eventSeq;
+          }
+          o.emitter.emit({
+            type: 'task_interaction_request',
+            taskId: msg.taskId,
+            requestId: request.requestId,
+            turnId: turn?.turnId,
+            kind: request.kind,
+            payload: request.payload,
+            expiresAt: request.expiresAt,
+            eventSeq,
+          });
+        } catch (error) {
+          o.log('error', `[agent-bridge] 创建交互失败 ${msg.taskId}：${(error as Error).message}`);
         }
       },
       onStatus: (status, info) => {

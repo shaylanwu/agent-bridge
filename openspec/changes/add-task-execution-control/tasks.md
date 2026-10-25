@@ -13,7 +13,8 @@
 > `--serve --acp --port 0`，且启动前删除继承的 `SERVER__PORT`；`initialize` / `session/new` 成功，
 > `session/prompt` 在本沙箱被平台要求登录（Authentication required）。已实现 CodeBuddy ACP 客户端
 > （initialize/session/new/session/prompt、permission、fs 读写、取消、超时）与 `CODEBUDDY_AUTH_TOKEN`
-> 显式认证门禁；尚未接入 TaskSupervisor/任务事件桥。
+> 显式认证门禁。已接入 TaskSupervisor：`acp` 任务走 ACP，`session/load` 续接，permission 转
+> `task_interaction_request` 并把 `task_interaction_response.optionId` 回送 ACP；无 token 仍回落 headless。
 
 ## 1. 决策、标准与安全边界
 

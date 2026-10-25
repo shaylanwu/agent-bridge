@@ -71,6 +71,9 @@ export interface AcpPromptOptions {
   prompt: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** 已存在的 native session：优先 session/load，失败再 session/new */
+  nativeSessionId?: string;
+  signal?: AbortSignal;
   onUpdate?: (update: Record<string, unknown>) => void;
   onPermission?: (request: AcpPermissionRequest) => Promise<string | undefined> | string | undefined;
 }
@@ -244,10 +247,13 @@ export async function runCodeBuddyAcpPrompt(opts: AcpPromptOptions): Promise<Acp
   });
 
   const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
-  const timer = setTimeout(() => {
+  const cancel = (): void => {
     if (sessionId) send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } });
     child.kill();
-  }, timeoutMs);
+  };
+  const timer = setTimeout(cancel, timeoutMs);
+  const onAbort = (): void => cancel();
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     await request('initialize', {
@@ -255,11 +261,26 @@ export async function runCodeBuddyAcpPrompt(opts: AcpPromptOptions): Promise<Acp
       clientInfo: { name: 'agent-bridge', version: '1.0.0' },
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
     });
-    const newSession = (await request('session/new', {
-      cwd: resolve(opts.cwd),
-      mcpServers: [],
-    })) as { sessionId?: string };
-    sessionId = newSession.sessionId ?? '';
+    if (opts.nativeSessionId) {
+      try {
+        const loaded = (await request('session/load', {
+          sessionId: opts.nativeSessionId,
+          cwd: resolve(opts.cwd),
+          mcpServers: [],
+        })) as { sessionId?: string } | null;
+        sessionId = loaded?.sessionId ?? opts.nativeSessionId;
+      } catch {
+        // load 不支持/会话已过期：退回新会话，调用方会继续用 replay 兜底语义。
+        sessionId = '';
+      }
+    }
+    if (!sessionId) {
+      const newSession = (await request('session/new', {
+        cwd: resolve(opts.cwd),
+        mcpServers: [],
+      })) as { sessionId?: string };
+      sessionId = newSession.sessionId ?? '';
+    }
     if (!sessionId) throw new Error('ACP session/new 未返回 sessionId');
     const result = (await request(
       'session/prompt',
@@ -274,6 +295,7 @@ export async function runCodeBuddyAcpPrompt(opts: AcpPromptOptions): Promise<Acp
     return { sessionId, text, stopReason };
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
     try {
       if (sessionId && !closed) send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } });
     } catch {

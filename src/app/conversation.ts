@@ -15,6 +15,7 @@ import type { TaskRegistry } from './task-registry.js';
 import type { SessionLog } from './session-log.js';
 import { authorizeService } from './service-gate.js';
 import { agentDefOf } from '../adapters/agent-adapters.js';
+import { hasCodebuddyAcpAuth } from '../adapters/acp-codebuddy.js';
 
 type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 type SendMessageMessage = Extract<ServerMessage, { type: 'send_message' }>;
@@ -219,6 +220,45 @@ export function startConversationTurn(
       });
     },
     onPlan: (items) => deps.registry.updatePlan(sessionId, items),
+    onInteraction: (request) => {
+      try {
+        deps.store.requestInteraction({
+          sessionId,
+          requestId: request.requestId,
+          kind: request.kind,
+          payload: request.payload,
+          turnId: turn.turnId,
+          expiresAt: request.expiresAt,
+        });
+        let eventSeq: number | undefined;
+        try {
+          eventSeq = deps.store.appendEvent({
+            sessionId,
+            type: 'task_interaction_request',
+            payload: {
+              requestId: request.requestId,
+              kind: request.kind,
+              payload: request.payload,
+              expiresAt: request.expiresAt,
+            },
+          }).eventSeq;
+        } catch {
+          /* event persistence must not kill the process */
+        }
+        deps.emitter.emit({
+          type: 'task_interaction_request',
+          taskId: sessionId,
+          requestId: request.requestId,
+          turnId: turn.turnId,
+          kind: request.kind,
+          payload: request.payload,
+          expiresAt: request.expiresAt,
+          eventSeq,
+        });
+      } catch (error) {
+        deps.log('error', `[agent-bridge] 创建交互失败 ${sessionId}：${(error as Error).message}`);
+      }
+    },
     onSession: (nativeSessionId) => {
       try {
         deps.store.updateSession(sessionId, { nativeSessionId });
@@ -244,6 +284,11 @@ export function startConversationTurn(
         maxQueued: deps.maxQueued,
         captureDiff: deps.captureDiffByDefault,
         diffMaxBytes: deps.diffMaxBytes,
+        acp:
+          session.agentType === 'codebuddy-cli' &&
+          Boolean(prompt) &&
+          hasCodebuddyAcpAuth(),
+        nativeSessionId: session.nativeSessionId,
       },
       hooks,
     );

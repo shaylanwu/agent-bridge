@@ -18,6 +18,11 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import {
+  AcpAuthRequiredError,
+  runCodeBuddyAcpPrompt,
+} from '../adapters/acp-codebuddy.js';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
 import { agentDefOf, resolveBin } from '../adapters/agent-adapters.js';
@@ -45,6 +50,10 @@ export interface RunTaskRequest {
   diffMaxBytes?: number;
   /** 打开 stdin 管道（steer / ACP 交互）；默认 false，保持 v1 行为 */
   interactive?: boolean;
+  /** 走 CodeBuddy ACP 会话（需要显式 CODEBUDDY_AUTH_TOKEN） */
+  acp?: boolean;
+  /** ACP 续接已有 native session */
+  nativeSessionId?: string;
 }
 
 /** 终态附加信息。diff 三个字段只在 captureDiff 开启时出现 */
@@ -73,6 +82,15 @@ export interface TaskHooks {
   onPlan?: (items: PlanItem[]) => void;
   /** CLI 事件里首次出现的原生 session/thread/conversation id */
   onSession?: (nativeSessionId: string) => void;
+  /** ACP 权限请求（由调用方落库并上行 task_interaction_request） */
+  onInteraction?: (request: AcpInteractionRequest) => void;
+}
+
+export interface AcpInteractionRequest {
+  requestId: string;
+  kind: 'permission';
+  payload: Record<string, unknown>;
+  expiresAt?: string;
 }
 
 export interface TaskHandle {
@@ -81,6 +99,8 @@ export interface TaskHandle {
   done: Promise<TaskStatus>;
   /** 仅 request.interactive=true 且 stdin 可用时存在；写入一行并返回是否成功 */
   write?: (line: string) => boolean;
+  /** ACP 权限响应：optionId 为空表示拒绝 */
+  respondInteraction?: (requestId: string, optionId?: string) => boolean;
 }
 
 /** 显式状态机：settled 是吸收态 */
@@ -111,6 +131,8 @@ interface Entry {
   /** ref → seq：finished 事件配对回同一步，不另占序号（tool_use/tool_result 不拆成两步） */
   stepRefs: Map<string, number>;
   child?: ChildProcess;
+  acpAbort?: AbortController;
+  acpPermissions?: Map<string, (optionId?: string) => void>;
   timer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
   resolve: (s: TaskStatus) => void;
@@ -266,6 +288,8 @@ export class TaskSupervisor {
       cancel: () => this.cancelEntry(entry),
       done: entry.done,
       write: (line: string) => this.writeTo(entry, line),
+      respondInteraction: (requestId: string, optionId?: string) =>
+        this.respondAcp(entry, requestId, optionId),
     };
   }
 
@@ -361,7 +385,17 @@ export class TaskSupervisor {
       cancel: () => this.cancelEntry(entry),
       done,
       write: (line: string) => this.writeTo(entry, line),
+      respondInteraction: (requestId: string, optionId?: string) =>
+        this.respondAcp(entry, requestId, optionId),
     };
+  }
+
+  private respondAcp(entry: Entry, requestId: string, optionId?: string): boolean {
+    const resolve = entry.acpPermissions?.get(requestId);
+    if (!resolve) return false;
+    entry.acpPermissions?.delete(requestId);
+    resolve(optionId);
+    return true;
   }
 
   private writeTo(entry: Entry, line: string): boolean {
@@ -388,6 +422,11 @@ export class TaskSupervisor {
     if (entry.state !== 'queued') return;
     entry.state = 'running';
     this.running += 1;
+
+    if (entry.req.acp) {
+      this.launchAcp(entry);
+      return;
+    }
 
     // 子进程环境恒为 bridge 自身进程环境：平台**不能**注入环境变量
     const shim = isWinShim(entry.cmd);
@@ -479,8 +518,114 @@ export class TaskSupervisor {
     entry.hooks.onStatus('running');
   }
 
+  private launchAcp(entry: Entry): void {
+    const controller = new AbortController();
+    entry.acpAbort = controller;
+    entry.acpPermissions = new Map();
+    entry.hooks.onStatus('running');
+
+    void runCodeBuddyAcpPrompt({
+      cwd: entry.req.cwd,
+      prompt: entry.req.prompt ?? '',
+      timeoutMs: timeoutOf(entry.req),
+      nativeSessionId: entry.req.nativeSessionId,
+      signal: controller.signal,
+      onUpdate: (update) => this.onAcpUpdate(entry, update),
+      onPermission: (request) => {
+        if (!entry.hooks.onInteraction) return undefined;
+        const requestId = `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+        const answer = new Promise<string | undefined>((resolve) => {
+          entry.acpPermissions?.set(requestId, resolve);
+        });
+        entry.hooks.onInteraction({
+          requestId,
+          kind: 'permission',
+          payload: { toolCall: request.toolCall, options: request.options },
+        });
+        return answer;
+      },
+    })
+      .then((result) => {
+        if (entry.state === 'settled') return;
+        entry.hooks.onSession?.(result.sessionId);
+        this.settle(entry, 'success', { exitCode: 0, result: result.text });
+      })
+      .catch((error) => {
+        if (entry.state === 'settled') return;
+        if (entry.status === 'cancelled') {
+          this.settle(entry, 'cancelled', { error: '任务已取消', errorCode: 'cancelled' });
+          return;
+        }
+        if (entry.status === 'timeout') {
+          this.settle(entry, 'timeout', { error: '任务超时，ACP 会话已终止', errorCode: 'timeout' });
+          return;
+        }
+        const auth = error instanceof AcpAuthRequiredError;
+        this.settle(entry, 'failed', {
+          error: (error as Error).message,
+          errorCode: auth ? 'tool_no_credentials' : 'agent_error',
+        });
+      });
+  }
+
+  private onAcpUpdate(entry: Entry, update: Record<string, unknown>): void {
+    const kind = String(update['sessionUpdate'] ?? '');
+    if (kind === 'agent_message_chunk') {
+      const content = update['content'] as Record<string, unknown> | undefined;
+      if (content?.['type'] === 'text' && typeof content['text'] === 'string') {
+        entry.hooks.onLog('stdout', content['text']);
+      }
+      return;
+    }
+    if (kind === 'plan' && entry.hooks.onPlan && Array.isArray(update['entries'])) {
+      const items: PlanItem[] = [];
+      for (const raw of update['entries'] as Array<Record<string, unknown>>) {
+        const text = String(raw['content'] ?? raw['text'] ?? '');
+        if (!text) continue;
+        const state = String(raw['status'] ?? 'pending');
+        items.push({
+          text,
+          state: state === 'completed' ? 'completed' : state === 'in_progress' ? 'in_progress' : 'pending',
+        });
+      }
+      entry.hooks.onPlan(items);
+      return;
+    }
+    if ((kind === 'tool_call' || kind === 'tool_call_update') && entry.hooks.onStep) {
+      const ref = String(update['toolCallId'] ?? '');
+      const status = String(update['status'] ?? 'pending');
+      const finished = status === 'completed' || status === 'failed';
+      const paired = ref ? entry.stepRefs.get(ref) : undefined;
+      if (!finished && paired !== undefined) return;
+      let seq = paired;
+      if (seq === undefined) {
+        entry.stepSeq += 1;
+        seq = entry.stepSeq;
+        if (ref) entry.stepRefs.set(ref, seq);
+      }
+      entry.hooks.onStep({
+        action: String(update['kind'] ?? update['title'] ?? 'tool'),
+        label: String(update['title'] ?? ''),
+        state: finished ? 'finished' : 'started',
+        ...(finished ? { ok: status === 'completed' } : {}),
+        ref: ref || undefined,
+        seq,
+      });
+    }
+  }
+
   private terminate(entry: Entry): void {
-    if (!entry.child) return;
+    if (!entry.child) {
+      if (entry.acpAbort) {
+        entry.acpAbort.abort();
+        const status = entry.status === 'timeout' ? 'timeout' : 'cancelled';
+        this.settle(entry, status, {
+          error: status === 'timeout' ? '任务超时，ACP 会话已终止' : '任务已取消',
+          errorCode: status,
+        });
+      }
+      return;
+    }
     entry.child.kill('SIGTERM');
     entry.killTimer = setTimeout(() => entry.child?.kill('SIGKILL'), KILL_GRACE_MS);
   }
@@ -505,6 +650,8 @@ export class TaskSupervisor {
     }
     entry.state = 'settled';
     entry.status = status;
+    for (const resolve of entry.acpPermissions?.values() ?? []) resolve(undefined);
+    entry.acpPermissions?.clear();
     // 终态快照存 entry：幂等重放直接用，不重跑 git diff
     entry.finishInfo = withDiff(entry.req, info);
     entry.hooks.onStatus(status, entry.finishInfo);

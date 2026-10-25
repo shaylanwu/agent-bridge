@@ -149,6 +149,9 @@ max_queue = 60   # 0 表示完全不排队
 生效优先级：启动参数 `--max-tasks` / `--max-queue`（connect 与 serve 都支持）>
 环境变量 `AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` > 配置文件 > 默认值。
 
+CodeBuddy ACP：显式设置 `CODEBUDDY_AUTH_TOKEN` 后，`codebuddy-cli` 的 conversation/task 会优先走
+ACP（原生 session、结构化权限请求）；未设置时保持 headless `codebuddy -p`，不会启动无认证子进程。
+
 同一 `taskId` 的 `run_task` 重复下发是安全的：bridge 按 `taskId` 幂等 —— 未终态回当前状态快照、
 已终态回放终态快照，绝不重复 spawn。设备的水位对平台透明：`hello.capacity` 携带生效额度，
 此后每次调度变化都会推一条 `capacity_update { running, queued, maxTasks, maxQueued }`。
