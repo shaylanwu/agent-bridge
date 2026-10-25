@@ -29,6 +29,8 @@ export interface AgentDef {
   taskArgs: string[];
   /** 步骤流格式：有值 = 该工具支持 task_step（taskArgs 必须产出对应 JSONL 事件流） */
   steps?: StepFormat;
+  /** 原生 resume 参数模板（含 {{sessionId}}）；仅对 help 已确认的工具声明 */
+  resumeArgs?: string[];
   credential: {
     /** 平台可代管 Key 的注入变量（有值才允许"绑定 Key"） */
     envKey?: string;
@@ -52,6 +54,7 @@ export const AGENTS: AgentDef[] = [
     capability: 'non_interactive',
     // 步骤流（B 批次）：stream-json 事件流喂 task_step；task_log 上行内容随之变为 JSONL
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
+    resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose', '--resume', '{{sessionId}}'],
     steps: 'claude-json',
     credential: {
       envKey: 'ANTHROPIC_API_KEY',
@@ -69,6 +72,7 @@ export const AGENTS: AgentDef[] = [
     altBins: ['cbc'],
     capability: 'non_interactive',
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
+    resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose', '--resume', '{{sessionId}}'],
     steps: 'claude-json',
     credential: {
       envs: [],

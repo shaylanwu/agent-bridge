@@ -14,6 +14,7 @@ import type { SessionStore, SessionRecord, SessionPhase, TurnRecord } from '../c
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionLog } from './session-log.js';
 import { authorizeService } from './service-gate.js';
+import { agentDefOf } from '../adapters/agent-adapters.js';
 
 type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 type SendMessageMessage = Extract<ServerMessage, { type: 'send_message' }>;
@@ -86,6 +87,11 @@ export function startConversationTurn(
 ): TaskHandle {
   const sessionId = session.sessionId;
   const executionId = `${sessionId}__${turn.turnId}`;
+  const def = agentDefOf(session.agentType);
+  const resumeArgs =
+    def?.resumeArgs && session.nativeSessionId
+      ? def.resumeArgs.map((arg) => arg.replaceAll('{{sessionId}}', session.nativeSessionId as string))
+      : [];
   const onStatus = (status: TaskStatus, info?: TaskFinishInfo): void => {
     const runningPhase = phaseOf(status, info);
     try {
@@ -230,7 +236,7 @@ export function startConversationTurn(
         taskId: executionId,
         agentType: session.agentType,
         cwd: session.cwd,
-        args: [],
+        args: resumeArgs,
         prompt,
         timeoutMs,
         allowedCwd: deps.allowedCwd,
@@ -362,7 +368,8 @@ export function dispatchConversationMessage(msg: SendMessageMessage, deps: Conve
     text,
     turnId: turn.turnId,
   });
-  const transcript = transcriptOf(deps, msg.taskId);
+  const nativeResume = Boolean(agentDefOf(session.agentType)?.resumeArgs && session.nativeSessionId);
+  const prompt = nativeResume ? text : transcriptOf(deps, msg.taskId);
   deps.emitter.emit({
     type: 'message_ack',
     taskId: msg.taskId,
@@ -383,5 +390,5 @@ export function dispatchConversationMessage(msg: SendMessageMessage, deps: Conve
     eventSeq: userMessage.message.eventSeq,
     at: userMessage.message.createdAt,
   });
-  startConversationTurn(deps, session, turn, transcript);
+  startConversationTurn(deps, session, turn, prompt);
 }

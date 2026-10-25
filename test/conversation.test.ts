@@ -86,10 +86,11 @@ describe('conversation turns', () => {
     store.createSession({
       sessionId: 'bt_conv_msg',
       mode: 'conversation',
-      agentType: 'codex',
+      agentType: 'claude-code',
       cwd: '/tmp/work',
       phase: 'waiting_user',
     });
+    store.updateSession('bt_conv_msg', { nativeSessionId: 'sess_native_1' });
 
     dispatchConversationMessage(
       {
@@ -108,6 +109,11 @@ describe('conversation turns', () => {
     expect(store.listMessages('bt_conv_msg').map((m) => m.role)).toEqual(['user', 'agent']);
     expect(store.getSession('bt_conv_msg')?.phase).toBe('waiting_user');
     expect(runnerMocks.startTask).toHaveBeenCalledTimes(1);
+    const request = runnerMocks.startTask.mock.calls[0]?.[0] as { args: string[]; prompt?: string };
+    expect(request.args).toEqual(
+      expect.arrayContaining(['--resume', 'sess_native_1']),
+    );
+    expect(request.prompt).toBe('second turn');
   });
 
   it('同 messageId 重发回 duplicate，不重复起 Turn', () => {
