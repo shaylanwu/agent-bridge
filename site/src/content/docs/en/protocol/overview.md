@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The wire protocol is version 1 (`PROTOCOL_VERSION = 1`). It is deliberately small: 31 message
+The wire protocol is version 1 (`PROTOCOL_VERSION = 1`). It is deliberately small: 36 message
 types over one outbound WebSocket. The normative description is
 [`contracts/asyncapi-3.0.yaml`](/agent-bridge/asyncapi-3.0.yaml); this page explains the rules
 around it.

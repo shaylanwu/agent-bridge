@@ -75,6 +75,41 @@ describe('ArtifactTransferManager', () => {
     expect(sent.some((m) => m.type === 'task_artifact')).toBe(true);
   });
 
+  it('下载按 ready/chunk/ack/result 推送', () => {
+    const { manager, sent } = setup();
+    const body = Buffer.from('download me', 'utf8');
+    const whole = sha(body);
+    const ready = manager.startUpload({
+      sessionId: 'bt_art',
+      operationId: 'op_dl',
+      name: 'download.txt',
+      mimeType: 'text/plain',
+      size: body.length,
+      sha256: whole,
+    });
+    manager.writeChunk({
+      transferId: ready.transferId,
+      offset: 0,
+      data: body.toString('base64'),
+      chunkSha256: sha(body),
+    });
+    const uploaded = manager.completeUpload({
+      transferId: ready.transferId,
+      size: body.length,
+      sha256: whole,
+    });
+
+    manager.startDownload({ sessionId: 'bt_art', artifactId: uploaded.artifactId ?? '' });
+    const downloadReady = sent.find((m) => m.type === 'artifact_download_ready');
+    const chunk = sent.find((m) => m.type === 'artifact_download_chunk');
+    expect(downloadReady).toBeDefined();
+    expect(chunk).toMatchObject({ offset: 0, data: body.toString('base64') });
+    if (downloadReady?.type === 'artifact_download_ready') {
+      manager.ackDownload({ transferId: downloadReady.transferId, nextOffset: body.length });
+    }
+    expect(sent.at(-1)).toMatchObject({ type: 'artifact_download_result', status: 'completed' });
+  });
+
   it('chunk hash 不符/乱序拒绝', () => {
     const { manager } = setup();
     const body = Buffer.from('abc');

@@ -44,9 +44,22 @@ export class ArtifactTransferError extends Error {
   }
 }
 
+interface DownloadTransfer {
+  transferId: string;
+  artifactId: string;
+  sessionId: string;
+  path: string;
+  size: number;
+  sha256: string;
+  chunkSize: number;
+  offset: number;
+  lastLength: number;
+}
+
 export class ArtifactTransferManager {
   private readonly transfers = new Map<string, Transfer>();
   private readonly byOperation = new Map<string, string>();
+  private readonly downloads = new Map<string, DownloadTransfer>();
   private readonly root: string;
 
   constructor(
@@ -149,6 +162,90 @@ export class ArtifactTransferManager {
     }
     transfer.nextOffset += bytes.length;
     return { nextOffset: transfer.nextOffset };
+  }
+
+  startDownload(input: {
+    sessionId: string;
+    artifactId: string;
+    chunkSize?: number;
+  }): { transferId: string; size: number; sha256: string; chunkSize: number } {
+    const artifact = this.deps.store.getArtifact(input.artifactId);
+    if (!artifact || artifact.sessionId !== input.sessionId) {
+      throw new ArtifactTransferError('artifact_not_found', `附件不存在：${input.artifactId}`);
+    }
+    const path = join(this.root, artifact.storageKey);
+    if (!statSync(path, { throwIfNoEntry: false })) {
+      throw new ArtifactTransferError('artifact_missing', '附件内容不在 CAS 中');
+    }
+    const transferId = `dt_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const chunkSize = Math.min(
+      MAX_CHUNK_SIZE,
+      Math.max(1, Math.floor(input.chunkSize ?? DEFAULT_CHUNK_SIZE)),
+    );
+    const transfer: DownloadTransfer = {
+      transferId,
+      artifactId: artifact.artifactId,
+      sessionId: input.sessionId,
+      path,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      chunkSize,
+      offset: 0,
+      lastLength: 0,
+    };
+    this.downloads.set(transferId, transfer);
+    this.deps.emit({
+      type: 'artifact_download_ready',
+      transferId,
+      artifactId: artifact.artifactId,
+      size: artifact.size,
+      sha256: artifact.sha256,
+      chunkSize,
+    });
+    if (artifact.size === 0) {
+      this.downloads.delete(transferId);
+      this.deps.emit({ type: 'artifact_download_result', transferId, status: 'completed' });
+    } else {
+      this.sendNextDownloadChunk(transfer);
+    }
+    return { transferId, size: artifact.size, sha256: artifact.sha256, chunkSize };
+  }
+
+  ackDownload(input: { transferId: string; nextOffset: number }): void {
+    const transfer = this.downloads.get(input.transferId);
+    if (!transfer) throw new ArtifactTransferError('transfer_not_found', '下载传输不存在或已结束');
+    const expected = transfer.offset + transfer.lastLength;
+    if (input.nextOffset !== expected) {
+      throw new ArtifactTransferError(
+        'out_of_order',
+        `chunk ack offset ${input.nextOffset} != expected ${expected}`,
+      );
+    }
+    transfer.offset = input.nextOffset;
+    if (transfer.offset >= transfer.size) {
+      this.downloads.delete(transfer.transferId);
+      this.deps.emit({
+        type: 'artifact_download_result',
+        transferId: transfer.transferId,
+        status: 'completed',
+      });
+      return;
+    }
+    this.sendNextDownloadChunk(transfer);
+  }
+
+  private sendNextDownloadChunk(transfer: DownloadTransfer): void {
+    const content = readFileSync(transfer.path);
+    const end = Math.min(transfer.size, transfer.offset + transfer.chunkSize);
+    const chunk = content.subarray(transfer.offset, end);
+    transfer.lastLength = chunk.length;
+    this.deps.emit({
+      type: 'artifact_download_chunk',
+      transferId: transfer.transferId,
+      offset: transfer.offset,
+      data: chunk.toString('base64'),
+      chunkSha256: this.sha256Bytes(chunk),
+    });
   }
 
   completeUpload(input: { transferId: string; size: number; sha256: string }): {

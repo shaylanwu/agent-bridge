@@ -459,6 +459,90 @@ State transitions, and the only message that carries terminal results: exit code
 ```
 
 
+<a id="msg-artifact_download_ready"></a>
+
+### artifact_download_ready — 下载就绪
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_ready` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `size` | `integer` | ✓ |  |
+| `sha256` | `string` | ✓ |  |
+| `chunkSize` | `integer` | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_download_ready",
+  "transferId": "string",
+  "artifactId": "string",
+  "size": 1,
+  "sha256": "string",
+  "chunkSize": 1
+}
+```
+
+
+<a id="msg-artifact_download_chunk"></a>
+
+### artifact_download_chunk — 下载附件 chunk
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_chunk` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `offset` | `integer` | ✓ |  |
+| `data` | `string` | ✓ |  |
+| `chunkSha256` | `string` | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_download_chunk",
+  "transferId": "string",
+  "offset": 1,
+  "data": "string",
+  "chunkSha256": "string"
+}
+```
+
+
+<a id="msg-artifact_download_result"></a>
+
+### artifact_download_result — 下载结果
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_result` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `status` | `completed` \| `failed` | ✓ |  |
+| `errorCode` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_download_result",
+  "transferId": "string",
+  "status": "completed",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-artifact_upload_result"></a>
 
 ### artifact_upload_result — 上传结果
@@ -821,6 +905,62 @@ Platform → bridge. Requests cancellation of a running task.
   "offset": 1,
   "data": "string",
   "chunkSha256": "string"
+}
+```
+
+
+<a id="msg-artifact_download_start"></a>
+
+### artifact_download_start — 启动附件下载
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_start` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_download_start",
+  "taskId": "string",
+  "artifactId": "string",
+  "operationId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-artifact_download_chunk_ack"></a>
+
+### artifact_download_chunk_ack — 下载 chunk 确认
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_chunk_ack` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `nextOffset` | `integer` | ✓ |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_download_chunk_ack",
+  "transferId": "string",
+  "nextOffset": 1
 }
 ```
 

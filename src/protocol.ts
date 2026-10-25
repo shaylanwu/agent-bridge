@@ -29,6 +29,7 @@ export const PROTOCOL_CAPABILITIES = [
   'session-multi-turn',
   'task-interaction',
   'artifact-upload',
+  'artifact-download',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -234,6 +235,27 @@ export type ClientMessage =
       errorCode?: string;
     }
   | {
+      type: 'artifact_download_ready';
+      transferId: string;
+      artifactId: string;
+      size: number;
+      sha256: string;
+      chunkSize: number;
+    }
+  | {
+      type: 'artifact_download_chunk';
+      transferId: string;
+      offset: number;
+      data: string;
+      chunkSha256: string;
+    }
+  | {
+      type: 'artifact_download_result';
+      transferId: string;
+      status: 'completed' | 'failed';
+      errorCode?: string;
+    }
+  | {
       /** 交互回复结果（bridge → 平台） */
       type: 'task_interaction_result';
       taskId: string;
@@ -360,6 +382,19 @@ export interface InteractionResponseCommand extends ServiceIdentity {
   respondedBy?: string;
 }
 
+export interface ArtifactDownloadStartCommand extends ServiceIdentity {
+  type: 'artifact_download_start';
+  taskId: string;
+  artifactId: string;
+  operationId: string;
+}
+
+export interface ArtifactDownloadChunkAckCommand {
+  type: 'artifact_download_chunk_ack';
+  transferId: string;
+  nextOffset: number;
+}
+
 export interface ArtifactUploadStartCommand extends ServiceIdentity {
   type: 'artifact_upload_start';
   taskId: string;
@@ -408,7 +443,9 @@ export type ServerMessage =
   | InteractionResponseCommand
   | ArtifactUploadStartCommand
   | ArtifactUploadChunkCommand
-  | ArtifactUploadCompleteCommand;
+  | ArtifactUploadCompleteCommand
+  | ArtifactDownloadStartCommand
+  | ArtifactDownloadChunkAckCommand;
 
 export class ProtocolError extends Error {}
 
@@ -467,6 +504,35 @@ export function assertServerMessage(raw: unknown): ServerMessage {
   }
   if (type === 'ping') {
     return { type: 'ping', at: typeof msg['at'] === 'number' ? msg['at'] : undefined };
+  }
+  if (type === 'artifact_download_start') {
+    for (const key of ['taskId', 'artifactId', 'operationId'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`artifact_download_start 缺少 ${key}`);
+      }
+    }
+    return {
+      type: 'artifact_download_start',
+      taskId: String(msg['taskId']),
+      artifactId: String(msg['artifactId']),
+      operationId: String(msg['operationId']),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
+  }
+  if (type === 'artifact_download_chunk_ack') {
+    if (typeof msg['transferId'] !== 'string' || !msg['transferId']) {
+      throw new ProtocolError('artifact_download_chunk_ack 缺少 transferId');
+    }
+    if (typeof msg['nextOffset'] !== 'number' || !Number.isFinite(msg['nextOffset']) || msg['nextOffset'] < 0) {
+      throw new ProtocolError('artifact_download_chunk_ack.nextOffset 非法');
+    }
+    return {
+      type: 'artifact_download_chunk_ack',
+      transferId: String(msg['transferId']),
+      nextOffset: Math.floor(msg['nextOffset'] as number),
+    };
   }
   if (type === 'artifact_upload_start') {
     for (const key of ['taskId', 'operationId', 'name', 'mimeType', 'sha256'] as const) {

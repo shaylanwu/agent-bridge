@@ -53,7 +53,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download。
               items: { type: string }
             capacity:
               type: object
@@ -268,6 +268,42 @@ channels:
             type: { type: string, const: artifact_upload_chunk_ack }
             transferId: { type: string }
             nextOffset: { type: integer, minimum: 0 }
+      artifact_download_ready:
+        name: artifact_download_ready
+        title: 下载就绪
+        payload:
+          type: object
+          required: [type, transferId, artifactId, size, sha256, chunkSize]
+          properties:
+            type: { type: string, const: artifact_download_ready }
+            transferId: { type: string }
+            artifactId: { type: string }
+            size: { type: integer, minimum: 0 }
+            sha256: { type: string }
+            chunkSize: { type: integer, minimum: 1 }
+      artifact_download_chunk:
+        name: artifact_download_chunk
+        title: 下载附件 chunk
+        payload:
+          type: object
+          required: [type, transferId, offset, data, chunkSha256]
+          properties:
+            type: { type: string, const: artifact_download_chunk }
+            transferId: { type: string }
+            offset: { type: integer, minimum: 0 }
+            data: { type: string, description: base64 }
+            chunkSha256: { type: string }
+      artifact_download_result:
+        name: artifact_download_result
+        title: 下载结果
+        payload:
+          type: object
+          required: [type, transferId, status]
+          properties:
+            type: { type: string, const: artifact_download_result }
+            transferId: { type: string }
+            status: { type: string, enum: [completed, failed] }
+            errorCode: { type: string }
       artifact_upload_result:
         name: artifact_upload_result
         title: 上传结果
@@ -446,6 +482,30 @@ channels:
             offset: { type: integer, minimum: 0 }
             data: { type: string, description: base64 }
             chunkSha256: { type: string }
+      artifact_download_start:
+        name: artifact_download_start
+        title: 启动附件下载
+        payload:
+          type: object
+          required: [type, taskId, artifactId, operationId]
+          properties:
+            type: { type: string, const: artifact_download_start }
+            taskId: { type: string }
+            artifactId: { type: string }
+            operationId: { type: string }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
+      artifact_download_chunk_ack:
+        name: artifact_download_chunk_ack
+        title: 下载 chunk 确认
+        payload:
+          type: object
+          required: [type, transferId, nextOffset]
+          properties:
+            type: { type: string, const: artifact_download_chunk_ack }
+            transferId: { type: string }
+            nextOffset: { type: integer, minimum: 0 }
       artifact_upload_complete:
         name: artifact_upload_complete
         title: 完成附件上传
@@ -569,6 +629,9 @@ operations:
       - $ref: '#/channels/upstream/messages/artifact_upload_ready'
       - $ref: '#/channels/upstream/messages/artifact_upload_chunk_ack'
       - $ref: '#/channels/upstream/messages/artifact_upload_result'
+      - $ref: '#/channels/upstream/messages/artifact_download_ready'
+      - $ref: '#/channels/upstream/messages/artifact_download_chunk'
+      - $ref: '#/channels/upstream/messages/artifact_download_result'
       - $ref: '#/channels/upstream/messages/pong'
   onDownstream:
     title: 平台下发指令
@@ -581,6 +644,8 @@ operations:
       - $ref: '#/channels/downstream/messages/artifact_upload_start'
       - $ref: '#/channels/downstream/messages/artifact_upload_chunk'
       - $ref: '#/channels/downstream/messages/artifact_upload_complete'
+      - $ref: '#/channels/downstream/messages/artifact_download_start'
+      - $ref: '#/channels/downstream/messages/artifact_download_chunk_ack'
       - $ref: '#/channels/downstream/messages/cancel_task'
       - $ref: '#/channels/downstream/messages/close_session'
       - $ref: '#/channels/downstream/messages/cancel_turn'

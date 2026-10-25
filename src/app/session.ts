@@ -190,6 +190,46 @@ export function createSession(opts: SessionOptions): BridgeSession {
         }
         return;
       }
+      if (msg.type === 'artifact_download_start') {
+        const gate = authorizeService(
+          msg,
+          'get_task',
+          msg.taskId,
+          'task:read',
+          opts.requireServiceToken,
+        );
+        if (!gate.ok) {
+          opts.log('error', `[agent-bridge] 拒绝附件下载 ${msg.taskId}：${gate.message}`);
+          return;
+        }
+        try {
+          artifacts.startDownload({
+            sessionId: msg.taskId,
+            artifactId: msg.artifactId,
+          });
+        } catch (error) {
+          emitter.emit({
+            type: 'artifact_download_result',
+            transferId: msg.operationId,
+            status: 'failed',
+            errorCode: (error as { code?: string }).code ?? 'artifact_download_failed',
+          });
+        }
+        return;
+      }
+      if (msg.type === 'artifact_download_chunk_ack') {
+        try {
+          artifacts.ackDownload(msg);
+        } catch (error) {
+          emitter.emit({
+            type: 'artifact_download_result',
+            transferId: msg.transferId,
+            status: 'failed',
+            errorCode: (error as { code?: string }).code ?? 'artifact_download_failed',
+          });
+        }
+        return;
+      }
       if (msg.type === 'artifact_upload_complete') {
         try {
           const result = artifacts.completeUpload(msg);

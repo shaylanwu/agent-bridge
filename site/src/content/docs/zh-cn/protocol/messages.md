@@ -26,7 +26,7 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
 
 **示例**
@@ -467,6 +467,90 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 ```
 
 
+<a id="msg-artifact_download_ready"></a>
+
+### artifact_download_ready — 下载就绪
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_ready` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `size` | `integer` | ✓ |  |
+| `sha256` | `string` | ✓ |  |
+| `chunkSize` | `integer` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_download_ready",
+  "transferId": "string",
+  "artifactId": "string",
+  "size": 1,
+  "sha256": "string",
+  "chunkSize": 1
+}
+```
+
+
+<a id="msg-artifact_download_chunk"></a>
+
+### artifact_download_chunk — 下载附件 chunk
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_chunk` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `offset` | `integer` | ✓ |  |
+| `data` | `string` | ✓ | base64 |
+| `chunkSha256` | `string` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_download_chunk",
+  "transferId": "string",
+  "offset": 1,
+  "data": "string",
+  "chunkSha256": "string"
+}
+```
+
+
+<a id="msg-artifact_download_result"></a>
+
+### artifact_download_result — 下载结果
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_result` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `status` | `completed` \| `failed` | ✓ |  |
+| `errorCode` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_download_result",
+  "transferId": "string",
+  "status": "completed",
+  "errorCode": "string"
+}
+```
+
+
 <a id="msg-artifact_upload_result"></a>
 
 ### artifact_upload_result — 上传结果
@@ -837,6 +921,62 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   "offset": 1,
   "data": "string",
   "chunkSha256": "string"
+}
+```
+
+
+<a id="msg-artifact_download_start"></a>
+
+### artifact_download_start — 启动附件下载
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_start` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `operationId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_download_start",
+  "taskId": "string",
+  "artifactId": "string",
+  "operationId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-artifact_download_chunk_ack"></a>
+
+### artifact_download_chunk_ack — 下载 chunk 确认
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_download_chunk_ack` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `nextOffset` | `integer` | ✓ |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_download_chunk_ack",
+  "transferId": "string",
+  "nextOffset": 1
 }
 ```
 
