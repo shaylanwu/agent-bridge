@@ -28,6 +28,9 @@ main{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px;padding:16p
 pre{margin:0;background:#0f1720;color:#dbe7f3;padding:12px;border-radius:10px;overflow:auto;max-height:36vh;font:12px/1.5 ui-monospace,Consolas,monospace}
 #events{max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:8px;background:#fbfcfe;margin-top:10px}
 .ev{padding:6px;border-bottom:1px dashed #e5ebf2;font:12px/1.4 ui-monospace,Consolas,monospace;white-space:pre-wrap}
+.files{margin:0 0 10px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.file{display:flex;gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid #eef2f6;font-size:13px}
+.file:last-child{border-bottom:0}.file a{color:var(--brand);text-decoration:none}.file .size{color:var(--muted);margin-left:auto}
 .muted{color:var(--muted)}.err{color:var(--danger)}
 #gate{display:none;position:fixed;inset:0;background:rgba(15,23,32,.45);align-items:center;justify-content:center;padding:20px}
 #gate .box{background:#fff;border-radius:14px;padding:22px;max-width:460px;width:100%}
@@ -65,10 +68,15 @@ $('list').addEventListener('click',function(e){var row=e.target.closest('.sess')
 function load(){if(!token){gate(true);return}
  fetch('/v1/sessions?limit=100',{headers:auth()}).then(function(r){if(r.status===401||r.status===403)throw new Error('unauthorized');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})
  .then(function(d){sessions=d.sessions||[];render()}).catch(function(err){if(err.message==='unauthorized'){gate(true);return}$('list').innerHTML='<div class="err" style="padding:12px">'+esc(err.message)+'</div>'})}
+function artifactsHtml(s){var list=s.artifacts||[];if(!list.length)return '';
+ return '<div class="files">'+list.map(function(a){
+  var href='/v1/sessions/'+encodeURIComponent(s.sessionId)+'/artifacts/'+encodeURIComponent(a.artifactId)+'?token='+encodeURIComponent(token);
+  return '<div class="file"><a href="'+href+'" download>'+esc(a.name)+'</a><span class="size">'+esc(a.mimeType||'')+' · '+esc(a.size)+' B</span></div>';
+ }).join('')+'</div>'}
 function open(id){current=id;if(es){es.close();es=null}
  $('title').textContent=id;$('detail').innerHTML='<div class="muted">加载中…</div>';
  fetch('/v1/sessions/'+encodeURIComponent(id),{headers:auth()}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})
- .then(function(s){$('detail').innerHTML='<pre>'+esc(JSON.stringify(s,null,2))+'</pre><div class="muted" style="margin:10px 0 0">实时事件</div><div id="events"></div>';subscribe(id,s.latestEventSeq||0)})
+ .then(function(s){$('detail').innerHTML=artifactsHtml(s)+'<pre>'+esc(JSON.stringify(s,null,2))+'</pre><div class="muted" style="margin:10px 0 0">实时事件</div><div id="events"></div>';subscribe(id,s.latestEventSeq||0)})
  .catch(function(err){$('detail').innerHTML='<div class="err">'+esc(err.message)+'</div>'})}
 function subscribe(id,after){var box=$('events');es=new EventSource('/v1/sessions/'+encodeURIComponent(id)+'/events?afterEventSeq='+encodeURIComponent(after)+'&token='+encodeURIComponent(token));
  function push(kind,data){var el=document.createElement('div');el.className='ev';el.textContent=kind+'  '+JSON.stringify(data);box.appendChild(el);box.scrollTop=box.scrollHeight}

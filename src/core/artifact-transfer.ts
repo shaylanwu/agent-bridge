@@ -284,6 +284,17 @@ export class ArtifactTransferManager {
     return { scanned: all.length, deleted: expired.length, filesRemoved };
   }
 
+  artifactPath(sessionId: string, artifactId: string): { path: string; artifact: { name: string; mimeType: string; size: number } } | undefined {
+    const artifact = this.deps.store.getArtifact(artifactId, this.tenant());
+    if (!artifact || artifact.sessionId !== sessionId) return undefined;
+    const path = join(this.root, artifact.storageKey);
+    if (!statSync(path, { throwIfNoEntry: false })) return undefined;
+    return {
+      path,
+      artifact: { name: artifact.name, mimeType: artifact.mimeType, size: artifact.size },
+    };
+  }
+
   startDownload(input: {
     sessionId: string;
     artifactId: string;

@@ -17,7 +17,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { createReadStream, readFileSync, statSync } from 'node:fs';
 import { extname, resolve as resolvePath, sep } from 'node:path';
 import { Emitter, type Upstream } from '../core/emitter.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
@@ -603,6 +603,31 @@ export async function startControlPlane(
     });
   };
 
+  const handleArtifactDownload = (ctx: RouteContext, sessionId: string, artifactId: string): void => {
+    if (!authorize(ctx, 'task:read')) return;
+    const found = deps.artifacts.artifactPath(sessionId, artifactId);
+    if (!found) {
+      problem(ctx.res, 404, 'internal', `未找到附件：${artifactId}`);
+      return;
+    }
+    ctx.res.writeHead(200, {
+      'content-type': found.artifact.mimeType || 'application/octet-stream',
+      'content-length': String(found.artifact.size),
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(found.artifact.name)}`,
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    const stream = createReadStream(found.path);
+    stream.on('error', () => {
+      try {
+        ctx.res.destroy();
+      } catch {
+        /* closed */
+      }
+    });
+    stream.pipe(ctx.res);
+  };
+
   const handleArtifactsGc = (ctx: RouteContext): void => {
     if (!authorize(ctx, 'task:cancel')) return;
     const body = (ctx.body ?? {}) as { ttlDays?: unknown; dryRun?: unknown };
@@ -805,6 +830,14 @@ export async function startControlPlane(
         }
         if (path === '/v1/sessions' && req.method === 'GET') {
           return handleSessions(ctx);
+        }
+        const artifactMatch = /^\/v1\/sessions\/([^/]+)\/artifacts\/([^/]+)$/.exec(path);
+        if (artifactMatch && req.method === 'GET') {
+          return handleArtifactDownload(
+            ctx,
+            decodeURIComponent(artifactMatch[1] ?? ''),
+            decodeURIComponent(artifactMatch[2] ?? ''),
+          );
         }
         const sessionEventsMatch = /^\/v1\/sessions\/([^/]+)\/events$/.exec(path);
         if (sessionEventsMatch && req.method === 'GET') {

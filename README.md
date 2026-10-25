@@ -428,6 +428,7 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | GET | `/v1/sessions` | `task:read` (persistent sessions) |
 | GET | `/v1/sessions/{id}` | `task:read` (session snapshot + eventSeq window) |
 | GET | `/v1/sessions/{id}/events` | `task:read` (SSE: replay + live events) |
+| GET | `/v1/sessions/{id}/artifacts/{artifactId}` | `task:read` (stream artifact download) |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read` (cursor-paginated) |
 | GET | `/v1/tasks/{id}` | `task:read` |

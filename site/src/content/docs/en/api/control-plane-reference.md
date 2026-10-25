@@ -18,6 +18,7 @@ description: Every endpoint of the optional loopback control plane — generated
 | `POST` | [`/v1/artifacts:gc`](#op-post-v1-artifacts-gc) | 显式 TTL 清理 artifact（按 CAS 引用计数，不自动执行） |
 | `GET` | [`/v1/sessions`](#op-get-v1-sessions) | 持久会话列表（按 created_at 升序，返回末尾 limit 条） |
 | `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
+| `GET` | [`/v1/sessions/{id}/artifacts/{artifactId}`](#op-get-v1-sessions-id-artifacts-artifactid) | 下载会话附件（流式，Content-Disposition attachment） |
 | `GET` | [`/v1/sessions/{id}/events`](#op-get-v1-sessions-id-events) | 会话 SSE：先回放历史，再接实时事件 |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | Task ledger, cursor-paginated (cursor, not offset — the list keeps moving) |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | Create a task |
@@ -399,6 +400,34 @@ The only route that needs no token — safe for container and CI probes.
   ]
 }
 ```
+
+
+
+
+<a id="op-get-v1-sessions-id-artifacts-artifactid"></a>
+
+### GET /v1/sessions/{id}/artifacts/{artifactId}
+
+**下载会话附件（流式，Content-Disposition attachment）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `id` | path | `string` | ✓ |  |
+| `artifactId` | path | `string` | ✓ |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | 附件字节流 |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+| `404` | Session does not exist — Schema: Problem |
 
 
 

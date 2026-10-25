@@ -398,6 +398,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | GET | `/v1/sessions` | `task:read`（持久会话列表） |
 | GET | `/v1/sessions/{id}` | `task:read`（会话快照 + eventSeq 窗口） |
 | GET | `/v1/sessions/{id}/events` | `task:read`（SSE：回放 + 实时事件） |
+| GET | `/v1/sessions/{id}/artifacts/{artifactId}` | `task:read`（附件流式下载） |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read`（游标分页） |
 | GET | `/v1/tasks/{id}` | `task:read` |

@@ -183,6 +183,15 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('GET /v1/sessions/{id}/artifacts/{aid} 未找到返回 404', async () => {
+    const plane = await start({ verify: () => ({ ok: true }) });
+    const res = await call(plane.port, 'GET', '/v1/sessions/bt_x/artifacts/art_missing', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(res.status).toBe(404);
+    plane.close();
+  });
+
   it('/v1/sessions/{id}/events 回放历史并在终态结束', async () => {
     const store = new SessionStore(':memory:');
     store.createSession({ sessionId: 'bt_sse', mode: 'task', agentType: 'codex', cwd: process.cwd() });

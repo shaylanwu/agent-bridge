@@ -221,6 +221,28 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/sessions/{id}/artifacts/{artifactId}:
+    get:
+      tags: [artifacts]
+      summary: 下载会话附件（流式，Content-Disposition attachment）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: artifactId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 附件字节流
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/sessions/{id}/events:
     get:
       tags: [sessions]
