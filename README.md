@@ -423,7 +423,7 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | Default | **off**. Enable with `[control_plane] enabled = true` in `config.toml`, or `--port` for this run only |
 | Auth | scoped Bearer (`abs_<kid>_<secret>`, the same tokens as P0-8); `/v1/health` and the dashboard shell `/` are open; `?token=` is accepted for EventSource (loopback only — never share the URL). **Zero-setup dashboard**: `serve` mints a read-only in-memory token (`task:read`/`device:read`) at startup and embeds it in the printed dashboard URL; it dies with the process |
 | CORS | never sent — a browser script cannot call it silently |
-| JWT | optional `[jwt] jwks_url = "..."`; verified principals scope `/v1/sessions` reads by `tenant_id`. Tasks/board/artifacts are not tenant-scoped yet, so non-default tenants get 403 `tenant_not_supported` |
+| JWT | optional `[jwt] jwks_url = "..."`; verified principals scope `/v1/sessions` and `/v1/board` by `tenant_id`. Tasks/artifacts are not tenant-scoped yet, so non-default tenants get 403 `tenant_not_supported` |
 | Scheduling | tasks go through the same `TaskSupervisor`, so `max_tasks` covers both channels |
 | Upstream | control-plane tasks report through the same `Emitter`, so the platform view never half-disappears |
 | Dashboard | `GET /` serves an embedded Web task board (structured log event cards for all 7 event families, tool calls and results merged, raw JSON collapsed; agent todo plans + step timeline + result preview; vw/vh modals with fullscreen; bounded 600-event log cache, frame-batched SSE rendering, polling paused in background tabs); `GET /v1/board` is its data source (same registry as the terminal panel) |

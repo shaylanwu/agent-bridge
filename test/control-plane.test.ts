@@ -204,6 +204,24 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('JWT 看板按 tenant 过滤任务', async () => {
+    const { sign, verifier } = jwtFixture();
+    const registry = new TaskRegistry();
+    registry.register('t_a', { agentType: 'codex', cwd: '/tmp', source: 'platform', tenantId: 'tenant_a' });
+    registry.register('t_b', { agentType: 'codex', cwd: '/tmp', source: 'platform', tenantId: 'tenant_b' });
+    const plane = await start({ registry, jwt: verifier });
+    const now = Math.floor(Date.now() / 1000);
+    const token = sign({ sub: 'u', tenant_id: 'tenant_b', scope: 'task:read', exp: now + 3600 });
+    const res = await call(plane.port, 'GET', '/v1/board', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    expect(
+      res.json<{ tasks: { taskId: string }[] }>().tasks.map((task) => task.taskId),
+    ).toEqual(['t_b']);
+    plane.close();
+  });
+
   it('JWT 会话读取按 tenant 隔离，跨租户快照 404', async () => {
     const { sign, verifier } = jwtFixture();
     const store = new SessionStore(':memory:');

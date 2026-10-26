@@ -30,6 +30,8 @@ export interface TaskStepEntry {
 
 export interface TaskView {
   taskId: string;
+  /** 租户（默认 default；控制面 JWT 可按它过滤看板） */
+  tenantId: string;
   agentType: string;
   /** 展示用短路径（basename；全路径不出面板） */
   cwdShort: string;
@@ -75,13 +77,17 @@ export class TaskRegistry {
   private readonly listeners = new Set<() => void>();
 
   /** 提交时登记（重复 taskId 幂等：已存在则不覆盖 source/时间） */
-  register(taskId: string, init: { agentType: string; cwd: string; source: TaskSource }): void {
+  register(
+    taskId: string,
+    init: { agentType: string; cwd: string; source: TaskSource; tenantId?: string },
+  ): void {
     if (this.views.has(taskId)) return;
     const base = init.cwd.replace(/[\\/]+$/, '');
     const short = base.split(/[\\/]/).pop() || init.cwd;
     this.cwdFull.set(taskId, init.cwd);
     this.views.set(taskId, {
       taskId,
+      tenantId: init.tenantId ?? 'default',
       agentType: init.agentType,
       cwdShort: short,
       source: init.source,
@@ -165,13 +171,16 @@ export class TaskRegistry {
     this.notify();
   }
 
-  list(): TaskView[] {
-    return [...this.views.values()];
+  list(tenantId?: string): TaskView[] {
+    const views = [...this.views.values()];
+    return tenantId === undefined ? views : views.filter((view) => view.tenantId === tenantId);
   }
 
-  /** 面板/端点用单任务视图 */
-  get(taskId: string): TaskView | undefined {
-    return this.views.get(taskId);
+  /** 面板/端点用单任务视图；带 tenant 时跨租户视为不存在 */
+  get(taskId: string, tenantId?: string): TaskView | undefined {
+    const view = this.views.get(taskId);
+    if (view && tenantId !== undefined && view.tenantId !== tenantId) return undefined;
+    return view;
   }
 
   /** 服务端内部用：任务的真实 cwd（文件预览端点）；不出现在任何序列化视图里 */
@@ -179,9 +188,9 @@ export class TaskRegistry {
     return this.cwdFull.get(taskId);
   }
 
-  counts(): TaskCounts {
+  counts(tenantId?: string): TaskCounts {
     const c: TaskCounts = { running: 0, queued: 0, success: 0, failed: 0 };
-    for (const v of this.views.values()) {
+    for (const v of this.list(tenantId)) {
       if (v.status === 'running' && v.phase === 'queued') c.queued += 1;
       else if (v.status === 'running') c.running += 1;
       else if (v.status === 'success') c.success += 1;

@@ -392,7 +392,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | 默认 | **关闭**。用 `[control_plane] enabled = true` 写进配置，或本次带 `--port` 临时开 |
 | 鉴权 | scoped Bearer（`abs_<kid>_<secret>`，与 P0-8 同一套令牌）；`/v1/health` 与面板页壳 `/` 免鉴权；EventSource 场景允许 `?token=` 兜底（仅回环，勿外发）。**Web 面板零操作**：serve 启动时自动生成一个只读（task:read/device:read）内存令牌并拼进面板地址，进程退出即失效 |
 | CORS | 一律不返回 —— 浏览器脚本无法静默调用本机端口 |
-| JWT | 可选 `[jwt] jwks_url = "..."`；验签后按 `tenant_id` 隔离 `/v1/sessions` 读取。任务/看板/附件尚未租户化，非默认租户回 403 `tenant_not_supported` |
+| JWT | 可选 `[jwt] jwks_url = "..."`；验签后按 `tenant_id` 隔离 `/v1/sessions` 与 `/v1/board`。任务/附件尚未租户化，非默认租户回 403 `tenant_not_supported` |
 | 调度 | 任务走同一个 `TaskSupervisor`，`max_tasks` 对两条通道**同时**生效 |
 | 上行 | 控制面下发的任务也经同一个 `Emitter` 回传，平台侧视图不会出现"半边失踪" |
 | 面板 | `GET /` 内嵌 Web 任务面板（产品化任务表 + **结构化日志事件卡**（7 族事件归一化、工具调用与结果合并、原始 JSON 折叠）+ 执行待办 + 步骤时间线 + 结果预览；三个弹窗均支持 vw/vh 自适应与全屏；日志 600 条有界缓存、SSE 合帧渲染、后台标签页暂停轮询）；`GET /v1/board` 是其数据源（与终端面板同一注册表） |

@@ -311,7 +311,7 @@ export async function startControlPlane(
   };
 
   const handleMetrics = (ctx: RouteContext): void => {
-    const counts = deps.registry.counts();
+    const counts = deps.registry.counts(ctx.tenantId);
     const memory = process.memoryUsage();
     const sessions = deps.store.listSessions(ctx.tenantId).length;
     const lines = [
@@ -406,7 +406,12 @@ export async function startControlPlane(
       updatedAt: new Date().toISOString(),
     };
     remember(record);
-    deps.registry.register(taskId, { agentType, cwd, source: 'control-plane' });
+    deps.registry.register(taskId, {
+      agentType,
+      cwd,
+      source: 'control-plane',
+      tenantId: ctx.tenantId ?? DEFAULT_TENANT,
+    });
     if (idem) {
       idempotency.set(idem, taskId);
       if (idempotency.size > MAX_IDEMPOTENCY_KEYS) {
@@ -897,8 +902,7 @@ export async function startControlPlane(
             ctx.tenantId = ctx.principal.tenantId ?? DEFAULT_TENANT;
             if (
               ctx.tenantId !== DEFAULT_TENANT &&
-              (path === '/v1/board' ||
-                path.startsWith('/v1/tasks') ||
+              (path.startsWith('/v1/tasks') ||
                 path === '/v1/artifacts:gc' ||
                 path.includes('/artifacts/'))
             ) {
@@ -968,15 +972,16 @@ export async function startControlPlane(
         }
         if (path === '/v1/board' && req.method === 'GET') {
           if (!authorize(ctx, 'task:read')) return;
+          const counts = deps.registry.counts(ctx.tenantId);
           json(ctx.res, 200, {
-            counts: deps.registry.counts(),
+            counts,
             capacity: {
-              running: deps.registry.counts().running,
-              queued: deps.registry.counts().queued,
+              running: counts.running,
+              queued: counts.queued,
               maxTasks: deps.defaults.maxConcurrent,
               maxQueued: deps.defaults.maxQueued,
             },
-            tasks: deps.registry.list(),
+            tasks: deps.registry.list(ctx.tenantId),
           });
           return;
         }
