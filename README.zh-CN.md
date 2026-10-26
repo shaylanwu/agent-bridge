@@ -42,7 +42,7 @@ AI 编码 Agent（Claude Code、Codex、Gemini CLI 等）装在开发者的电�
 npm install -g agent-bridge-service
 ```
 
-要求：**Node.js ≥ 20**，支持 macOS / Linux / Windows。
+要求：**Node.js 24.x**，支持 macOS / Linux / Windows。
 
 从源码安装：
 

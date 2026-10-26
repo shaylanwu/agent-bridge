@@ -57,7 +57,7 @@ small JSON protocol over HTTP + WebSocket.
 npm install -g agent-bridge-service
 ```
 
-Requirements: **Node.js ≥ 20** on macOS, Linux or Windows.
+Requirements: **Node.js 24.x** on macOS, Linux or Windows.
 
 From source:
 
