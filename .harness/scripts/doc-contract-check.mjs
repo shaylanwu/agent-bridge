@@ -6,7 +6,7 @@
  *  1. src/protocol.ts 的每个 wire 消息类型，必须出现在两份 README 中；
  *  2. README 里 run_task 的 json 示例必须带 args 数组（否则平台照抄会被本地拒帧）；
  *  3. cli.ts 支持的命令必须出现在两份 README 的用法段；
- *  4. daemon 未实现必须在两份 README 中标注（代码里是 stub，文档不得暗示可用）；
+ *  4. daemon 仍为 stub 时必须在两份 README 中标注（已实现则不强制）；
  *  5. 配置路径口径一致（代码与文档都用 .agent-bridge）。
  *
  * 只做机检得到的东西；语义级核对交给 reviewer checklist。
@@ -117,12 +117,17 @@ for (const { name, text } of readmes) {
 }
 notes.push(`CLI 命令：${EXPECTED_CMDS.join(', ')}`);
 
-// ---------- 4. daemon 未实现必须标注 ----------
-for (const { name, text } of readmes) {
-  if (!/daemon/.test(text)) continue;
-  const marked =
-    /(not implemented|unimplemented|Phase 3)/i.test(text) || /(尚未实现|未实现|规划中|Phase 3)/.test(text);
-  if (!marked) fail(`${name} 提到 daemon 但未标注"未实现"（cli.ts 里是 stub，文档不得暗示可用）`);
+// ---------- 4. daemon 仍是 stub 时才要求标注未实现 ----------
+const daemonStub = /daemon\s+\$\{sub\}\s+尚未实现|daemon install\/uninstall 仍明确未实现/.test(
+  readFileSync('src/commands/daemon.ts', 'utf8'),
+);
+if (daemonStub) {
+  for (const { name, text } of readmes) {
+    if (!/daemon/.test(text)) continue;
+    const marked =
+      /(not implemented|unimplemented|Phase 3)/i.test(text) || /(尚未实现|未实现|规划中|Phase 3)/.test(text);
+    if (!marked) fail(`${name} 提到 daemon 但未标注"未实现"（cli.ts 里是 stub，文档不得暗示可用）`);
+  }
 }
 
 // ---------- 5. 配置路径口径 ----------

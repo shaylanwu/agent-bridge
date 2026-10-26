@@ -82,8 +82,8 @@ agent-bridge services revoke svc_9f1c2a
 ```
 
 > `agent-bridge daemon start <platformUrl>` / `stop` / `status` 提供轻量后台进程管理（detached + PID +
-> `daemon.log`）。`install` / `uninstall`（注册 systemd / launchd / Windows Service）仍明确未实现；
-> 需要开机自启时仍请用系统服务管理器托管。
+> `daemon.log`）。`install` / `uninstall` 注册当前用户服务：Linux systemd user、macOS LaunchAgent、
+> Windows 登录计划任务；均支持 `--dry-run` 先看将写入的命令/定义。
 
 用 `--token` 时，bridge 必须从 `identity.toml`、已保存的 `config.toml` 镜像、`--device-id` 或
 `AGENT_BRIDGE_DEVICE_ID` 解析出稳定 `deviceId`。如果没有已持久化、可迁移或显式提供的 ID，启动会明确
@@ -167,6 +167,14 @@ diff_default = false          # true = 即使平台没下发 captureDiff 也捕�
 diff_max_bytes = 262144       # diff 文本上限（默认 256 KB），AGENT_BRIDGE_DIFF_MAX_BYTES 可覆盖
 require_service_token = false # true = 无有效服务令牌的任务一律拒绝（默认关闭以保持兼容）
 session_idle_ms = 0           # waiting_user 空闲关闭（0=不关闭；AGENT_BRIDGE_SESSION_IDLE_MS 可覆盖）
+
+# 本机 MCP server 宿主（stdio）。平台 Form 链路还需选定 MCP 代理/ACP 扩展通道。
+[mcp.servers.echo]
+command = "node"
+args = ["mcp-server.js"]
+cwd = "."
+[mcp.servers.echo.env]
+NODE_ENV = "production"
 ```
 
 ## 安全边界

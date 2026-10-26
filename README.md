@@ -97,8 +97,8 @@ agent-bridge services revoke svc_9f1c2a
 ```
 
 > `agent-bridge daemon start <platformUrl>` / `stop` / `status` provides lightweight background management
-> (detached process + PID + `daemon.log`). `install` / `uninstall` (systemd / launchd / Windows Service
-> registration) are still explicitly unimplemented; use your OS service manager for boot-time startup.
+> (detached process + PID + `daemon.log`). `install` / `uninstall` registers a per-user service: Linux
+> systemd user, macOS LaunchAgent, or a Windows logon scheduled task. Both support `--dry-run`.
 
 With `--token`, the bridge must resolve a stable `deviceId` from `identity.toml`, the saved `config.toml`
 mirror, `--device-id`, or `AGENT_BRIDGE_DEVICE_ID`. If no persisted, migratable, or explicit ID exists,
@@ -191,6 +191,14 @@ diff_default = false          # true = capture even when the platform did not as
 diff_max_bytes = 262144       # cap for the diff text (default 256 KB); AGENT_BRIDGE_DIFF_MAX_BYTES overrides
 require_service_token = false # true = reject any task without a valid service token (off by default for compatibility)
 session_idle_ms = 0           # close waiting_user sessions after this idle time (0=off; AGENT_BRIDGE_SESSION_IDLE_MS overrides)
+
+# Local MCP server host (stdio). Platform Form still needs an MCP proxy or ACP extension channel.
+[mcp.servers.echo]
+command = "node"
+args = ["mcp-server.js"]
+cwd = "."
+[mcp.servers.echo.env]
+NODE_ENV = "production"
 ```
 
 ## Security boundaries

@@ -92,11 +92,12 @@ agent-bridge services issue|list|revoke|rotate
 ## daemon
 
 ```bash
-agent-bridge daemon start <platformUrl> | stop | status
+agent-bridge daemon start <platformUrl> | stop | status | install <platformUrl> | uninstall
 ```
 
 轻量后台管理：detached 进程 + `daemon.pid` + 状态目录下的 `daemon.log`。
-`install` / `uninstall`（systemd / launchd / Windows 服务注册）仍未实现；开机自启请用系统服务管理器。
+`install` / `uninstall` 注册当前用户服务：Linux systemd user、macOS LaunchAgent、
+Windows 登录计划任务；均支持 `--dry-run`。
 
 ## 全局
 

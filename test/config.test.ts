@@ -108,6 +108,29 @@ describe('严格配置读取', () => {
 });
 
 describe('配置原子保存与凭证清除', () => {
+  it('[mcp.servers] 可解析并持久化', async () => {
+    await writeFile(
+      file,
+      `platformUrl = "https://platform.example.test"\ndeviceId = "${DEVICE_ID}"\n[mcp.servers.echo]\ncommand = "node"\nargs = ["server.js"]\ncwd = "."\n[mcp.servers.echo.env]\nNODE_ENV = "test"\n`,
+      'utf8',
+    );
+    expect((await loadConfig())?.mcp?.servers.echo).toMatchObject({
+      command: 'node',
+      args: ['server.js'],
+      cwd: '.',
+      env: { NODE_ENV: 'test' },
+    });
+    await saveConfig(
+      boundConfig({
+        mcp: { servers: { echo: { command: 'node', args: ['server.js'] } } },
+      }),
+    );
+    expect((await loadConfig())?.mcp?.servers.echo).toMatchObject({
+      command: 'node',
+      args: ['server.js'],
+    });
+  });
+
   it('[jwt] 可解析并持久化', async () => {
     await writeFile(
       file,

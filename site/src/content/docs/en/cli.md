@@ -96,12 +96,12 @@ plane. Failure codes are stable: `unauthorized` (missing), `invalid_token`, `tok
 ## daemon
 
 ```bash
-agent-bridge daemon start <platformUrl> | stop | status
+agent-bridge daemon start <platformUrl> | stop | status | install <platformUrl> | uninstall
 ```
 
 Lightweight background management: detached process, `daemon.pid`, and `daemon.log` under the state
-directory. `install` / `uninstall` (systemd, launchd, Windows Service registration) are still not
-implemented; use your OS supervisor for boot-time startup.
+directory. `install` / `uninstall` registers a per-user service: Linux systemd user, macOS LaunchAgent,
+or a Windows logon scheduled task; both support `--dry-run`.
 
 ## Global
 

@@ -32,8 +32,9 @@ ${C.bold('agent-bridge')} ${version()} —— 把本机 AI 编码 CLI 接入你�
       服务令牌（scoped service token）：给外部系统/后端服务签发可轮换的最小权限身份
       --label=<name> --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond [--ttl-days=90]
       rotate 可带 --grace-hours=24（旧令牌宽限期，期间仍然有效）
-  agent-bridge daemon start <platformUrl> | stop | status
-      轻量后台进程管理（detached + PID + daemon.log）；install/uninstall 系统服务仍未实现
+  agent-bridge daemon start <platformUrl> | stop | status | install <platformUrl> | uninstall
+      轻量后台进程管理（detached + PID + daemon.log）；install/uninstall 注册当前用户服务
+      Linux systemd user / macOS LaunchAgent / Windows 计划任务；均支持 --dry-run
   agent-bridge --version | help
 
 配置文件：${configPath()}${existsSync(configPath()) ? '' : C.dim('（尚未创建）')}

@@ -39,6 +39,18 @@ export interface BridgeConfig {
     tenantClaim?: string;
     cacheMs?: number;
   };
+  /** 本机 MCP server 宿主配置（stdio） */
+  mcp?: {
+    servers: Record<
+      string,
+      {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+      }
+    >;
+  };
   /** 本地回环控制面（默认关闭；见 resolveControlPlane） */
   controlPlane?: {
     enabled?: boolean;
@@ -250,6 +262,18 @@ function serializeConfig(cfg: BridgeConfig): string {
   if (cfg.diffDefault !== undefined) out['diff_default'] = cfg.diffDefault;
   if (cfg.requireServiceToken !== undefined) out['require_service_token'] = cfg.requireServiceToken;
   if (cfg.sessionIdleMs !== undefined) out['session_idle_ms'] = cfg.sessionIdleMs;
+  if (cfg.mcp !== undefined) {
+    const servers: Record<string, unknown> = {};
+    for (const [name, server] of Object.entries(cfg.mcp.servers)) {
+      servers[name] = {
+        command: server.command,
+        ...(server.args !== undefined ? { args: server.args } : {}),
+        ...(server.cwd !== undefined ? { cwd: server.cwd } : {}),
+        ...(server.env !== undefined ? { env: server.env } : {}),
+      };
+    }
+    out['mcp'] = { servers };
+  }
   if (cfg.jwt !== undefined) {
     out['jwt'] = {
       jwks_url: cfg.jwt.jwksUrl,
@@ -350,6 +374,47 @@ export function loadConfig(): BridgeConfig | null {
       }
     : undefined;
 
+  const mcpValue = raw['mcp'];
+  if (mcpValue !== undefined && (typeof mcpValue !== 'object' || mcpValue === null || Array.isArray(mcpValue))) {
+    throw invalidConfig(file, 'mcp 必须是 TOML 表');
+  }
+  let mcp: BridgeConfig['mcp'];
+  if (mcpValue !== undefined) {
+    const serversValue = (mcpValue as Record<string, unknown>)['servers'];
+    if (serversValue !== undefined && (typeof serversValue !== 'object' || serversValue === null || Array.isArray(serversValue))) {
+      throw invalidConfig(file, 'mcp.servers 必须是 TOML 表');
+    }
+    const servers: NonNullable<BridgeConfig['mcp']>['servers'] = {};
+    for (const [name, value] of Object.entries((serversValue ?? {}) as Record<string, unknown>)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw invalidConfig(file, `mcp.servers.${name} 必须是 TOML 表`);
+      }
+      const server = value as Record<string, unknown>;
+      const command = optionalString(server, 'command', file);
+      if (!command) throw invalidConfig(file, `mcp.servers.${name}.command 必须是非空字符串`);
+      const argsRaw = server['args'];
+      if (argsRaw !== undefined && (!Array.isArray(argsRaw) || argsRaw.some((arg) => typeof arg !== 'string'))) {
+        throw invalidConfig(file, `mcp.servers.${name}.args 必须是字符串数组`);
+      }
+      const envRaw = server['env'];
+      if (envRaw !== undefined && (typeof envRaw !== 'object' || envRaw === null || Array.isArray(envRaw))) {
+        throw invalidConfig(file, `mcp.servers.${name}.env 必须是 TOML 表`);
+      }
+      const env: Record<string, string> = {};
+      for (const [key, val] of Object.entries((envRaw ?? {}) as Record<string, unknown>)) {
+        if (typeof val !== 'string') throw invalidConfig(file, `mcp.servers.${name}.env.${key} 必须是字符串`);
+        env[key] = val;
+      }
+      servers[name] = {
+        command,
+        ...(Array.isArray(argsRaw) ? { args: argsRaw as string[] } : {}),
+        ...(optionalString(server, 'cwd', file) ? { cwd: optionalString(server, 'cwd', file) } : {}),
+        ...(Object.keys(env).length > 0 ? { env } : {}),
+      };
+    }
+    mcp = { servers };
+  }
+
   const jwtValue = raw['jwt'];
   if (jwtValue !== undefined && (typeof jwtValue !== 'object' || jwtValue === null || Array.isArray(jwtValue))) {
     throw invalidConfig(file, 'jwt 必须是 TOML 表');
@@ -380,6 +445,7 @@ export function loadConfig(): BridgeConfig | null {
     ...(diffDefault !== undefined ? { diffDefault } : {}),
     ...(requireServiceToken !== undefined ? { requireServiceToken } : {}),
     ...(sessionIdleMs !== undefined ? { sessionIdleMs } : {}),
+    ...(mcp !== undefined ? { mcp } : {}),
     ...(jwt !== undefined ? { jwt } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
     ...(label !== undefined ? { label } : {}),

@@ -86,6 +86,12 @@ export class McpElicitationClient {
     this.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
   }
 
+  async listTools(): Promise<Array<Record<string, unknown>>> {
+    await this.start();
+    const result = (await this.request('tools/list', {})) as { tools?: unknown };
+    return Array.isArray(result.tools) ? (result.tools as Array<Record<string, unknown>>) : [];
+  }
+
   async callTool(
     name: string,
     args: Record<string, unknown> = {},
