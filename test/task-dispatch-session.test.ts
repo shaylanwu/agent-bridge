@@ -247,3 +247,69 @@ describe('task dispatch → SessionStore', () => {
     });
   });
 });
+
+describe('Form interaction result redaction', () => {
+  it('content 只回送任务句柄，不落库/不进入 result 报文', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-form-dispatch-'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const store = new SessionStore(join(dir, 'state.db'));
+    store.createSession({ sessionId: 'bt_form', mode: 'task', agentType: 'codebuddy', cwd: dir });
+    store.requestInteraction({
+      sessionId: 'bt_form',
+      requestId: 'ir_form',
+      kind: 'form',
+      payload: {
+        message: 'Pick env',
+        requestedSchema: { type: 'object', properties: { env: { type: 'string' } }, required: ['env'] },
+      },
+    });
+    const sent: ClientMessage[] = [];
+    const respond = vi.fn(() => true);
+    const options: TaskDispatchOptions = {
+      emitter: new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) }),
+      tasks: new Map([
+        [
+          'bt_form',
+          {
+            taskId: 'bt_form',
+            cancel: () => undefined,
+            done: Promise.resolve('running' as const),
+            respondInteraction: respond,
+          },
+        ],
+      ]),
+      registry: new TaskRegistry(),
+      maxConcurrent: 1,
+      maxQueued: 1,
+      diffMaxBytes: 1024,
+      captureDiffByDefault: false,
+      requireServiceToken: false,
+      store,
+      log: () => undefined,
+    };
+    dispatchInteractionResponse(
+      {
+        type: 'task_interaction_response',
+        taskId: 'bt_form',
+        requestId: 'ir_form',
+        responseId: 'resp_form',
+        state: 'accepted',
+        payload: { content: { env: 'staging' } },
+      },
+      options,
+    );
+    expect(respond).toHaveBeenCalledWith(
+      'ir_form',
+      expect.objectContaining({ action: 'accept', content: { env: 'staging' } }),
+    );
+    const result = sent.find((msg) => msg.type === 'task_interaction_result') as
+      | { resultPayload?: Record<string, unknown> }
+      | undefined;
+    expect(result?.resultPayload).toEqual({ action: 'accept', fieldNames: ['env'] });
+    const stored = store.getInteraction('bt_form', 'ir_form');
+    expect(stored?.resultPayload).toEqual({ action: 'accept', fieldNames: ['env'] });
+  });
+});

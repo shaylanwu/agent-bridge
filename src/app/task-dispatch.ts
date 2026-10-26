@@ -9,6 +9,7 @@
 
 import type { Emitter } from '../core/emitter.js';
 import { hasAnsi } from '../core/ansi.js';
+import { validateFormContent } from '../core/form-schema.js';
 import { startTask, type TaskHandle } from '../runner.js';
 import type { ServerMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
@@ -236,6 +237,36 @@ export function dispatchInteractionResponse(
   }
 
   const payload = msg.payload ?? {};
+  const content =
+    typeof payload['content'] === 'object' && payload['content'] !== null
+      ? (payload['content'] as Record<string, unknown>)
+      : undefined;
+  const action =
+    msg.state === 'accepted' ? 'accept' : msg.state === 'declined' ? 'decline' : 'cancel';
+
+  const interactionPayload =
+    typeof interaction.payload === 'object' && interaction.payload !== null
+      ? (interaction.payload as Record<string, unknown>)
+      : {};
+  if (interaction.kind === 'form' && msg.state === 'accepted') {
+    const schema =
+      typeof interactionPayload['requestedSchema'] === 'object' &&
+      interactionPayload['requestedSchema'] !== null
+        ? (interactionPayload['requestedSchema'] as Record<string, unknown>)
+        : {};
+    const invalid = validateFormContent(schema, content ?? {});
+    if (invalid) {
+      emitResult('failed', { errorCode: 'protocol_incompatible' });
+      return;
+    }
+  }
+
+  // Form content 只回送 ACP；落库/回传只保留动作与字段名，避免 secret 扩散。
+  const storedPayload =
+    interaction.kind === 'form'
+      ? { action, fieldNames: Object.keys(content ?? {}) }
+      : payload;
+
   const event = o.store.appendEvent({
     sessionId: msg.taskId,
     type: 'task_interaction_result',
@@ -243,7 +274,7 @@ export function dispatchInteractionResponse(
       requestId: msg.requestId,
       responseId: msg.responseId,
       state: msg.state,
-      resultPayload: payload,
+      resultPayload: storedPayload,
     },
   });
   const resolved = o.store.resolveInteraction({
@@ -252,7 +283,7 @@ export function dispatchInteractionResponse(
     state: msg.state,
     responseId: msg.responseId,
     resultSeq: event.eventSeq,
-    resultPayload: payload,
+    resultPayload: storedPayload,
   });
   const explicitOption =
     typeof payload['optionId'] === 'string'
@@ -267,17 +298,11 @@ export function dispatchInteractionResponse(
       : undefined;
   const optionId =
     explicitOption ?? (typeof fallbackOption === 'string' ? fallbackOption : undefined);
-  const content =
-    typeof payload['content'] === 'object' && payload['content'] !== null
-      ? (payload['content'] as Record<string, unknown>)
-      : undefined;
-  const action =
-    msg.state === 'accepted' ? 'accept' : msg.state === 'declined' ? 'decline' : 'cancel';
   o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, { optionId, action, content });
   emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
     responseId: resolved.responseId,
     resultSeq: resolved.resultSeq,
-    resultPayload: payload,
+    resultPayload: storedPayload,
   });
 }
 
