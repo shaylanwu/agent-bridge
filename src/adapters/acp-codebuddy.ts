@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -81,6 +82,19 @@ export interface AcpPermissionRequest {
   options: AcpPermissionOption[];
 }
 
+export interface AcpFormRequest {
+  sessionId: string;
+  requestId: string;
+  message: string;
+  requestedSchema: Record<string, unknown>;
+  expiresAt?: string;
+}
+
+export type AcpFormResponse =
+  | { action: 'accept'; content: Record<string, unknown> }
+  | { action: 'decline' }
+  | { action: 'cancel' };
+
 export interface AcpPromptResult {
   sessionId: string;
   text: string;
@@ -109,6 +123,8 @@ export interface AcpPromptOptions {
   signal?: AbortSignal;
   onUpdate?: (update: Record<string, unknown>) => void;
   onPermission?: (request: AcpPermissionRequest) => Promise<string | undefined> | string | undefined;
+  /** ACP Form 扩展：session/request_form → 结构化 content */
+  onForm?: (request: AcpFormRequest) => Promise<AcpFormResponse> | AcpFormResponse;
 }
 
 interface Pending {
@@ -192,6 +208,27 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
       } else {
         respond(message['id'], { outcome: { outcome: 'cancelled' } });
       }
+      return;
+    }
+    if (method === 'session/request_form') {
+      const requestId =
+        typeof params['requestId'] === 'string' && params['requestId']
+          ? params['requestId']
+          : `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+      const requestedSchema =
+        typeof params['requestedSchema'] === 'object' && params['requestedSchema'] !== null
+          ? (params['requestedSchema'] as Record<string, unknown>)
+          : {};
+      const response = opts.onForm
+        ? await opts.onForm({
+            sessionId: String(params['sessionId'] ?? sessionId),
+            requestId,
+            message: String(params['message'] ?? ''),
+            requestedSchema,
+            ...(typeof params['expiresAt'] === 'string' ? { expiresAt: params['expiresAt'] } : {}),
+          })
+        : { action: 'cancel' as const };
+      respond(message['id'], response);
       return;
     }
     if (method === 'fs/read_text_file') {

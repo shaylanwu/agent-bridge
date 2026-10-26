@@ -247,3 +247,63 @@ rl.on('line', (line) => {
     expect(result.text).toBe('DENIED');
   });
 });
+
+const FAKE_FORM_ACP = String.raw`
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+let promptId = null;
+const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.method === 'initialize') { send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1 } }); return; }
+  if (m.method === 'session/new') { send({ jsonrpc: '2.0', id: m.id, result: { sessionId: 'sess_form' } }); return; }
+  if (m.method === 'session/prompt') {
+    promptId = m.id;
+    send({ jsonrpc: '2.0', id: 901, method: 'session/request_form', params: {
+      sessionId: 'sess_form',
+      requestId: 'ir_form_1',
+      message: 'Pick an environment',
+      requestedSchema: { type: 'object', properties: { env: { type: 'string' } }, required: ['env'] },
+    }});
+    return;
+  }
+  if (m.id === 901 && m.result) {
+    send({ jsonrpc: '2.0', method: 'session/update', params: {
+      sessionId: 'sess_form',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(m.result) } },
+    }});
+    send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+    return;
+  }
+  if (m.method === 'session/cancel') process.exit(0);
+});
+`;
+
+describe('ACP form interaction', () => {
+  it('session/request_form 回送 accept content', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-acp-form-'));
+    cleanups.push(() => {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      } catch {
+        /* Windows 下子进程句柄释放可能滞后；临时目录可留给系统清理 */
+      }
+    });
+    const script = join(dir, 'fake-acp-form.cjs');
+    writeFileSync(script, FAKE_FORM_ACP);
+    let asked = '';
+    const result = await runAcpPrompt({
+      cwd: dir,
+      prompt: 'deploy',
+      spec: { command: process.execPath, args: [script], sanitizeHostEnv: false },
+      timeoutMs: 15_000,
+      onForm: (request) => {
+        asked = request.message;
+        expect(request.requestId).toBe('ir_form_1');
+        return { action: 'accept', content: { env: 'staging' } };
+      },
+    });
+    expect(asked).toBe('Pick an environment');
+    expect(JSON.parse(result.text)).toEqual({ action: 'accept', content: { env: 'staging' } });
+  });
+});

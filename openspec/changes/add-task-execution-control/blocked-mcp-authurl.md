@@ -3,22 +3,27 @@
 > 状态：**阻塞中**，不勾选 7.8 / 9.8 / 9.21 的端到端项。
 > 阻塞原因：生产端不在本仓库；bridge 强行实现只能造假链路。
 
-## A. MCP elicitation → 平台 Form
+## A. Form elicitation → 平台交互
 
-### 前置条件（e2e-pilot / agent 侧）
+> 2026-10-26 决策：**走 ACP 扩展**，不代理 agent 的 MCP 流量。MCP 宿主仅服务 bridge 自己启动的 server。
 
-- [ ] 选定通道，二选一：
-  - ACP 扩展：`session/request_form`（message、requestedSchema、requestId、expiresAt）
-  - MCP 代理：agent 的 MCP 连接经 bridge，才能看到 `elicitation/create`
-- [ ] 给出真实样例帧：请求 + accept/decline/cancel 响应
-- [ ] 明确超时、断线、取消语义
-- [ ] 明确 secret 字段禁止走 Form
+### 已完成（ACP 通道）
 
-### bridge 侧（前置完成后）
+- [x] ACP 扩展 `session/request_form`：message、requestedSchema、requestId、expiresAt
+- [x] `session/request_form` → `task_interaction_request kind=form`
+- [x] `task_interaction_response` → ACP JSON-RPC result `{action, content?}`
+- [x] accept/decline/cancel 映射
+- [x] 真实 stdio 假 ACP server 测试
 
-- [ ] `session/request_form` → `task_interaction_request kind=form`
-- [ ] `task_interaction_response` → `session/form_response`
-- [ ] schema 校验 accept content；result 不回显 content
+### 仍待平台/agent 侧
+
+- [ ] agent 真实产生 `session/request_form`（当前只有桥接与假 server 验证）
+- [ ] 明确 secret 字段禁止走 Form 的 schema 约束
+
+### bridge 侧仍需补
+
+- [ ] schema 校验 accept content
+- [ ] result 不回显 content
 - [ ] 断线重连后按 requestId + resultSeq 重放
 - [ ] 时间线测试：pending → submitted → resolved / expired / cancelled
 - [ ] 与 `InteractionBroker` / scope / tenant 对齐

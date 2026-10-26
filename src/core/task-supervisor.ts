@@ -23,6 +23,7 @@ import {
   AcpAuthRequiredError,
   runAcpPrompt,
   type AcpAgentSpec,
+  type AcpFormResponse,
 } from '../adapters/acp-codebuddy.js';
 import { runCodexPrompt } from '../adapters/codex-app-server.js';
 import { runClaudeStreamPrompt } from '../adapters/claude-stream.js';
@@ -97,7 +98,7 @@ export interface TaskHooks {
 
 export interface AcpInteractionRequest {
   requestId: string;
-  kind: 'permission';
+  kind: 'permission' | 'form';
   payload: Record<string, unknown>;
   expiresAt?: string;
 }
@@ -105,6 +106,8 @@ export interface AcpInteractionRequest {
 export interface InteractionAnswer {
   /** ACP permission 选项；空表示拒绝 */
   optionId?: string;
+  /** form 的接受/拒绝/取消 */
+  action?: 'accept' | 'decline' | 'cancel';
   /** MCP form / elicitation 的结构化内容 */
   content?: Record<string, unknown>;
 }
@@ -743,6 +746,25 @@ export class TaskSupervisor {
           requestId,
           kind: 'permission',
           payload: { toolCall: request.toolCall, options: request.options },
+        });
+        return answer;
+      },
+      onForm: (request) => {
+        if (!entry.hooks.onInteraction) return { action: 'cancel' };
+        const answer = new Promise<AcpFormResponse>((resolve) => {
+          entry.acpPermissions?.set(request.requestId, (value) => {
+            if (value?.action === 'accept') {
+              resolve({ action: 'accept', content: value.content ?? {} });
+            } else {
+              resolve({ action: value?.action === 'decline' ? 'decline' : 'cancel' });
+            }
+          });
+        });
+        entry.hooks.onInteraction({
+          requestId: request.requestId,
+          kind: 'form',
+          payload: { message: request.message, requestedSchema: request.requestedSchema },
+          ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
         });
         return answer;
       },

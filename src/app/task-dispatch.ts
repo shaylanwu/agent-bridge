@@ -271,7 +271,9 @@ export function dispatchInteractionResponse(
     typeof payload['content'] === 'object' && payload['content'] !== null
       ? (payload['content'] as Record<string, unknown>)
       : undefined;
-  o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, { optionId, content });
+  const action =
+    msg.state === 'accepted' ? 'accept' : msg.state === 'declined' ? 'decline' : 'cancel';
+  o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, { optionId, action, content });
   emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
     responseId: resolved.responseId,
     resultSeq: resolved.resultSeq,
