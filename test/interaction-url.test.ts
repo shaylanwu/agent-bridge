@@ -18,6 +18,15 @@ describe('InteractionUrlVault', () => {
     expect(vault.lookup('bt_1', 'missing', 1200)).toEqual({ expired: false });
   });
 
+  it('register 机会式清理过期项', () => {
+    const vault = new InteractionUrlVault();
+    vault.register('bt_1', 'old', 'https://old', 10, 1000);
+    vault.register('bt_1', 'new', 'https://new', 1000, 1100);
+    expect(vault.cleanup(1100)).toBe(0);
+    expect(vault.get('bt_1', 'old', 1100)).toBeUndefined();
+    expect(vault.get('bt_1', 'new', 1100)?.url).toBe('https://new');
+  });
+
   it('过期与 revoke 都返回 undefined，cleanup 计数', () => {
     const vault = new InteractionUrlVault();
     vault.register('bt_1', 'ir_1', 'https://a', 100, 1000);

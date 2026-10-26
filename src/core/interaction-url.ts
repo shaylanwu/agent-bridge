@@ -30,6 +30,8 @@ export class InteractionUrlVault {
     ttlMs = 5 * 60 * 1000,
     now = Date.now(),
   ): InteractionUrlEntry {
+    // URL 只在内存里；注册时顺手回收过期项，避免长期运行后 Map 只增不减。
+    this.cleanup(now);
     const entry: StoredUrl = {
       sessionId,
       requestId,
