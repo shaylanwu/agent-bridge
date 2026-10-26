@@ -113,6 +113,7 @@ export const AGENTS: AgentDef[] = [
     // 官方文档：headless 加 --json 出 NDJSON 事件流（tool_call/tool_result 按 callId 配对）；
     // 需 dsh ≥ 0.2.x（0.1.5 实测 --json 是 unknown option）
     taskArgs: ['--profile', 'headless', '--json', '{{prompt}}'],
+    resumeArgs: ['--profile', 'headless', '--json', '--session-id', '{{sessionId}}', '{{prompt}}'],
     steps: 'dsh-json',
     credential: {
       envKey: 'DEEPSEEK_API_KEY',

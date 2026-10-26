@@ -134,6 +134,15 @@ describe('适配器注册表', () => {
     }
   });
 
+  it('已确认的 CLI 声明原生 resume 模板', () => {
+    for (const kind of ['claude-code', 'codebuddy-cli', 'qoder-cli', 'ds-harness']) {
+      const args = agentDefOf(kind)?.resumeArgs?.join(' ') ?? '';
+      expect(args).toContain('{{sessionId}}');
+      expect(args).toContain('{{prompt}}');
+    }
+    expect(agentDefOf('codex')?.resumeArgs).toBeUndefined();
+  });
+
   it('免安装工具（dsh）带 npxSpec，其余不带', () => {
     expect(agentDefOf('ds-harness')?.npxSpec).toBe('@deepseek-ai/dsh');
     expect(agentDefOf('codex')?.npxSpec).toBeUndefined();
