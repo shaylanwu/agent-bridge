@@ -101,6 +101,41 @@ describe('SessionStore', () => {
     ).toThrow(SessionStoreError);
   });
 
+  it('同 sessionId 在不同租户隔离，跨租户读取 404', () => {
+    const store = open();
+    store.createSession({
+      sessionId: 'bt_shared_id',
+      mode: 'task',
+      agentType: 'codex',
+      cwd: '/tmp/a',
+      tenantId: 'tenant_a',
+    });
+    store.createSession({
+      sessionId: 'bt_shared_id',
+      mode: 'task',
+      agentType: 'claude-code',
+      cwd: '/tmp/b',
+      tenantId: 'tenant_b',
+    });
+    expect(store.getSession('bt_shared_id', 'tenant_a')?.agentType).toBe('codex');
+    expect(store.getSession('bt_shared_id', 'tenant_b')?.agentType).toBe('claude-code');
+    expect(store.getSession('bt_shared_id')).toBeUndefined();
+    expect(() => store.snapshot('bt_shared_id')).toThrow(SessionStoreError);
+
+    store.appendEvent({
+      sessionId: 'bt_shared_id',
+      type: 'task_log',
+      payload: { tenant: 'a' },
+      tenantId: 'tenant_a',
+    });
+    expect(store.listEvents('bt_shared_id', { tenantId: 'tenant_a' })).toHaveLength(1);
+    expect(store.listEvents('bt_shared_id', { tenantId: 'tenant_b' })).toHaveLength(0);
+
+    store.closeSession('bt_shared_id', 'success', 'done', 'tenant_a');
+    expect(store.getTombstone('bt_shared_id', 'tenant_a')).toBeDefined();
+    expect(store.getTombstone('bt_shared_id', 'tenant_b')).toBeUndefined();
+  });
+
   it('auth-url 交互拒绝把完整 URL 写进 SQLite', () => {
     const store = open();
     store.createSession({ sessionId: 'bt_auth', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
