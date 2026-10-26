@@ -183,6 +183,30 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('/v1/sessions/{id}/events 超过 1000 条仍能分批回放', async () => {
+    const store = new SessionStore(':memory:');
+    store.createSession({ sessionId: 'bt_sse_many', mode: 'task', agentType: 'codex', cwd: process.cwd() });
+    for (let i = 0; i < 1005; i += 1) {
+      store.appendEvent({ sessionId: 'bt_sse_many', type: 'task_log', payload: { i } });
+    }
+    store.closeSession('bt_sse_many', 'success');
+    const plane = await start({ store, verify: () => ({ ok: true }) });
+    const res = await call(plane.port, 'GET', '/v1/sessions/bt_sse_many/events?afterEventSeq=0', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(res.status).toBe(200);
+    expect((res.body.match(/event: event/g) ?? []).length).toBe(1005);
+    expect(res.body).toContain('"eventSeq":1005');
+    expect(res.body).toContain('event: done');
+
+    const resumed = await call(plane.port, 'GET', '/v1/sessions/bt_sse_many/events?afterEventSeq=1000', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect((resumed.body.match(/event: event/g) ?? []).length).toBe(5);
+    expect(resumed.body).not.toContain('"eventSeq":1,');
+    plane.close();
+  });
+
   it('GET /v1/sessions/{id}/artifacts/{aid} 未找到返回 404', async () => {
     const plane = await start({ verify: () => ({ ok: true }) });
     const res = await call(plane.port, 'GET', '/v1/sessions/bt_x/artifacts/art_missing', {

@@ -692,16 +692,23 @@ export async function startControlPlane(
       latestEventSeq: snapshot.latestEventSeq,
     });
 
-    const replay = deps.store.listEvents(id, { afterEventSeq: after, limit: 1000 });
-    for (const item of replay) {
-      writeEvent('event', {
-        eventSeq: item.eventSeq,
-        type: item.type,
-        payload: item.payload,
-        createdAt: item.createdAt,
-      });
+    // 慢消费者断线后可能落后 >1000 条；分批按 eventSeq 追平，避免一次性截断造成缺口。
+    let lastSeq = after;
+    for (;;) {
+      const replay = deps.store.listEvents(id, { afterEventSeq: lastSeq, limit: 1000 });
+      for (const item of replay) {
+        writeEvent('event', {
+          eventSeq: item.eventSeq,
+          type: item.type,
+          payload: item.payload,
+          createdAt: item.createdAt,
+        });
+      }
+      if (replay.length < 1000) break;
+      const next = replay.at(-1)?.eventSeq;
+      if (next === undefined || next <= lastSeq) break;
+      lastSeq = next;
     }
-    let lastSeq = replay.at(-1)?.eventSeq ?? after;
     if (snapshot.session.status !== 'running') {
       writeEvent('done', { taskId: id, status: snapshot.session.status });
       ctx.res.end();
