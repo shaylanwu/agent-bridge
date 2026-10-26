@@ -22,8 +22,9 @@
 
 ### bridge 侧仍需补
 
-- [ ] schema 校验 accept content
-- [ ] result 不回显 content
+- [x] schema 校验 accept content（required / type）
+- [x] secret 字段拒绝（递归 key 检查）
+- [x] result 不回显 content（只落 action + fieldNames）
 - [ ] 断线重连后按 requestId + resultSeq 重放
 - [ ] 时间线测试：pending → submitted → resolved / expired / cancelled
 - [ ] 与 `InteractionBroker` / scope / tenant 对齐

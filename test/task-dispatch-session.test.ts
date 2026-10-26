@@ -311,5 +311,23 @@ describe('Form interaction result redaction', () => {
     expect(result?.resultPayload).toEqual({ action: 'accept', fieldNames: ['env'] });
     const stored = store.getInteraction('bt_form', 'ir_form');
     expect(stored?.resultPayload).toEqual({ action: 'accept', fieldNames: ['env'] });
+
+    // 同一 responseId 重放：返回已结算结果，不重复调用任务句柄，也不回显 content
+    dispatchInteractionResponse(
+      {
+        type: 'task_interaction_response',
+        taskId: 'bt_form',
+        requestId: 'ir_form',
+        responseId: 'resp_form',
+        state: 'accepted',
+        payload: { content: { env: 'staging' } },
+      },
+      options,
+    );
+    expect(respond).toHaveBeenCalledTimes(1);
+    const replay = sent
+      .filter((msg) => msg.type === 'task_interaction_result')
+      .at(-1) as { resultPayload?: Record<string, unknown> } | undefined;
+    expect(replay?.resultPayload).toEqual({ action: 'accept', fieldNames: ['env'] });
   });
 });
