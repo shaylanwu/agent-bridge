@@ -78,6 +78,30 @@ describe('MCP elicitation client', () => {
     client.close();
   });
 
+  it('close 立即拒绝挂起请求，不等超时', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-mcp-close-'));
+    dirs.push(dir);
+    const script = join(dir, 'fake-mcp.cjs');
+    writeFileSync(
+      script,
+      String.raw`
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-06-18' } }) + '\n');
+});
+`,
+    );
+    const client = new McpElicitationClient({
+      spec: { command: process.execPath, args: [script], cwd: dir },
+      timeoutMs: 30_000,
+    });
+    const pending = client.callTool('hang');
+    setTimeout(() => client.close(), 50);
+    await expect(pending).rejects.toThrow(/已关闭/);
+  });
+
   it('没有 handler 时默认 cancel', async () => {
     const client = new McpElicitationClient({ spec: fakeSpec() });
     const result = (await client.callTool('deploy')) as { content: Array<{ text: string }> };
