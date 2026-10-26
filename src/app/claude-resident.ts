@@ -19,6 +19,8 @@ export interface ClaudeResidentOptions {
   cwd: string;
   nativeSessionId?: string;
   timeoutMs?: number;
+  /** Turn 结束后空闲多久关闭进程；默认 10 分钟，0 表示不回收 */
+  idleMs?: number;
 }
 
 interface ActiveTurn {
@@ -63,6 +65,7 @@ export class ClaudeResident {
   private stepRefs = new Map<string, number>();
   private sessionId = '';
   private closed = false;
+  private idleTimer?: NodeJS.Timeout;
 
   constructor(private readonly options: ClaudeResidentOptions) {}
 
@@ -70,9 +73,14 @@ export class ClaudeResident {
     return this.sessionId;
   }
 
+  get isRunning(): boolean {
+    return Boolean(this.child && !this.closed);
+  }
+
   private ensureStarted(): ChildProcessWithoutNullStreams {
     if (this.child && !this.closed) return this.child;
-    const args = this.options.args ?? claudeResidentArgs(this.options.nativeSessionId);
+    const args =
+      this.options.args ?? claudeResidentArgs(this.sessionId || this.options.nativeSessionId);
     const child = spawn(this.options.command, args, {
       cwd: this.options.cwd,
       env: process.env,
@@ -93,6 +101,10 @@ export class ClaudeResident {
 
   send(prompt: string, hooks: TaskHooks, timeoutMs = 10 * 60_000): Promise<TaskFinishInfo> {
     if (this.active) return Promise.reject(new Error('Claude 会话正忙'));
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
     const child = this.ensureStarted();
     if (!child.stdin.writable) return Promise.reject(new Error('Claude 会话 stdin 不可写'));
     this.stepSeq = 0;
@@ -112,6 +124,10 @@ export class ClaudeResident {
   }
 
   close(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
     this.closed = true;
     this.rl?.close();
     this.child?.kill();
@@ -170,6 +186,14 @@ export class ClaudeResident {
       clearTimeout(turn.timer);
       this.active = undefined;
       turn.resolve({ exitCode: 0, result });
+      const idleMs = this.options.idleMs ?? 10 * 60_000;
+      if (idleMs > 0) {
+        this.idleTimer = setTimeout(() => {
+          this.idleTimer = undefined;
+          this.close();
+        }, idleMs);
+        this.idleTimer.unref?.();
+      }
     }
   }
 

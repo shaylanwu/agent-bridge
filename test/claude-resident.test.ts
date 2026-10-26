@@ -61,4 +61,24 @@ describe('ClaudeResident', () => {
     expect(logs).toEqual(['answer-1', 'answer-2']);
     resident.close();
   });
+
+  it('空闲超时关闭进程，下一次 send 自动重启', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-resident-idle-'));
+    dirs.push(dir);
+    const script = join(dir, 'fake.cjs');
+    writeFileSync(script, FAKE);
+    const resident = new ClaudeResident({
+      command: process.execPath,
+      args: [script],
+      cwd: dir,
+      idleMs: 50,
+    });
+    const hooks: TaskHooks = { onStatus: vi.fn(), onLog: vi.fn() };
+    expect((await resident.send('one', hooks, 5000)).result).toBe('answer-1');
+    expect(resident.isRunning).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(resident.isRunning).toBe(false);
+    expect((await resident.send('two', hooks, 5000)).result).toBe('answer-1');
+    resident.close();
+  });
 });
