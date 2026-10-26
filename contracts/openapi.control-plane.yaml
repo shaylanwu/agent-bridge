@@ -65,6 +65,13 @@ paths:
                     type: object
                     properties:
                       tracked: { type: integer }
+                      running: { type: integer }
+                      queued: { type: integer }
+                  capacity:
+                    type: object
+                    properties:
+                      maxTasks: { type: integer }
+                      maxQueued: { type: integer }
                 required: [status, version, ready]
   /v1/metrics:
     get:

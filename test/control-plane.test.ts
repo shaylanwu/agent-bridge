@@ -113,6 +113,21 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('/v1/health 队列无容量时 ready=false', async () => {
+    const plane = await start({
+      defaults: {
+        maxConcurrent: 1,
+        maxQueued: 0,
+        diffMaxBytes: 1024,
+        captureDiffByDefault: false,
+      },
+    });
+    const res = await call(plane.port, 'GET', '/v1/health');
+    expect(res.status).toBe(200);
+    expect(res.json<{ ready: boolean }>().ready).toBe(false);
+    plane.close();
+  });
+
   it('/v1/metrics 需要鉴权并输出 Prometheus 文本', async () => {
     const plane = await start({
       verify: (token) =>

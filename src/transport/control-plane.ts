@@ -272,13 +272,16 @@ export async function startControlPlane(
   // ---------- 路由 ----------
 
   const handleHealth = (ctx: RouteContext): void => {
+    const counts = deps.registry.counts();
+    const queued = counts.queued;
     json(ctx.res, 200, {
       status: 'ok',
       version: deps.version,
       controlPlane: { host: settings.host, port: settings.port, requireToken },
-      // readiness：任务并发是否还有余量（CI 用它判断"现在能不能下发"）
-      ready: true,
-      tasks: { tracked: records.size },
+      // readiness：队列还有空位才 ready；运行满但队列可排仍算可接收（CI 用它判断"现在能不能下发"）
+      ready: queued < deps.defaults.maxQueued,
+      tasks: { tracked: records.size, running: counts.running, queued },
+      capacity: { maxTasks: deps.defaults.maxConcurrent, maxQueued: deps.defaults.maxQueued },
     });
   };
 
