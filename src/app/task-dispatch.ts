@@ -42,6 +42,8 @@ export interface TaskDispatchOptions {
   /** 持久 Session/Turn/Event 权威源 */
   store: SessionStore;
   log: SessionLog;
+  /** 常驻 conversation 进程（close_session 成功后才回收） */
+  residentSessions?: Map<string, import('./claude-resident.js').ClaudeResident>;
 }
 
 /** 取消同样要鉴权：拿到 task:create 的令牌不等于能杀别人的任务 */
@@ -89,6 +91,8 @@ export function dispatchCloseSession(msg: CloseSessionMessage, o: TaskDispatchOp
     return;
   }
   if (session.status !== 'running') {
+    o.residentSessions?.get(msg.taskId)?.close();
+    o.residentSessions?.delete(msg.taskId);
     ackSession(o, msg, 'close_session', true, { status: session.status });
     return;
   }
@@ -107,6 +111,8 @@ export function dispatchCloseSession(msg: CloseSessionMessage, o: TaskDispatchOp
     });
   }
   const closed = o.store.closeSession(msg.taskId, 'cancelled', 'session_closed');
+  o.residentSessions?.get(msg.taskId)?.close();
+  o.residentSessions?.delete(msg.taskId);
   ackSession(o, msg, 'close_session', true, { status: closed.status });
 }
 

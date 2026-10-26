@@ -22,6 +22,55 @@ afterEach(() => {
 });
 
 describe('task dispatch → SessionStore', () => {
+  it('close_session 鉴权失败不回收常驻进程', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-dispatch-close-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    store.createSession({
+      sessionId: 'bt_close_auth',
+      mode: 'conversation',
+      agentType: 'claude-code',
+      cwd: dir,
+      phase: 'waiting_user',
+    });
+    const sent: ClientMessage[] = [];
+    const emitter = new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) });
+    const close = vi.fn();
+    const options: TaskDispatchOptions = {
+      emitter,
+      tasks: new Map(),
+      registry: new TaskRegistry(),
+      maxConcurrent: 2,
+      maxQueued: 2,
+      diffMaxBytes: 4096,
+      captureDiffByDefault: false,
+      requireServiceToken: true,
+      store,
+      log: () => undefined,
+      residentSessions: new Map([['bt_close_auth', { close }]]) as unknown as NonNullable<
+        TaskDispatchOptions['residentSessions']
+      >,
+    };
+
+    dispatchCloseSession(
+      { type: 'close_session', taskId: 'bt_close_auth', operationId: 'op_no_token' },
+      options,
+    );
+    expect(close).not.toHaveBeenCalled();
+    expect(store.getSession('bt_close_auth')?.status).toBe('running');
+
+    options.requireServiceToken = false;
+    dispatchCloseSession(
+      { type: 'close_session', taskId: 'bt_close_auth', operationId: 'op_ok' },
+      options,
+    );
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(store.getSession('bt_close_auth')?.status).not.toBe('running');
+  });
+
   it('失败的 run_task 也落 Session/Turn/Event 并关闭会话', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-dispatch-'));
     const store = new SessionStore(join(dir, 'state.db'));
