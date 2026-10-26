@@ -66,6 +66,7 @@ export class ClaudeResident {
   private sessionId = '';
   private closed = false;
   private idleTimer?: NodeJS.Timeout;
+  private generation = 0;
 
   constructor(private readonly options: ClaudeResidentOptions) {}
 
@@ -87,12 +88,19 @@ export class ClaudeResident {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
+    const generation = ++this.generation;
     this.child = child;
     this.closed = false;
     this.rl = createInterface({ input: child.stdout });
-    this.rl.on('line', (line) => this.onLine(line));
-    child.on('error', (error) => this.fail(error));
+    this.rl.on('line', (line) => {
+      if (this.generation === generation) this.onLine(line);
+    });
+    child.on('error', (error) => {
+      if (this.generation === generation) this.fail(error);
+    });
     child.on('close', () => {
+      // 旧进程的 close 可能晚于新进程启动；generation 不匹配时不能污染新进程状态。
+      if (this.generation !== generation) return;
       this.closed = true;
       this.fail(new Error('Claude 常驻进程已退出'));
     });
