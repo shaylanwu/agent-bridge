@@ -139,6 +139,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
         requireServiceToken: opts.requireServiceToken,
         store: opts.store,
         log: opts.log,
+        residentSessions: new Map(),
       };
 
       if (msg.type === 'ping') {
@@ -150,6 +151,8 @@ export function createSession(opts: SessionOptions): BridgeSession {
         return;
       }
       if (msg.type === 'close_session') {
+        dispatchOpts.residentSessions.get(msg.taskId)?.close();
+        dispatchOpts.residentSessions.delete(msg.taskId);
         dispatchCloseSession(msg, dispatchOpts);
         return;
       }

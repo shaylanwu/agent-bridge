@@ -16,6 +16,7 @@ import type { SessionLog } from './session-log.js';
 import { authorizeService } from './service-gate.js';
 import { agentDefOf } from '../adapters/agent-adapters.js';
 import { canRunAcp } from '../adapters/acp-codebuddy.js';
+import { ClaudeResident } from './claude-resident.js';
 
 type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 type SendMessageMessage = Extract<ServerMessage, { type: 'send_message' }>;
@@ -32,6 +33,8 @@ export interface ConversationDeps {
   captureDiffByDefault: boolean;
   requireServiceToken: boolean;
   log: SessionLog;
+  /** 存在时启用 Claude/Qoder 常驻会话；测试/旧流程不传则走 startTask */
+  residentSessions?: Map<string, ClaudeResident>;
 }
 
 function phaseOf(status: TaskStatus, info?: TaskFinishInfo): TaskPhase {
@@ -269,6 +272,14 @@ export function startConversationTurn(
     onStatus,
   };
 
+  if (
+    deps.residentSessions &&
+    def &&
+    (session.agentType === 'claude-code' || session.agentType === 'qoder-cli')
+  ) {
+    return startResidentTurn(deps, session, turn, prompt, hooks, def.bin, timeoutMs);
+  }
+
   let handle: TaskHandle;
   try {
     handle = startTask(
@@ -299,6 +310,71 @@ export function startConversationTurn(
   void handle.done.then(() => {
     if (deps.tasks.get(sessionId) === handle) deps.tasks.delete(sessionId);
   });
+  return handle;
+}
+
+function startResidentTurn(
+  deps: ConversationDeps,
+  session: SessionRecord,
+  turn: TurnRecord,
+  prompt: string,
+  hooks: TaskHooks,
+  command: string,
+  timeoutMs?: number,
+): TaskHandle {
+  const sessionId = session.sessionId;
+  const executionId = `${sessionId}__${turn.turnId}`;
+  let resident = deps.residentSessions?.get(sessionId);
+  if (!resident) {
+    resident = new ClaudeResident({
+      command,
+      cwd: session.cwd,
+      nativeSessionId: session.nativeSessionId,
+    });
+    deps.residentSessions?.set(sessionId, resident);
+  }
+  const current = resident;
+
+  let settled = false;
+  let status: TaskStatus = 'running';
+  let resolveDone!: (value: TaskStatus) => void;
+  const done = new Promise<TaskStatus>((resolve) => {
+    resolveDone = resolve;
+  });
+  const settle = (next: TaskStatus, info?: TaskFinishInfo): void => {
+    if (settled) return;
+    settled = true;
+    status = next;
+    hooks.onStatus(next, info);
+    if (next !== 'success') {
+      current.close();
+      deps.residentSessions?.delete(sessionId);
+    }
+    resolveDone(next);
+  };
+
+  const handle: TaskHandle = {
+    taskId: executionId,
+    cancel: () => {
+      settle('cancelled', { error: '任务已取消', errorCode: 'cancelled' });
+    },
+    done: done.then(() => status),
+  };
+  deps.tasks.set(sessionId, handle);
+  void done.then(() => {
+    if (deps.tasks.get(sessionId) === handle) deps.tasks.delete(sessionId);
+  });
+
+  void current.send(prompt, hooks, timeoutMs).then(
+    (info) => settle('success', info),
+    (error) => {
+      const message = (error as Error).message;
+      settle(message.includes('超时') ? 'timeout' : 'failed', {
+        error: message,
+        errorCode: message.includes('超时') ? 'timeout' : 'agent_error',
+      });
+    },
+  );
   return handle;
 }
 
