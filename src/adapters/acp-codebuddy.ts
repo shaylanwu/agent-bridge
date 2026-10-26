@@ -146,6 +146,8 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
   let text = '';
   let stopReason = 'unknown';
   let closed = false;
+  let timedOut = false;
+  let aborted = false;
 
   const send = (message: Record<string, unknown>): void => {
     if (closed || !child.stdin.writable) return;
@@ -279,7 +281,15 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
   child.on('error', (error) => failAll(error));
   child.on('close', (code) => {
     closed = true;
-    failAll(new Error(`CodeBuddy ACP 进程退出（code ${code ?? 'null'}）`));
+    failAll(
+      new Error(
+        timedOut
+          ? 'CodeBuddy ACP 超时，进程已终止'
+          : aborted
+            ? 'CodeBuddy ACP 已取消'
+            : `CodeBuddy ACP 进程退出（code ${code ?? 'null'}）`,
+      ),
+    );
   });
 
   const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
@@ -287,8 +297,14 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
     if (sessionId) send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } });
     child.kill();
   };
-  const timer = setTimeout(cancel, timeoutMs);
-  const onAbort = (): void => cancel();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    cancel();
+  }, timeoutMs);
+  const onAbort = (): void => {
+    aborted = true;
+    cancel();
+  };
   opts.signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
