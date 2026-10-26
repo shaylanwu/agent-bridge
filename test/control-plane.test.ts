@@ -184,7 +184,12 @@ describe('本地回环控制面', () => {
       scope: 'device:read',
       exp: now + 3600,
     });
-    const denied = await call(plane.port, 'GET', '/v1/whoami', {
+    const otherWho = await call(plane.port, 'GET', '/v1/whoami', {
+      headers: { authorization: `Bearer ${otherTenant}` },
+    });
+    expect(otherWho.status).toBe(200);
+    expect(otherWho.json<{ principal: { tenantId: string } }>().principal.tenantId).toBe('tenant_b');
+    const denied = await call(plane.port, 'GET', '/v1/tasks', {
       headers: { authorization: `Bearer ${otherTenant}` },
     });
     expect(denied.status).toBe(403);
@@ -196,6 +201,39 @@ describe('本地回环控制面', () => {
     });
     expect(forbidden.status).toBe(403);
     expect(forbidden.body).toContain('insufficient_scope');
+    plane.close();
+  });
+
+  it('JWT 会话读取按 tenant 隔离，跨租户快照 404', async () => {
+    const { sign, verifier } = jwtFixture();
+    const store = new SessionStore(':memory:');
+    store.createSession({ sessionId: 'bt_default', mode: 'task', agentType: 'codex', cwd: '/tmp' });
+    store.createSession({
+      sessionId: 'bt_b',
+      mode: 'task',
+      agentType: 'codex',
+      cwd: '/tmp',
+      tenantId: 'tenant_b',
+    });
+    const plane = await start({ store, jwt: verifier });
+    const now = Math.floor(Date.now() / 1000);
+    const token = (tenantId: string) =>
+      sign({ sub: 'u', tenant_id: tenantId, scope: 'task:read', exp: now + 3600 });
+    const b = await call(plane.port, 'GET', '/v1/sessions', {
+      headers: { authorization: `Bearer ${token('tenant_b')}` },
+    });
+    expect(b.status).toBe(200);
+    expect(b.json<{ sessions: { sessionId: string }[] }>().sessions.map((s) => s.sessionId)).toEqual([
+      'bt_b',
+    ]);
+    const cross = await call(plane.port, 'GET', '/v1/sessions/bt_default', {
+      headers: { authorization: `Bearer ${token('tenant_b')}` },
+    });
+    expect(cross.status).toBe(404);
+    const own = await call(plane.port, 'GET', '/v1/sessions/bt_b', {
+      headers: { authorization: `Bearer ${token('tenant_b')}` },
+    });
+    expect(own.status).toBe(200);
     plane.close();
   });
 

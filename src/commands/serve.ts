@@ -21,6 +21,7 @@ import { scanAgents } from '../core/scan.js';
 import { defaultSupervisor } from '../core/task-supervisor.js';
 import { resolveControlPlane, resolveDiffMaxBytes, resolveMaxQueued, resolveMaxTasks } from '../infra/config.js';
 import { verifyServiceToken, type ServiceScope } from '../infra/service-token.js';
+import { JwtVerifier } from '../infra/jwt.js';
 import { PROTOCOL_CAPABILITIES } from '../protocol.js';
 import { randomBytes } from 'node:crypto';
 import { version } from '../cli/meta.js';
@@ -78,6 +79,17 @@ export async function cmdServe(flags: Flags): Promise<void> {
       scan: (opts) => scanAgents(opts),
       log,
       verify: verifyWithUi,
+      ...(config?.jwt
+        ? {
+            jwt: new JwtVerifier({
+              jwks: config.jwt.jwksUrl,
+              issuer: config.jwt.issuer,
+              audience: config.jwt.audience,
+              tenantClaim: config.jwt.tenantClaim,
+              cacheMs: config.jwt.cacheMs,
+            }),
+          }
+        : {}),
       capabilities: PROTOCOL_CAPABILITIES,
       version: version(),
       defaults: {

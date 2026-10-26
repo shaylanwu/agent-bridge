@@ -108,6 +108,28 @@ describe('严格配置读取', () => {
 });
 
 describe('配置原子保存与凭证清除', () => {
+  it('[jwt] 可解析并持久化', async () => {
+    await writeFile(
+      file,
+      `platformUrl = "https://platform.example.test"\ndeviceId = "${DEVICE_ID}"\n[jwt]\njwks_url = "https://issuer.test/jwks"\naudience = "agent-bridge"\n`,
+      'utf8',
+    );
+    expect((await loadConfig())?.jwt).toMatchObject({
+      jwksUrl: 'https://issuer.test/jwks',
+      audience: 'agent-bridge',
+    });
+    await saveConfig(
+      boundConfig({
+        jwt: { jwksUrl: 'https://issuer.test/jwks', issuer: 'iss', tenantClaim: 'tid' },
+      }),
+    );
+    expect((await loadConfig())?.jwt).toMatchObject({
+      jwksUrl: 'https://issuer.test/jwks',
+      issuer: 'iss',
+      tenantClaim: 'tid',
+    });
+  });
+
   it('session_idle_ms 可解析并持久化', async () => {
     await writeFile(
       file,

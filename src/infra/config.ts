@@ -31,6 +31,14 @@ export interface BridgeConfig {
   requireServiceToken?: boolean;
   /** waiting_user 会话空闲多久自动关闭（毫秒，缺省 0 = 不自动关闭） */
   sessionIdleMs?: number;
+  /** 控制面 principal JWT（可选；缺省不启用） */
+  jwt?: {
+    jwksUrl: string;
+    issuer?: string;
+    audience?: string;
+    tenantClaim?: string;
+    cacheMs?: number;
+  };
   /** 本地回环控制面（默认关闭；见 resolveControlPlane） */
   controlPlane?: {
     enabled?: boolean;
@@ -242,6 +250,15 @@ function serializeConfig(cfg: BridgeConfig): string {
   if (cfg.diffDefault !== undefined) out['diff_default'] = cfg.diffDefault;
   if (cfg.requireServiceToken !== undefined) out['require_service_token'] = cfg.requireServiceToken;
   if (cfg.sessionIdleMs !== undefined) out['session_idle_ms'] = cfg.sessionIdleMs;
+  if (cfg.jwt !== undefined) {
+    out['jwt'] = {
+      jwks_url: cfg.jwt.jwksUrl,
+      ...(cfg.jwt.issuer !== undefined ? { issuer: cfg.jwt.issuer } : {}),
+      ...(cfg.jwt.audience !== undefined ? { audience: cfg.jwt.audience } : {}),
+      ...(cfg.jwt.tenantClaim !== undefined ? { tenant_claim: cfg.jwt.tenantClaim } : {}),
+      ...(cfg.jwt.cacheMs !== undefined ? { cache_ms: cfg.jwt.cacheMs } : {}),
+    };
+  }
   if (cfg.controlPlane !== undefined) {
     const controlPlane: Record<string, unknown> = {};
     if (cfg.controlPlane.enabled !== undefined) controlPlane['enabled'] = cfg.controlPlane.enabled;
@@ -333,6 +350,24 @@ export function loadConfig(): BridgeConfig | null {
       }
     : undefined;
 
+  const jwtValue = raw['jwt'];
+  if (jwtValue !== undefined && (typeof jwtValue !== 'object' || jwtValue === null || Array.isArray(jwtValue))) {
+    throw invalidConfig(file, 'jwt 必须是 TOML 表');
+  }
+  let jwt: BridgeConfig['jwt'];
+  if (jwtValue !== undefined) {
+    const jwtRaw = jwtValue as Record<string, unknown>;
+    const jwksUrl = optionalString(jwtRaw, 'jwks_url', file);
+    if (!jwksUrl) throw invalidConfig(file, 'jwt.jwks_url 必须是非空字符串');
+    jwt = {
+      jwksUrl,
+      issuer: optionalString(jwtRaw, 'issuer', file),
+      audience: optionalString(jwtRaw, 'audience', file),
+      tenantClaim: optionalString(jwtRaw, 'tenant_claim', file),
+      cacheMs: optionalNumber(jwtRaw['cache_ms'], 'jwt.cache_ms', file, 0),
+    };
+  }
+
   return {
     platformUrl,
     deviceId,
@@ -345,6 +380,7 @@ export function loadConfig(): BridgeConfig | null {
     ...(diffDefault !== undefined ? { diffDefault } : {}),
     ...(requireServiceToken !== undefined ? { requireServiceToken } : {}),
     ...(sessionIdleMs !== undefined ? { sessionIdleMs } : {}),
+    ...(jwt !== undefined ? { jwt } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
     ...(label !== undefined ? { label } : {}),
     ...(boundAt !== undefined ? { boundAt } : {}),

@@ -124,6 +124,8 @@ interface RouteContext {
   scope?: ServiceScope;
   /** 已验签的 principal JWT；存在时优先于 service token */
   principal?: JwtPrincipal;
+  /** 请求所属租户；缺省 = default */
+  tenantId?: string;
 }
 
 const json = (res: ServerResponse, status: number, payload: unknown): void => {
@@ -311,7 +313,7 @@ export async function startControlPlane(
   const handleMetrics = (ctx: RouteContext): void => {
     const counts = deps.registry.counts();
     const memory = process.memoryUsage();
-    const sessions = deps.store.listSessions().length;
+    const sessions = deps.store.listSessions(ctx.tenantId).length;
     const lines = [
       '# HELP agent_bridge_up Bridge process is running.',
       '# TYPE agent_bridge_up gauge',
@@ -658,8 +660,8 @@ export async function startControlPlane(
     const limitRaw = Number(ctx.url.searchParams.get('limit') ?? '50');
     const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, Math.floor(limitRaw))) : 50;
     json(ctx.res, 200, {
-      sessions: deps.store.listSessions().slice(-limit).map((session) => {
-        const window = deps.store.eventWindow(session.sessionId);
+      sessions: deps.store.listSessions(ctx.tenantId).slice(-limit).map((session) => {
+        const window = deps.store.eventWindow(session.sessionId, ctx.tenantId);
         return { ...session, ...window };
       }),
     });
@@ -713,6 +715,7 @@ export async function startControlPlane(
       const snapshot = deps.store.snapshot(id, {
         afterEventSeq: Number.isFinite(afterRaw) ? Math.max(0, Math.floor(afterRaw)) : 0,
         limit: Number.isFinite(limitRaw) ? Math.min(1000, Math.max(1, Math.floor(limitRaw))) : 200,
+        tenantId: ctx.tenantId,
       });
       json(ctx.res, 200, snapshot);
     } catch {
@@ -728,7 +731,7 @@ export async function startControlPlane(
     if (!authorize(ctx, 'task:read')) return;
     let snapshot: ReturnType<SessionStore['snapshot']>;
     try {
-      snapshot = deps.store.snapshot(id, { afterEventSeq: 0, limit: 1000 });
+      snapshot = deps.store.snapshot(id, { afterEventSeq: 0, limit: 1000, tenantId: ctx.tenantId });
     } catch {
       problem(ctx.res, 404, 'internal', `未找到会话：${id}`);
       return;
@@ -757,7 +760,11 @@ export async function startControlPlane(
     // 慢消费者断线后可能落后 >1000 条；分批按 eventSeq 追平，避免一次性截断造成缺口。
     let lastSeq = after;
     for (;;) {
-      const replay = deps.store.listEvents(id, { afterEventSeq: lastSeq, limit: 1000 });
+      const replay = deps.store.listEvents(id, {
+        afterEventSeq: lastSeq,
+        limit: 1000,
+        tenantId: ctx.tenantId,
+      });
       for (const item of replay) {
         writeEvent('event', {
           eventSeq: item.eventSeq,
@@ -799,7 +806,7 @@ export async function startControlPlane(
       if (seq !== undefined && seq <= lastSeq) return;
       if (seq !== undefined) lastSeq = seq;
       writeEvent('wire', msg);
-      const current = deps.store.getSession(id);
+      const current = deps.store.getSession(id, ctx.tenantId);
       if (!current || current.status !== 'running') {
         writeEvent('done', { taskId: id, status: current?.status ?? 'unknown' });
         cleanup();
@@ -887,8 +894,15 @@ export async function startControlPlane(
               problem(res, 401, 'invalid_token', `JWT 校验失败：${(error as Error).message}`);
               return;
             }
-            if (ctx.principal.tenantId && ctx.principal.tenantId !== DEFAULT_TENANT) {
-              problem(res, 403, 'tenant_not_supported', '当前控制面尚未按租户分区读取');
+            ctx.tenantId = ctx.principal.tenantId ?? DEFAULT_TENANT;
+            if (
+              ctx.tenantId !== DEFAULT_TENANT &&
+              (path === '/v1/board' ||
+                path.startsWith('/v1/tasks') ||
+                path === '/v1/artifacts:gc' ||
+                path.includes('/artifacts/'))
+            ) {
+              problem(res, 403, 'tenant_not_supported', '任务/看板/附件尚未按租户分区');
               return;
             }
           }
