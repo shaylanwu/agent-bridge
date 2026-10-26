@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { InteractionUrlVault } from '../src/core/interaction-url.js';
+import { SessionStore } from '../src/core/session-store.js';
 
 describe('InteractionUrlVault', () => {
   it('保存短期 URL 并按 session/request 读取', () => {
@@ -16,6 +20,29 @@ describe('InteractionUrlVault', () => {
     expect(vault.lookup('bt_1', 'ir_1', 1050)).toMatchObject({ expired: false });
     expect(vault.lookup('bt_1', 'ir_1', 1200)).toEqual({ expired: true });
     expect(vault.lookup('bt_1', 'missing', 1200)).toEqual({ expired: false });
+  });
+
+  it('auth-url 交互落库后 snapshot 不含真实 URL', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-url-leak-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    try {
+      store.createSession({ sessionId: 'bt_url', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
+      store.requestInteraction({
+        sessionId: 'bt_url',
+        requestId: 'ir_url',
+        kind: 'auth-url',
+        payload: { provider: 'example', hint: 'open browser' },
+      });
+      const vault = new InteractionUrlVault();
+      vault.register('bt_url', 'ir_url', 'https://example.test/auth?token=top-secret');
+      const snapshot = JSON.stringify(store.snapshot('bt_url'));
+      expect(snapshot).not.toContain('top-secret');
+      expect(snapshot).not.toContain('https://example.test/auth');
+      expect(vault.get('bt_url', 'ir_url')?.url).toContain('top-secret');
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('register 机会式清理过期项', () => {
