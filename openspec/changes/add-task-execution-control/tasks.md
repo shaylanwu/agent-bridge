@@ -19,7 +19,8 @@
 > 2026-10-26 实测 8 个原生 ACP：codebuddy / gemini / opencode / mimo / kimi / minimax / grok / trae；
 > 剩余 4 个（claude/qoder/codex/dsh）方案见 `research/non-acp-agents.md`：
 > Codex app-server JSON-RPC 已接入（thread/resume、审批、turn/steer），Claude/Qoder 已接 `--resume`，
-> DSH headless 已接 `--session-id` resume；仅剩 Claude/Qoder 双向 stream-json 交互（实时 steer）未接。
+> DSH headless 已接 `--session-id` resume；Claude/Qoder conversation 已接常驻 stream-json 进程
+> （Turn 间复用，不声明 same-turn steer）；仅剩 MCP Form/elicitation 未接。
 
 ## 1. 决策、标准与安全边界
 

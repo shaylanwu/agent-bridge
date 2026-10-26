@@ -173,7 +173,8 @@ never sit in the queue for hours and then run for ten more minutes. Precedence: 
 
 ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and
 `trae-cli` declare native ACP and prefer it for tasks/conversations. `codex` uses the
-`codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); the rest stay headless.
+`codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); Claude/Qoder
+conversations keep a resident `stream-json` process across turns; the rest stay headless.
 CodeBuddy prefers an explicit `CODEBUDDY_AUTH_TOKEN`; otherwise the bridge reads the plaintext
 `auth/*.info` from the local CodeBuddyExtension and injects it into the ACP child. If neither exists it
 keeps headless `codebuddy -p` and never starts an unauthenticated ACP child.
