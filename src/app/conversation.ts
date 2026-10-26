@@ -10,6 +10,7 @@ import { startTask, type TaskHandle } from '../runner.js';
 import type { TaskFinishInfo, TaskHooks } from '../core/task-supervisor.js';
 import type { ServerMessage, TaskStatus, TaskPhase } from '../protocol.js';
 import type { Emitter } from '../core/emitter.js';
+import { hasAnsi } from '../core/ansi.js';
 import type { SessionStore, SessionRecord, SessionPhase, TurnRecord } from '../core/session-store.js';
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionLog } from './session-log.js';
@@ -197,12 +198,12 @@ export function startConversationTurn(
         eventSeq = deps.store.appendEvent({
           sessionId,
           type: 'task_log',
-          payload: { stream, data, isAnsi: true },
+          payload: { stream, data, isAnsi: hasAnsi(data) },
         }).eventSeq;
       } catch {
         /* event persistence must not kill the process */
       }
-      deps.emitter.emit({ type: 'task_log', taskId: sessionId, turnId: turn.turnId, stream, data, isAnsi: true, eventSeq });
+      deps.emitter.emit({ type: 'task_log', taskId: sessionId, turnId: turn.turnId, stream, data, isAnsi: hasAnsi(data), eventSeq });
     },
     onStep: (step) => {
       deps.registry.updateStep(sessionId, step);

@@ -8,6 +8,7 @@
  */
 
 import type { Emitter } from '../core/emitter.js';
+import { hasAnsi } from '../core/ansi.js';
 import { startTask, type TaskHandle } from '../runner.js';
 import type { ServerMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
@@ -417,7 +418,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
           eventSeq = o.store.appendEvent({
             sessionId: msg.taskId,
             type: 'task_log',
-            payload: { stream, data, isAnsi: true },
+            payload: { stream, data, isAnsi: hasAnsi(data) },
           }).eventSeq;
         }
         o.emitter.emit({
@@ -425,7 +426,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
           taskId: msg.taskId,
           stream,
           data,
-          isAnsi: true,
+          isAnsi: hasAnsi(data),
           turnId: turn?.turnId,
           eventSeq,
         });

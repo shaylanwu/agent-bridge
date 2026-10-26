@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { createReadStream, readFileSync, statSync } from 'node:fs';
 import { extname, resolve as resolvePath, sep } from 'node:path';
 import { Emitter, type Upstream } from '../core/emitter.js';
+import { hasAnsi } from '../core/ansi.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
 import type { SessionLog } from '../app/session-log.js';
 import type { TaskRegistry } from '../app/task-registry.js';
@@ -406,7 +407,7 @@ export async function startControlPlane(
       },
       {
         onLog: (_stream, data) =>
-          deps.emitter.emit({ type: 'task_log', taskId, stream: _stream, data, isAnsi: true }),
+          deps.emitter.emit({ type: 'task_log', taskId, stream: _stream, data, isAnsi: hasAnsi(data) }),
         // 步骤流（B 批次）：控制面任务与平台任务同口径上行
         onStep: (step) => {
           deps.registry.updateStep(taskId, step);
