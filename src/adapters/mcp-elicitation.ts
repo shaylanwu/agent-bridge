@@ -86,9 +86,13 @@ export class McpElicitationClient {
     this.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
   }
 
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    timeoutMs = this.timeoutMs,
+  ): Promise<unknown> {
     await this.start();
-    return this.request('tools/call', { name, arguments: args });
+    return this.request('tools/call', { name, arguments: args }, timeoutMs);
   }
 
   close(): void {
@@ -108,13 +112,17 @@ export class McpElicitationClient {
     child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
-  private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private request(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs = this.timeoutMs,
+  ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`MCP ${method} 超时（${this.timeoutMs}ms）`));
-      }, this.timeoutMs);
+        reject(new Error(`MCP ${method} 超时（${timeoutMs}ms）`));
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.send({ jsonrpc: '2.0', id, method, params });
     });
