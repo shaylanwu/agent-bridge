@@ -152,7 +152,8 @@ max_queue = 60   # 0 表示完全不排队
 ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
 `trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
 `codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer、审批）；其余工具保持 headless。
-CodeBuddy 额外要求显式 `CODEBUDDY_AUTH_TOKEN`，未设置时回落 `codebuddy -p`，不会启动无认证子进程。
+CodeBuddy 优先用显式 `CODEBUDDY_AUTH_TOKEN`；未设置时从本机 CodeBuddyExtension 的明文
+`auth/*.info` 读取登录态并注入 ACP 子进程。两者都没有时回落 `codebuddy -p`，不会启动无认证子进程。
 
 同一 `taskId` 的 `run_task` 重复下发是安全的：bridge 按 `taskId` 幂等 —— 未终态回当前状态快照、
 已终态回放终态快照，绝不重复 spawn。设备的水位对平台透明：`hello.capacity` 携带生效额度，

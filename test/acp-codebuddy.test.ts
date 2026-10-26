@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AcpAuthRequiredError,
   canRunAcp,
@@ -8,6 +11,21 @@ import {
   runCodeBuddyAcpPrompt,
 } from '../src/adapters/acp-codebuddy.js';
 import { AGENTS } from '../src/adapters/agent-adapters.js';
+
+let authDir = '';
+let previousAuthDir: string | undefined;
+
+beforeEach(() => {
+  previousAuthDir = process.env['CODEBUDDY_AUTH_DIR'];
+  authDir = mkdtempSync(join(tmpdir(), 'agent-bridge-acp-empty-'));
+  process.env['CODEBUDDY_AUTH_DIR'] = authDir;
+});
+
+afterEach(() => {
+  rmSync(authDir, { recursive: true, force: true });
+  if (previousAuthDir === undefined) delete process.env['CODEBUDDY_AUTH_DIR'];
+  else process.env['CODEBUDDY_AUTH_DIR'] = previousAuthDir;
+});
 
 describe('CodeBuddy ACP adapter', () => {
   it('启动参数使用已验证的 --serve --acp --port 0', () => {

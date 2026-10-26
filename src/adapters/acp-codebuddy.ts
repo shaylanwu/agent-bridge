@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import { resolveCodeBuddyAuthToken } from './acp-auth.js';
 
 export class AcpAuthRequiredError extends Error {
   constructor(message = 'CodeBuddy ACP 需要 CODEBUDDY_AUTH_TOKEN（宿主未注入登录态）') {
@@ -25,6 +26,7 @@ export class AcpAuthRequiredError extends Error {
 
 const HOST_COLLISION_ENV = [
   'SERVER__PORT',
+  'CODEBUDDY_SERVICE_PROXY_URL',
   'CODEBUDDY_SESSION_ID',
   'CLAUDE_SESSION_ID',
   'CODEBUDDY_TOOL_CALL_ID',
@@ -48,6 +50,7 @@ export const CODEBUDDY_ACP_SPEC: AcpAgentSpec = {
 export function canRunAcp(spec: AcpAgentSpec | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!spec) return false;
   if (!spec.authEnv) return true;
+  if (spec.authEnv === 'CODEBUDDY_AUTH_TOKEN') return hasCodebuddyAcpAuth(env);
   const token = env[spec.authEnv];
   return typeof token === 'string' && token.trim() !== '';
 }
@@ -55,11 +58,15 @@ export function canRunAcp(spec: AcpAgentSpec | undefined, env: NodeJS.ProcessEnv
 export function codebuddyAcpEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const key of HOST_COLLISION_ENV) delete env[key];
+  const token = env['CODEBUDDY_AUTH_TOKEN'] || resolveCodeBuddyAuthToken();
+  if (token) env['CODEBUDDY_AUTH_TOKEN'] = token;
   return env;
 }
 
 export function hasCodebuddyAcpAuth(env: NodeJS.ProcessEnv = process.env): boolean {
-  return typeof env['CODEBUDDY_AUTH_TOKEN'] === 'string' && env['CODEBUDDY_AUTH_TOKEN'].trim() !== '';
+  const token = env['CODEBUDDY_AUTH_TOKEN'];
+  if (typeof token === 'string' && token.trim() !== '') return true;
+  return resolveCodeBuddyAuthToken() !== undefined;
 }
 
 export interface AcpPermissionOption {
@@ -342,6 +349,11 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
       /* closing */
     }
     child.kill();
+    // ACP 子进程常年驻留（--serve）；必须主动断开三条管道，否则调用方进程会被句柄拖住。
+    child.stdin.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
   }
 }
 

@@ -13,7 +13,8 @@
 > `--serve --acp --port 0`，且启动前删除继承的 `SERVER__PORT`；`initialize` / `session/new` 成功，
 > `session/prompt` 在本沙箱被平台要求登录（Authentication required）。已实现 CodeBuddy ACP 客户端
 > （initialize/session/new/session/prompt、permission、fs 读写、取消、超时）与 `CODEBUDDY_AUTH_TOKEN`
-> 显式认证门禁。已接入 TaskSupervisor：`acp` 任务走 ACP，`session/load` 续接，permission 转
+> 自动认证：显式 `CODEBUDDY_AUTH_TOKEN` 优先，否则读取 CodeBuddyExtension 明文 `auth/*.info` 注入。
+> 已接入 TaskSupervisor：`acp` 任务走 ACP，`session/load` 续接，permission 转
 > `task_interaction_request` 并把 `task_interaction_response.optionId` 回送 ACP；无 token 仍回落 headless。
 > 2026-10-26 实测 8 个原生 ACP：codebuddy / gemini / opencode / mimo / kimi / minimax / grok / trae；
 > 剩余 4 个（claude/qoder/codex/dsh）方案见 `research/non-acp-agents.md`：
