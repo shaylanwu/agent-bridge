@@ -155,6 +155,40 @@ describe('conversation turns', () => {
     expect(runnerMocks.startTask).not.toHaveBeenCalled();
   });
 
+  it('没有原生 steer 的适配器明确回 steer_unsupported', async () => {
+    const { store, sent, deps } = setup();
+    store.createSession({
+      sessionId: 'bt_conv_no_steer',
+      mode: 'conversation',
+      agentType: 'claude-code',
+      cwd: '/tmp/work',
+      phase: 'running',
+    });
+    store.createTurn({ sessionId: 'bt_conv_no_steer', status: 'running' });
+    deps.tasks.set('bt_conv_no_steer', {
+      taskId: 'bt_conv_no_steer',
+      cancel: () => undefined,
+      done: Promise.resolve('success' as const),
+    });
+    await dispatchConversationMessage(
+      {
+        type: 'send_message',
+        taskId: 'bt_conv_no_steer',
+        messageId: 'msg_no_steer',
+        mode: 'steer',
+        parts: [{ kind: 'text', text: 'change course' }],
+      },
+      deps,
+    );
+    expect(sent.at(-1)).toMatchObject({
+      type: 'message_ack',
+      messageId: 'msg_no_steer',
+      delivery: 'rejected',
+      errorCode: 'steer_unsupported',
+    });
+    expect(store.listMessages('bt_conv_no_steer')).toHaveLength(0);
+  });
+
   it('同 messageId 重发回 duplicate，不重复起 Turn', () => {
     const { store, sent, deps } = setup();
     store.createSession({
