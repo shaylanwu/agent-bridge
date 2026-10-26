@@ -19,7 +19,14 @@ import { panelLog, startPanel } from '../cli/panel.js';
 import { C, out } from '../cli/render.js';
 import { scanAgents } from '../core/scan.js';
 import { defaultSupervisor } from '../core/task-supervisor.js';
-import { resolveControlPlane, resolveDiffMaxBytes, resolveMaxQueued, resolveMaxTasks } from '../infra/config.js';
+import {
+  resolveControlPlane,
+  resolveDiffMaxBytes,
+  resolveMaxQueued,
+  resolveMaxTasks,
+  stateDir,
+} from '../infra/config.js';
+import { acquireBridgeRuntimeLock } from '../infra/profile-lock.js';
 import { verifyServiceToken, type ServiceScope } from '../infra/service-token.js';
 import { JwtVerifier } from '../infra/jwt.js';
 import { PROTOCOL_CAPABILITIES } from '../protocol.js';
@@ -29,6 +36,15 @@ import { startTask } from '../runner.js';
 import { startControlPlane } from '../transport/control-plane.js';
 
 export async function cmdServe(flags: Flags): Promise<void> {
+  const runtime = await acquireBridgeRuntimeLock(stateDir());
+  try {
+    await runServe(flags);
+  } finally {
+    await runtime.release().catch(() => undefined);
+  }
+}
+
+async function runServe(flags: Flags): Promise<void> {
   // 两阶段：授权/建连期逐行日志；会话起来后（TTY）切面板模式
   let log: SessionLog = (level, line) => {
     if (level === 'info') console.log(C.dim(line));

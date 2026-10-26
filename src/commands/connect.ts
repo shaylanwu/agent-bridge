@@ -27,6 +27,8 @@ import {
   resolveMaxTasks,
 } from '../infra/config.js';
 import { JwtVerifier } from '../infra/jwt.js';
+import { acquireBridgeRuntimeLock } from '../infra/profile-lock.js';
+import { stateDir } from '../infra/config.js';
 import { verifyServiceToken, type ServiceScope } from '../infra/service-token.js';
 import { PROTOCOL_CAPABILITIES } from '../protocol.js';
 import { startTask } from '../runner.js';
@@ -34,6 +36,15 @@ import { startControlPlane } from '../transport/control-plane.js';
 
 
 export async function cmdConnect(flags: Flags): Promise<void> {
+  const runtime = await acquireBridgeRuntimeLock(stateDir());
+  try {
+    await runConnect(flags);
+  } finally {
+    await runtime.release().catch(() => undefined);
+  }
+}
+
+async function runConnect(flags: Flags): Promise<void> {
   // 两阶段：授权/建连期逐行日志；会话起来后（TTY）切面板模式
   let log: SessionLog = (level, line) => {
     if (level === 'info') console.log(C.dim(line));

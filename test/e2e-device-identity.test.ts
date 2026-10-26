@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -231,10 +231,10 @@ afterEach(async () => {
   await rm(context.root, { recursive: true, force: true });
 });
 
-function startCli(args: string[]): CliProcess {
+function startCliWithConfig(args: string[], configFile: string): CliProcess {
   const env = {
     ...process.env,
-    AGENT_BRIDGE_CONFIG: context.configFile,
+    AGENT_BRIDGE_CONFIG: configFile,
     NO_COLOR: '1',
   };
   delete env.AGENT_BRIDGE_DEVICE_ID;
@@ -246,6 +246,10 @@ function startCli(args: string[]): CliProcess {
   const processHandle = new CliProcess(child);
   context.children.push(processHandle);
   return processHandle;
+}
+
+function startCli(args: string[]): CliProcess {
+  return startCliWithConfig(args, context.configFile);
 }
 
 function connect(...extraArgs: string[]): CliProcess {
@@ -402,7 +406,7 @@ describe('真实 CLI 稳定设备身份端到端', () => {
 
     const second = connect();
     expect((await second.exited).code).toBe(1);
-    expect(second.stderr).toContain('该 profile 已有绑定进行中');
+    expect(second.stderr).toMatch(/已有 bridge 运行实例|该 profile 已有绑定进行中/);
     expect(context.platform.at('/api/bridge/token')).toHaveLength(1);
     expect(context.platform.hellos).toHaveLength(0);
 
@@ -419,7 +423,13 @@ describe('真实 CLI 稳定设备身份端到端', () => {
   it('同 ID 两条真实 WS 的 URL/hello 一致，旧进程退出后新进程仍响应 ping', async () => {
     const oldProcess = connect();
     await waitFor(() => expect(context.platform.hellos).toHaveLength(1));
-    const newProcess = connect();
+    // 同一 profile 会被运行期单实例锁拒绝；这里用独立 profile 复制同一身份，验证平台替换语义。
+    const secondDir = join(context.root, 'second-profile');
+    await mkdir(secondDir, { recursive: true });
+    const secondConfig = join(secondDir, 'config.toml');
+    await copyFile(context.configFile, secondConfig);
+    await copyFile(context.identityFile, join(secondDir, 'identity.toml'));
+    const newProcess = startCliWithConfig(['connect', context.platform.url], secondConfig);
     await waitFor(() => expect(context.platform.hellos).toHaveLength(2));
 
     const [oldConnection, newConnection] = context.platform.connections;

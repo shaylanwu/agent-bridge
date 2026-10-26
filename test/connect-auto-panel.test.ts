@@ -26,6 +26,9 @@ vi.mock('../src/app/bootstrap.js', () => ({
 vi.mock('../src/transport/control-plane.js', () => ({
   startControlPlane: (settings: { port: number }) => startControlPlane(settings),
 }));
+vi.mock('../src/infra/profile-lock.js', () => ({
+  acquireBridgeRuntimeLock: async () => ({ release: async () => undefined }),
+}));
 vi.mock('../src/cli/hold.js', () => ({
   hold: async (cleanup: () => void | Promise<void>) => {
     await cleanup();

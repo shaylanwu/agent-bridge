@@ -201,6 +201,39 @@ async function runWithLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T
   }
 }
 
+export interface BridgeRuntimeLock {
+  release: () => Promise<void>;
+}
+
+/**
+ * 运行期单实例锁：覆盖整个 connect/serve 生命周期。
+ * profile.lock 只保护启动阶段的身份/授权写入，释放后仍可能被第二个 connect 抢同一 deviceId；
+ * 平台会以 4000 replaced_by_new_connection 互踢，导致任务被判 lost。
+ */
+export async function acquireBridgeRuntimeLock(stateDir: string): Promise<BridgeRuntimeLock> {
+  const lockPath = join(stateDir, 'runtime.lock');
+  const record: LockRecord = {
+    ownerToken: randomUUID(),
+    pid: process.pid,
+    hostname: hostname(),
+    createdAt: new Date().toISOString(),
+  };
+  let lock: HeldLock;
+  try {
+    lock = await acquireLock(stateDir, lockPath, record);
+  } catch (error) {
+    if (/绑定进行中/.test((error as Error).message)) {
+      throw new Error(
+        `已有 bridge 运行实例占用该 profile：${lockPath}；请先停止旧进程，或使用独立配置目录。`,
+      );
+    }
+    throw error;
+  }
+  return {
+    release: () => releaseLock(lock),
+  };
+}
+
 export async function withProfileLock<T>(stateDir: string, fn: () => Promise<T>): Promise<T> {
   const key = resolve(stateDir);
   const previous = processQueues.get(key) ?? Promise.resolve();

@@ -6,7 +6,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { withProfileLock } from '../src/infra/profile-lock.js';
+import { acquireBridgeRuntimeLock, withProfileLock } from '../src/infra/profile-lock.js';
 
 let stateDir: string;
 let lockPath: string;
@@ -223,5 +223,15 @@ describe('stale lock 安全回收', () => {
     await putLock(replacement);
     await expect(withProfileLock(stateDir, async () => undefined)).rejects.toThrow(/已有绑定进行中/);
     expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(replacement);
+  });
+});
+
+describe('bridge runtime lock', () => {
+  it('同一 profile 同时只允许一个运行实例', async () => {
+    const first = await acquireBridgeRuntimeLock(stateDir);
+    await expect(acquireBridgeRuntimeLock(stateDir)).rejects.toThrow(/绑定进行中|已有/);
+    await first.release();
+    const second = await acquireBridgeRuntimeLock(stateDir);
+    await second.release();
   });
 });
