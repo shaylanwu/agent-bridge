@@ -113,6 +113,23 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('/v1/metrics 需要鉴权并输出 Prometheus 文本', async () => {
+    const plane = await start({
+      verify: (token) =>
+        token ? { ok: true } : { ok: false, reason: 'missing', message: '需要令牌' },
+    });
+    const denied = await call(plane.port, 'GET', '/v1/metrics');
+    expect(denied.status).toBe(401);
+    const res = await call(plane.port, 'GET', '/v1/metrics', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('agent_bridge_up 1');
+    expect(res.body).toContain('agent_bridge_tasks_running');
+    expect(res.body).toContain('agent_bridge_sessions_total');
+    plane.close();
+  });
+
   it('无令牌访问受保护端点 → 401（RFC 9457 problem+json）', async () => {
     const plane = await start();
     const res = await call(plane.port, 'GET', '/v1/capabilities');

@@ -282,6 +282,40 @@ export async function startControlPlane(
     });
   };
 
+  const handleMetrics = (ctx: RouteContext): void => {
+    const counts = deps.registry.counts();
+    const memory = process.memoryUsage();
+    const sessions = deps.store.listSessions().length;
+    const lines = [
+      '# HELP agent_bridge_up Bridge process is running.',
+      '# TYPE agent_bridge_up gauge',
+      'agent_bridge_up 1',
+      '# HELP agent_bridge_uptime_seconds Process uptime.',
+      '# TYPE agent_bridge_uptime_seconds gauge',
+      `agent_bridge_uptime_seconds ${process.uptime().toFixed(3)}`,
+      '# HELP agent_bridge_tasks_tracked Tasks currently tracked by registry.',
+      '# TYPE agent_bridge_tasks_tracked gauge',
+      `agent_bridge_tasks_tracked ${counts.running + counts.queued + counts.success + counts.failed}`,
+      '# HELP agent_bridge_tasks_running Running tasks.',
+      '# TYPE agent_bridge_tasks_running gauge',
+      `agent_bridge_tasks_running ${counts.running}`,
+      '# HELP agent_bridge_tasks_queued Queued tasks.',
+      '# TYPE agent_bridge_tasks_queued gauge',
+      `agent_bridge_tasks_queued ${counts.queued}`,
+      '# HELP agent_bridge_sessions_total Persisted sessions.',
+      '# TYPE agent_bridge_sessions_total gauge',
+      `agent_bridge_sessions_total ${sessions}`,
+      '# HELP agent_bridge_memory_rss_bytes Resident set size.',
+      '# TYPE agent_bridge_memory_rss_bytes gauge',
+      `agent_bridge_memory_rss_bytes ${memory.rss}`,
+      '# HELP agent_bridge_memory_heap_used_bytes V8 heap used.',
+      '# TYPE agent_bridge_memory_heap_used_bytes gauge',
+      `agent_bridge_memory_heap_used_bytes ${memory.heapUsed}`,
+    ];
+    ctx.res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
+    ctx.res.end(`${lines.join('\n')}\n`);
+  };
+
   const handleCapabilities = (ctx: RouteContext): void => {
     json(ctx.res, 200, {
       capabilities: [...deps.capabilities],
@@ -289,6 +323,7 @@ export async function startControlPlane(
       scopes: ['task:create', 'task:cancel', 'task:read', 'device:read'],
       endpoints: [
         '/v1/health',
+        '/v1/metrics',
         '/v1/capabilities',
         '/v1/agents',
         '/v1/agents:scan',
@@ -815,6 +850,10 @@ export async function startControlPlane(
         const ctx: RouteContext = { req, res, url, body };
 
         if (path === '/v1/health') return handleHealth(ctx);
+        if (path === '/v1/metrics' && req.method === 'GET') {
+          if (!authorize(ctx, 'device:read')) return;
+          return handleMetrics(ctx);
+        }
         if (path === '/favicon.ico' && req.method === 'GET') {
           ctx.res.writeHead(204);
           ctx.res.end();

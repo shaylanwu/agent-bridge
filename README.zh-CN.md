@@ -400,6 +400,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | --- | --- | --- |
 | GET | `/` | 无（Web 任务面板壳；数据走 /v1/*） |
 | GET | `/v1/health` | 无（存活/就绪/版本） |
+| GET | `/v1/metrics` | `device:read`（Prometheus 文本） |
 | GET | `/v1/capabilities` | `device:read` |
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |

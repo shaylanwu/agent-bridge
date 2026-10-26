@@ -11,6 +11,7 @@ description: Every endpoint of the optional loopback control plane — generated
 | --- | --- | --- |
 | `GET` | [`/`](#op-get) | 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点） |
 | `GET` | [`/v1/health`](#op-get-v1-health) | Liveness / readiness / version |
+| `GET` | [`/v1/metrics`](#op-get-v1-metrics) | Minimal Prometheus metrics |
 | `GET` | [`/v1/capabilities`](#op-get-v1-capabilities) | Capabilities and endpoint index (same source as hello.capabilities) |
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | Installed agents and their credential state (`?fresh=true` to re-probe) |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | Trigger a fresh scan (same as GET /v1/agents?fresh=true) |
@@ -75,6 +76,25 @@ The only route that needs no token — safe for container and CI probes.
   "ready": true
 }
 ```
+
+
+
+
+<a id="op-get-v1-metrics"></a>
+
+### GET /v1/metrics
+
+**Minimal Prometheus metrics**
+
+Process uptime, registry task counts, sessions and memory; requires device:read.
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Prometheus text exposition |
 
 
 

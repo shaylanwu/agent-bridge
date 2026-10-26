@@ -66,6 +66,17 @@ paths:
                     properties:
                       tracked: { type: integer }
                 required: [status, version, ready]
+  /v1/metrics:
+    get:
+      tags: [device]
+      summary: Minimal Prometheus metrics
+      description: Process uptime, registry task counts, sessions and memory; requires device:read.
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: { type: string }
   /v1/capabilities:
     get:
       tags: [device]
