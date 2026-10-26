@@ -101,6 +101,27 @@ describe('SessionStore', () => {
     ).toThrow(SessionStoreError);
   });
 
+  it('auth-url 交互拒绝把完整 URL 写进 SQLite', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_auth', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
+    expect(() =>
+      store.requestInteraction({
+        sessionId: 'bt_auth',
+        requestId: 'ir_auth_1',
+        kind: 'auth-url',
+        payload: { url: 'https://example.test/auth?token=secret' },
+      }),
+    ).toThrow(/InteractionUrlVault/);
+    expect(
+      store.requestInteraction({
+        sessionId: 'bt_auth',
+        requestId: 'ir_auth_2',
+        kind: 'auth-url',
+        payload: { provider: 'example', hint: 'open the browser' },
+      }).kind,
+    ).toBe('auth-url');
+  });
+
   it('eventSeq 单调递增且重复事件幂等', () => {
     const store = open();
     store.createSession({ sessionId: 'bt_2', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });

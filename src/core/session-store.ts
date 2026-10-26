@@ -21,6 +21,14 @@ export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled'
 const SCHEMA_VERSION = 4;
 const DEFAULT_TENANT = 'default';
 
+function containsUrlKey(value: unknown, depth = 0): boolean {
+  if (depth > 8 || !value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((item) => containsUrlKey(item, depth + 1));
+  return Object.entries(value as Record<string, unknown>).some(
+    ([key, child]) => key.toLowerCase() === 'url' || containsUrlKey(child, depth + 1),
+  );
+}
+
 export class SessionStoreError extends Error {
   constructor(
     readonly code:
@@ -927,6 +935,13 @@ export class SessionStore {
     const tenantId = input.tenantId ?? DEFAULT_TENANT;
     if (!this.getSession(input.sessionId, tenantId)) {
       throw new SessionStoreError('session_not_found', `会话不存在：${input.sessionId}`);
+    }
+    // auth-url 的完整 URL 可能含一次性 token，只能进 InteractionUrlVault，不能进 SQLite/snapshot。
+    if (input.kind === 'auth-url' && containsUrlKey(input.payload)) {
+      throw new SessionStoreError(
+        'invalid_input',
+        'auth-url payload 不得包含 url；请使用 InteractionUrlVault.register()',
+      );
     }
     const record: InteractionRecord = {
       tenantId,
