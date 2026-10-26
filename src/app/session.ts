@@ -151,9 +151,9 @@ export function createSession(opts: SessionOptions): BridgeSession {
         return;
       }
       if (msg.type === 'close_session') {
+        dispatchCloseSession(msg, dispatchOpts);
         dispatchOpts.residentSessions.get(msg.taskId)?.close();
         dispatchOpts.residentSessions.delete(msg.taskId);
-        dispatchCloseSession(msg, dispatchOpts);
         return;
       }
       if (msg.type === 'cancel_turn') {
