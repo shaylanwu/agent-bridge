@@ -19,7 +19,7 @@ export type InteractionKind = 'permission' | 'form' | 'auth-url';
 export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
 
 const SCHEMA_VERSION = 4;
-const DEFAULT_TENANT = 'default';
+export const DEFAULT_TENANT = 'default';
 
 function containsUrlKey(value: unknown, depth = 0): boolean {
   if (depth > 8 || !value || typeof value !== 'object') return false;

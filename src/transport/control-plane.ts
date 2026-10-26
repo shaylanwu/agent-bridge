@@ -39,6 +39,8 @@ import {
 import { writeAudit } from '../infra/audit.js';
 import type { RunTaskRequest, TaskFinishInfo, TaskHandle, TaskHooks } from '../core/task-supervisor.js';
 import type { TaskStatus } from '../protocol.js';
+import { DEFAULT_TENANT } from '../core/session-store.js';
+import type { JwtPrincipal, JwtVerifier } from '../infra/jwt.js';
 
 /** 请求体上限：控制面只收任务参数，1 MB 足够，超了直接 413 */
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -71,6 +73,8 @@ export interface ControlPlaneDeps {
   };
   /** 令牌校验器（默认 `infra/service-token`；注入以便单测） */
   verify?: (token: string | undefined, scope: ServiceScope) => VerifyResult;
+  /** 可选 principal JWT 校验器；只接受默认租户，避免未租户化读取前串租户 */
+  jwt?: JwtVerifier;
 }
 
 export interface ControlPlaneSettings {
@@ -118,6 +122,8 @@ interface RouteContext {
   url: URL;
   body: unknown;
   scope?: ServiceScope;
+  /** 已验签的 principal JWT；存在时优先于 service token */
+  principal?: JwtPrincipal;
 }
 
 const json = (res: ServerResponse, status: number, payload: unknown): void => {
@@ -228,6 +234,22 @@ export async function startControlPlane(
 
   const authorize = (ctx: RouteContext, scope: ServiceScope): boolean => {
     if (!requireToken) return true;
+    if (ctx.principal) {
+      const allowed = ctx.principal.scopes.includes(scope) || ctx.principal.scopes.includes('*');
+      writeAudit({
+        at: new Date().toISOString(),
+        action: 'control_plane',
+        outcome: allowed ? 'allowed' : 'denied',
+        purpose: `${ctx.req.method} ${ctx.url.pathname}`,
+        serviceId: `jwt:${ctx.principal.subject}`,
+        scopes: ctx.principal.scopes,
+      });
+      if (!allowed) {
+        problem(ctx.res, 403, 'insufficient_scope', `JWT 缺少 scope: ${scope}`);
+        return false;
+      }
+      return true;
+    }
     const header = ctx.req.headers['authorization'];
     const raw = Array.isArray(header) ? header[0] : header;
     let token = raw?.startsWith('Bearer ') ? raw.slice(7).trim() : undefined;
@@ -328,6 +350,7 @@ export async function startControlPlane(
       endpoints: [
         '/v1/health',
         '/v1/metrics',
+        '/v1/whoami',
         '/v1/capabilities',
         '/v1/agents',
         '/v1/agents:scan',
@@ -853,7 +876,39 @@ export async function startControlPlane(
         }
         const ctx: RouteContext = { req, res, url, body };
 
+        if (path !== '/v1/health' && deps.jwt) {
+          const header = req.headers['authorization'];
+          const raw = Array.isArray(header) ? header[0] : header;
+          const bearer = raw?.startsWith('Bearer ') ? raw.slice(7).trim() : undefined;
+          if (bearer && bearer.split('.').length === 3) {
+            try {
+              ctx.principal = await deps.jwt.verify(bearer);
+            } catch (error) {
+              problem(res, 401, 'invalid_token', `JWT 校验失败：${(error as Error).message}`);
+              return;
+            }
+            if (ctx.principal.tenantId && ctx.principal.tenantId !== DEFAULT_TENANT) {
+              problem(res, 403, 'tenant_not_supported', '当前控制面尚未按租户分区读取');
+              return;
+            }
+          }
+        }
+
         if (path === '/v1/health') return handleHealth(ctx);
+        if (path === '/v1/whoami' && req.method === 'GET') {
+          if (!authorize(ctx, 'device:read')) return;
+          json(res, 200, {
+            authenticated: true,
+            principal: ctx.principal
+              ? {
+                  subject: ctx.principal.subject,
+                  tenantId: ctx.principal.tenantId,
+                  scopes: ctx.principal.scopes,
+                }
+              : { service: true },
+          });
+          return;
+        }
         if (path === '/v1/metrics' && req.method === 'GET') {
           if (!authorize(ctx, 'device:read')) return;
           return handleMetrics(ctx);

@@ -720,3 +720,4 @@ components:
         - invalid_token
         - token_expired
         - insufficient_scope
+        - tenant_not_supported

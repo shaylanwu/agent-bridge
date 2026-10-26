@@ -5,7 +5,9 @@
  * 默认关闭、只绑回环、不带令牌 401、scope 不足 403、绝不返回 CORS 头、幂等键不重复跑任务。
  */
 
+import { createSign, generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { JwtVerifier } from '../src/infra/jwt.js';
 import { request as httpRequest } from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -85,6 +87,21 @@ function makeDeps(overrides: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps {
   };
 }
 
+function jwtFixture() {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: 'jwk' }) as Record<string, unknown>;
+  const sign = (payload: Record<string, unknown>) => {
+    const header = { alg: 'RS256', typ: 'JWT', kid: 'k1' };
+    const input = `${Buffer.from(JSON.stringify(header)).toString('base64url')}.${Buffer.from(
+      JSON.stringify(payload),
+    ).toString('base64url')}`;
+    const sig = createSign('sha256').update(input).sign(privateKey);
+    return `${input}.${sig.toString('base64url')}`;
+  };
+  const verifier = new JwtVerifier({ jwks: { keys: [{ ...jwk, kid: 'k1', alg: 'RS256' }] } });
+  return { sign, verifier };
+}
+
 const started: Array<{ close: () => void }> = [];
 
 async function start(deps: Partial<ControlPlaneDeps> = {}, port = 0) {
@@ -142,6 +159,43 @@ describe('本地回环控制面', () => {
     expect(res.body).toContain('agent_bridge_up 1');
     expect(res.body).toContain('agent_bridge_tasks_running');
     expect(res.body).toContain('agent_bridge_sessions_total');
+    plane.close();
+  });
+
+  it('JWT principal 可访问 whoami，非默认租户拒绝', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ jwt: verifier });
+    const now = Math.floor(Date.now() / 1000);
+    const token = sign({
+      sub: 'user-1',
+      tenant_id: 'default',
+      scope: 'device:read',
+      exp: now + 3600,
+    });
+    const ok = await call(plane.port, 'GET', '/v1/whoami', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.json<{ principal: { subject: string } }>().principal.subject).toBe('user-1');
+
+    const otherTenant = sign({
+      sub: 'user-2',
+      tenant_id: 'tenant_b',
+      scope: 'device:read',
+      exp: now + 3600,
+    });
+    const denied = await call(plane.port, 'GET', '/v1/whoami', {
+      headers: { authorization: `Bearer ${otherTenant}` },
+    });
+    expect(denied.status).toBe(403);
+    expect(denied.body).toContain('tenant_not_supported');
+
+    const noScope = sign({ sub: 'user-3', tenant_id: 'default', scope: 'task:read', exp: now + 3600 });
+    const forbidden = await call(plane.port, 'GET', '/v1/whoami', {
+      headers: { authorization: `Bearer ${noScope}` },
+    });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body).toContain('insufficient_scope');
     plane.close();
   });
 

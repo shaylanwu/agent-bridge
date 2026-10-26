@@ -84,6 +84,27 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+  /v1/whoami:
+    get:
+      tags: [device]
+      summary: Current principal (JWT or service token)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated: { type: boolean }
+                  principal:
+                    type: object
+                    properties:
+                      subject: { type: string }
+                      tenantId: { type: string }
+                      scopes:
+                        type: array
+                        items: { type: string }
   /v1/capabilities:
     get:
       tags: [device]

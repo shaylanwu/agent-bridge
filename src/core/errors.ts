@@ -26,6 +26,7 @@ export const BRIDGE_ERROR_CODES = [
   'invalid_token', // 令牌格式非法 / 未登记 / 不匹配
   'token_expired', // 令牌过期或已吊销
   'insufficient_scope', // 令牌有效但 scope 不足
+  'tenant_not_supported', // 带了租户声明，但当前控制面尚未按租户分区读取
 ] as const;
 
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
@@ -69,6 +70,7 @@ export const ERROR_HTTP_STATUS: Record<BridgeErrorCode, number> = {
   invalid_token: 401,
   token_expired: 401,
   insufficient_scope: 403,
+  tenant_not_supported: 403,
 };
 
 /** RFC 9457 `application/problem+json` 对象 */

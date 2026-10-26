@@ -12,6 +12,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `GET` | [`/`](#op-get) | 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点） |
 | `GET` | [`/v1/health`](#op-get-v1-health) | 存活 / 就绪 / 版本 |
 | `GET` | [`/v1/metrics`](#op-get-v1-metrics) | Minimal Prometheus metrics |
+| `GET` | [`/v1/whoami`](#op-get-v1-whoami) | Current principal (JWT or service token) |
 | `GET` | [`/v1/capabilities`](#op-get-v1-capabilities) | 能力清单与端点索引 |
 | `GET` | [`/v1/agents`](#op-get-v1-agents) | 已安装 AI Agent 及其凭据状态 |
 | `POST` | [`/v1/agents:scan`](#op-post-v1-agents-scan) | 触发一次全新扫描 |
@@ -91,6 +92,39 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | 状态码 | 含义 |
 | --- | --- |
 | `200` |  |
+
+
+
+
+<a id="op-get-v1-whoami"></a>
+
+### GET /v1/whoami
+
+**Current principal (JWT or service token)**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+
+
+**示例**
+
+```json
+{
+  "authenticated": true,
+  "principal": {
+    "subject": "string",
+    "tenantId": "string",
+    "scopes": [
+      "string"
+    ]
+  }
+}
+```
 
 
 

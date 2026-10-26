@@ -432,6 +432,7 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | GET | `/` | — (Web dashboard shell; data flows through /v1/*) |
 | GET | `/v1/health` | — (liveness/readiness/version) |
 | GET | `/v1/metrics` | `device:read` (Prometheus text) |
+| GET | `/v1/whoami` | `device:read` (JWT principal / service identity) |
 | GET | `/v1/capabilities` | `device:read` |
 | GET | `/v1/agents` | `device:read` |
 | POST | `/v1/agents:scan` | `device:read` |

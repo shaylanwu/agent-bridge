@@ -61,6 +61,7 @@ sidebar:
 | `invalid_token` | 401 | 令牌畸形或未知 |
 | `token_expired` | 401 | 令牌过期或已吊销 |
 | `insufficient_scope` | 403 | 令牌有效但 scope 不足 |
+| `tenant_not_supported` | 403 | 带了非默认租户，但控制面尚未租户化读取 |
 
 ## 排队语义
 

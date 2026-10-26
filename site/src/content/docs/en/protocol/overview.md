@@ -68,6 +68,7 @@ numbers.**
 | `invalid_token` | 401 | Malformed or unknown token |
 | `token_expired` | 401 | Expired or revoked token |
 | `insufficient_scope` | 403 | Token valid, scope missing |
+| `tenant_not_supported` | 403 | Non-default tenant presented before tenant-scoped reads |
 
 ## Queuing semantics
 
