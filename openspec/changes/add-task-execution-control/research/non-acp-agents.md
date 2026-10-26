@@ -1,5 +1,8 @@
 # 非 ACP Agent 对接调研（2026-10-26）
 
+> 实施更新：Grok 已确认原生 ACP（`grok agent stdio`）；Codex app-server 客户端已实现并接入
+> TaskSupervisor（`codex-app-server.ts` / `appServer`）。剩余 Claude、Qoder、DSH。
+
 > 目标：12 个工具统一 `session/new → prompt → stream → permission → resume/cancel` 语义。
 > 已有 8 个原生 ACP：codebuddy / gemini / opencode / mimo / kimi / minimax / grok / trae。
 > 本文件只分析剩余 4 个：claude-code、qoder-cli、codex、ds-harness。

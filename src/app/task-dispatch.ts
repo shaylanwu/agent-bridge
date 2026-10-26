@@ -384,6 +384,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       interactive: msg.allowInteractive === true,
       acp: Boolean(msg.prompt) && canRunAcp(agentDefOf(msg.agentType)?.acp),
       acpSpec: agentDefOf(msg.agentType)?.acp,
+      appServer: msg.agentType === 'codex' && Boolean(msg.prompt),
     },
     {
       onLog: (stream, data) => {

@@ -286,6 +286,7 @@ export function startConversationTurn(
         diffMaxBytes: deps.diffMaxBytes,
         acp: Boolean(prompt) && canRunAcp(def?.acp),
         acpSpec: def?.acp,
+        appServer: session.agentType === 'codex' && Boolean(prompt),
         nativeSessionId: session.nativeSessionId,
       },
       hooks,

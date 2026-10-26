@@ -172,9 +172,10 @@ never sit in the queue for hours and then run for ten more minutes. Precedence: 
 `AGENT_BRIDGE_MAX_QUEUE` > the config file > defaults.
 
 ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and
-`trae-cli` declare native ACP and prefer it for tasks/conversations; the rest stay headless. CodeBuddy
-additionally requires an explicit `CODEBUDDY_AUTH_TOKEN`; without it the bridge keeps headless
-`codebuddy -p` and never starts an unauthenticated ACP child.
+`trae-cli` declare native ACP and prefer it for tasks/conversations. `codex` uses the
+`codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); the rest stay headless.
+CodeBuddy additionally requires an explicit `CODEBUDDY_AUTH_TOKEN`; without it the bridge keeps
+headless `codebuddy -p` and never starts an unauthenticated ACP child.
 
 Re-sending a `run_task` with the same `taskId` is safe: the bridge is idempotent by `taskId` —
 a live task gets a current-state snapshot, a settled task replays its terminal snapshot, and nothing
