@@ -25,6 +25,7 @@ import {
   type AcpAgentSpec,
 } from '../adapters/acp-codebuddy.js';
 import { runCodexPrompt } from '../adapters/codex-app-server.js';
+import { runClaudeStreamPrompt } from '../adapters/claude-stream.js';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
 import { agentDefOf, resolveBin } from '../adapters/agent-adapters.js';
@@ -56,6 +57,8 @@ export interface RunTaskRequest {
   acp?: boolean;
   /** 走 Codex app-server JSON-RPC */
   appServer?: boolean;
+  /** 走 Claude/Qoder 双向 stream-json（支持 same-turn steer） */
+  claudeStream?: boolean;
   /** ACP 启动方式；缺省回落 CodeBuddy */
   acpSpec?: AcpAgentSpec;
   /** ACP 续接已有 native session */
@@ -450,6 +453,10 @@ export class TaskSupervisor {
       this.launchAppServer(entry);
       return;
     }
+    if (entry.req.claudeStream) {
+      this.launchClaudeStream(entry);
+      return;
+    }
 
     // 子进程环境恒为 bridge 自身进程环境：平台**不能**注入环境变量
     const shim = isWinShim(entry.cmd);
@@ -539,6 +546,77 @@ export class TaskSupervisor {
     });
 
     entry.hooks.onStatus('running');
+  }
+
+  private launchClaudeStream(entry: Entry): void {
+    const controller = new AbortController();
+    entry.acpAbort = controller;
+    entry.hooks.onStatus('running');
+
+    void runClaudeStreamPrompt({
+      cwd: entry.req.cwd,
+      prompt: entry.req.prompt ?? '',
+      nativeSessionId: entry.req.nativeSessionId,
+      timeoutMs: timeoutOf(entry.req),
+      signal: controller.signal,
+      onSession: (sessionId) => entry.hooks.onSession?.(sessionId),
+      onUpdate: (event) => {
+        if (event['type'] !== 'assistant') return;
+        const message = event['message'] as { content?: unknown } | undefined;
+        const blocks = Array.isArray(message?.content) ? message.content : [];
+        for (const block of blocks) {
+          if (!block || typeof block !== 'object') continue;
+          const item = block as Record<string, unknown>;
+          if (item['type'] === 'text' && typeof item['text'] === 'string') {
+            entry.hooks.onLog('stdout', item['text']);
+          }
+          if (!entry.hooks.onStep) continue;
+          if (item['type'] === 'tool_use' && typeof item['name'] === 'string') {
+            entry.stepSeq += 1;
+            const ref = typeof item['id'] === 'string' ? item['id'] : undefined;
+            if (ref) entry.stepRefs.set(ref, entry.stepSeq);
+            entry.hooks.onStep({
+              action: item['name'],
+              label: typeof item['input'] === 'object' ? JSON.stringify(item['input']).slice(0, 200) : undefined,
+              state: 'started',
+              ref,
+              seq: entry.stepSeq,
+            });
+          }
+          if (item['type'] === 'tool_result' && typeof item['tool_use_id'] === 'string') {
+            const seq = entry.stepRefs.get(item['tool_use_id']);
+            if (seq !== undefined) {
+              entry.hooks.onStep({
+                action: 'tool_result',
+                state: 'finished',
+                ok: item['is_error'] !== true,
+                ref: item['tool_use_id'],
+                seq,
+              });
+            }
+          }
+        }
+      },
+    })
+      .then((result) => {
+        if (entry.state === 'settled') return;
+        this.settle(entry, 'success', { exitCode: 0, result: result.text });
+      })
+      .catch((error) => {
+        if (entry.state === 'settled') return;
+        if (entry.status === 'cancelled') {
+          this.settle(entry, 'cancelled', { error: '任务已取消', errorCode: 'cancelled' });
+          return;
+        }
+        if (entry.status === 'timeout') {
+          this.settle(entry, 'timeout', { error: '任务超时，Claude stream 已中断', errorCode: 'timeout' });
+          return;
+        }
+        this.settle(entry, 'failed', {
+          error: (error as Error).message,
+          errorCode: 'agent_error',
+        });
+      });
   }
 
   private launchAppServer(entry: Entry): void {

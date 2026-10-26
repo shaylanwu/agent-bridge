@@ -385,6 +385,10 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       acp: Boolean(msg.prompt) && canRunAcp(agentDefOf(msg.agentType)?.acp),
       acpSpec: agentDefOf(msg.agentType)?.acp,
       appServer: msg.agentType === 'codex' && Boolean(msg.prompt),
+      claudeStream:
+        Boolean(msg.prompt) &&
+        msg.allowInteractive === true &&
+        (msg.agentType === 'claude-code' || msg.agentType === 'qoder-cli'),
     },
     {
       onLog: (stream, data) => {
