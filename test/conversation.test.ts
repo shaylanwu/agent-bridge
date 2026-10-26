@@ -116,6 +116,45 @@ describe('conversation turns', () => {
     expect(request.prompt).toBe('second turn');
   });
 
+  it('steer 在 active Turn 上转发，不新建 Turn', async () => {
+    const { store, sent, deps } = setup();
+    store.createSession({
+      sessionId: 'bt_conv_steer',
+      mode: 'conversation',
+      agentType: 'codex',
+      cwd: '/tmp/work',
+      phase: 'running',
+    });
+    const turn = store.createTurn({ sessionId: 'bt_conv_steer', status: 'running' });
+    const steer = vi.fn().mockResolvedValue(true);
+    deps.tasks.set('bt_conv_steer', {
+      taskId: 'bt_conv_steer',
+      cancel: () => undefined,
+      done: Promise.resolve('success' as const),
+      steer,
+    });
+
+    await dispatchConversationMessage(
+      {
+        type: 'send_message',
+        taskId: 'bt_conv_steer',
+        messageId: 'msg_steer',
+        mode: 'steer',
+        parts: [{ kind: 'text', text: 'also check tests' }],
+      },
+      deps,
+    );
+
+    expect(steer).toHaveBeenCalledWith('also check tests');
+    expect(sent.find((m) => m.type === 'message_ack')).toMatchObject({
+      messageId: 'msg_steer',
+      turnId: turn.turnId,
+      delivery: 'queued',
+    });
+    expect(store.listMessages('bt_conv_steer')).toHaveLength(1);
+    expect(runnerMocks.startTask).not.toHaveBeenCalled();
+  });
+
   it('同 messageId 重发回 duplicate，不重复起 Turn', () => {
     const { store, sent, deps } = setup();
     store.createSession({

@@ -107,6 +107,8 @@ export interface TaskHandle {
   write?: (line: string) => boolean;
   /** ACP 权限响应：optionId 为空表示拒绝 */
   respondInteraction?: (requestId: string, optionId?: string) => boolean;
+  /** 仅原生支持 same-turn steer 的适配器（如 Codex app-server）存在 */
+  steer?: (text: string) => Promise<boolean>;
 }
 
 /** 显式状态机：settled 是吸收态 */
@@ -139,6 +141,7 @@ interface Entry {
   child?: ChildProcess;
   acpAbort?: AbortController;
   acpPermissions?: Map<string, (optionId?: string) => void>;
+  codexSteer?: (text: string) => Promise<void>;
   timer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
   resolve: (s: TaskStatus) => void;
@@ -296,6 +299,7 @@ export class TaskSupervisor {
       write: (line: string) => this.writeTo(entry, line),
       respondInteraction: (requestId: string, optionId?: string) =>
         this.respondAcp(entry, requestId, optionId),
+      steer: (text: string) => this.steerEntry(entry, text),
     };
   }
 
@@ -393,7 +397,16 @@ export class TaskSupervisor {
       write: (line: string) => this.writeTo(entry, line),
       respondInteraction: (requestId: string, optionId?: string) =>
         this.respondAcp(entry, requestId, optionId),
+      steer: (text: string) => this.steerEntry(entry, text),
     };
+  }
+
+  private steerEntry(entry: Entry, text: string): Promise<boolean> {
+    if (entry.state !== 'running' || !entry.codexSteer) return Promise.resolve(false);
+    return entry.codexSteer(text).then(
+      () => true,
+      () => false,
+    );
   }
 
   private respondAcp(entry: Entry, requestId: string, optionId?: string): boolean {
@@ -540,6 +553,9 @@ export class TaskSupervisor {
       nativeThreadId: entry.req.nativeSessionId,
       timeoutMs: timeoutOf(entry.req),
       signal: controller.signal,
+      onTurn: (turn) => {
+        entry.codexSteer = turn.steer;
+      },
       onUpdate: (notification) => this.onCodexUpdate(entry, notification),
       onApproval: (request) => {
         if (!entry.hooks.onInteraction) return 'decline';

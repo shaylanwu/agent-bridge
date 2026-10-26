@@ -158,7 +158,9 @@ export function createSession(opts: SessionOptions): BridgeSession {
         return;
       }
       if (msg.type === 'send_message') {
-        dispatchConversationMessage(msg, dispatchOpts);
+        void dispatchConversationMessage(msg, dispatchOpts).catch((error) => {
+          opts.log('error', `[agent-bridge] send_message 处理失败：${(error as Error).message}`);
+        });
         return;
       }
       if (msg.type === 'get_interaction_url') {

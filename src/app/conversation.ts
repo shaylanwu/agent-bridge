@@ -364,7 +364,10 @@ export function dispatchConversationRun(msg: RunTaskMessage, deps: ConversationD
   startConversationTurn(deps, created.session, turn, initialText, msg.timeoutMs);
 }
 
-export function dispatchConversationMessage(msg: SendMessageMessage, deps: ConversationDeps): void {
+export async function dispatchConversationMessage(
+  msg: SendMessageMessage,
+  deps: ConversationDeps,
+): Promise<void> {
   const reject = (errorCode: string): void => {
     deps.emitter.emit({
       type: 'message_ack',
@@ -383,8 +386,6 @@ export function dispatchConversationMessage(msg: SendMessageMessage, deps: Conve
   if (!session) return reject('session_not_found');
   if (session.mode !== 'conversation') return reject('session_not_continuable');
   if (session.status !== 'running') return reject('session_closed');
-  if (session.phase !== 'waiting_user') return reject('session_busy');
-  if (msg.mode === 'steer') return reject('steer_unsupported');
 
   const text = msg.parts.map((part) => part.text).join('\n').trim();
   if (!text) return reject('empty_message');
@@ -403,6 +404,49 @@ export function dispatchConversationMessage(msg: SendMessageMessage, deps: Conve
     });
     return;
   }
+
+  if (msg.mode === 'steer') {
+    if (session.phase === 'waiting_user' || session.phase === 'settled') {
+      return reject('steer_unsupported');
+    }
+    const handle = deps.tasks.get(msg.taskId);
+    if (!handle?.steer) return reject('steer_unsupported');
+    const turns = deps.store.snapshot(msg.taskId).turns;
+    const current = [...turns].reverse().find((t) => t.status === 'running' || t.status === 'queued');
+    if (!current) return reject('steer_unsupported');
+    const ok = await handle.steer(text);
+    if (!ok) return reject('steer_unsupported');
+    const userMessage = deps.store.appendMessage({
+      sessionId: msg.taskId,
+      messageId: msg.messageId,
+      role: 'user',
+      text,
+      turnId: current.turnId,
+    });
+    deps.emitter.emit({
+      type: 'message_ack',
+      taskId: msg.taskId,
+      messageId: msg.messageId,
+      turnId: current.turnId,
+      eventSeq: userMessage.message.eventSeq,
+      delivery: 'queued',
+      at: new Date().toISOString(),
+    });
+    deps.emitter.emit({
+      type: 'task_message',
+      taskId: msg.taskId,
+      messageId: msg.messageId,
+      role: 'user',
+      state: 'complete',
+      text,
+      turnId: current.turnId,
+      eventSeq: userMessage.message.eventSeq,
+      at: userMessage.message.createdAt,
+    });
+    return;
+  }
+
+  if (session.phase !== 'waiting_user') return reject('session_busy');
 
   const turn = deps.store.createTurn({ sessionId: msg.taskId, status: 'queued' });
   const userMessage = deps.store.appendMessage({

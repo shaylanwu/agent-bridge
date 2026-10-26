@@ -33,6 +33,12 @@ export interface CodexPromptOptions {
   signal?: AbortSignal;
   onUpdate?: (notification: Record<string, unknown>) => void;
   onApproval?: (request: CodexApprovalRequest) => Promise<string | undefined> | string | undefined;
+  /** turn/start 完成后暴露 thread/turn 与 same-turn steer 能力 */
+  onTurn?: (turn: {
+    threadId: string;
+    turnId: string;
+    steer: (text: string) => Promise<void>;
+  }) => void;
 }
 
 export interface CodexPromptResult {
@@ -268,6 +274,18 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
       input: [{ type: 'text', text: opts.prompt }],
     })) as JsonObject;
     turnId = String(asObject(startedTurn['turn'])['id'] ?? '');
+    if (!turnId) throw new Error('Codex turn/start 未返回 turn id');
+    opts.onTurn?.({
+      threadId,
+      turnId,
+      steer: async (text: string) => {
+        await request('turn/steer', {
+          threadId,
+          expectedTurnId: turnId,
+          input: [{ type: 'text', text }],
+        });
+      },
+    });
 
     await turnDone;
     return { threadId, text, status: 'completed' };
