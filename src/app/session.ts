@@ -67,6 +67,8 @@ export interface BridgeSession {
   readonly store: SessionStore;
   /** 附件传输与 TTL 管理（控制面管理接口用） */
   readonly artifacts: ArtifactTransferManager;
+  /** 按租户取附件管理器（控制面 JWT 隔离；缺省租户复用 artifacts） */
+  artifactsForTenant: (tenantId: string) => ArtifactTransferManager;
   /** 交互短期 URL（仅进程内，不落盘） */
   readonly urls: InteractionUrlVault;
   /** 在跑/排队的任务数（状态展示与控制面用） */
@@ -85,6 +87,20 @@ export function createSession(opts: SessionOptions): BridgeSession {
     emit: (msg) => emitter?.emit(msg),
     rootDir: opts.artifactRootDir,
   });
+  const artifactsByTenant = new Map<string, ArtifactTransferManager>();
+  const artifactsForTenant = (tenantId: string): ArtifactTransferManager => {
+    if (tenantId === 'default') return artifacts;
+    const cached = artifactsByTenant.get(tenantId);
+    if (cached) return cached;
+    const manager = new ArtifactTransferManager({
+      store: opts.store,
+      emit: (msg) => emitter?.emit(msg),
+      rootDir: opts.artifactRootDir,
+      tenantId,
+    });
+    artifactsByTenant.set(tenantId, manager);
+    return manager;
+  };
   const urls = new InteractionUrlVault();
   try {
     const stale = artifacts.cleanupStaleTransfers();
@@ -352,6 +368,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     registry: opts.registry,
     store: opts.store,
     artifacts,
+    artifactsForTenant,
     urls,
     close: () => {
       client.close();

@@ -62,6 +62,7 @@ export async function cmdConnect(flags: Flags): Promise<void> {
           registry: session.registry,
           store: session.store,
           artifacts: session.artifacts,
+          artifactsForTenant: (tenantId) => session.artifactsForTenant(tenantId),
           startTask: (req, hooks) => startTask(req, hooks),
           scan: (opts) => scanAgents(opts),
           log,

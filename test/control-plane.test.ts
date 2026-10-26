@@ -72,6 +72,13 @@ function makeDeps(overrides: Partial<ControlPlaneDeps> = {}): ControlPlaneDeps {
       rootDir: join(tmpdir(), 'agent-bridge-control-plane-artifacts'),
       emit: () => undefined,
     }),
+    artifactsForTenant: (tenantId) =>
+      new ArtifactTransferManager({
+        store,
+        rootDir: join(tmpdir(), `agent-bridge-control-plane-artifacts-${tenantId}`),
+        emit: () => undefined,
+        tenantId,
+      }),
     startTask: (req: RunTaskRequest, hooks: TaskHooks): TaskHandle => {
       // 立即成功：测试关心的是 HTTP 层契约，不是真跑 CLI
       hooks.onStatus('success', { exitCode: 0 } satisfies TaskFinishInfo);
@@ -193,7 +200,7 @@ describe('本地回环控制面', () => {
       headers: { authorization: `Bearer ${otherTenant}` },
     });
     expect(denied.status).toBe(403);
-    expect(denied.body).toContain('tenant_not_supported');
+    expect(denied.body).toContain('insufficient_scope');
 
     const noScope = sign({ sub: 'user-3', tenant_id: 'default', scope: 'task:read', exp: now + 3600 });
     const forbidden = await call(plane.port, 'GET', '/v1/whoami', {
@@ -219,6 +226,61 @@ describe('本地回环控制面', () => {
     expect(
       res.json<{ tasks: { taskId: string }[] }>().tasks.map((task) => task.taskId),
     ).toEqual(['t_b']);
+    plane.close();
+  });
+
+  it('JWT 任务按 tenant 隔离，跨租户读取/取消 404', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ jwt: verifier });
+    const now = Math.floor(Date.now() / 1000);
+    const tokenB = sign({
+      sub: 'u',
+      tenant_id: 'tenant_b',
+      scope: 'task:read task:create task:cancel',
+      exp: now + 3600,
+    });
+    const tokenC = sign({
+      sub: 'u',
+      tenant_id: 'tenant_c',
+      scope: 'task:read task:cancel',
+      exp: now + 3600,
+    });
+    const tokenDefault = sign({
+      sub: 'u',
+      tenant_id: 'default',
+      scope: 'task:read',
+      exp: now + 3600,
+    });
+    const created = await call(plane.port, 'POST', '/v1/tasks', {
+      headers: { authorization: `Bearer ${tokenB}` },
+      body: { agentType: 'codex', cwd: '/tmp' },
+    });
+    expect(created.status).toBe(201);
+    const taskId = created.json<{ taskId: string }>().taskId;
+
+    const own = await call(plane.port, 'GET', `/v1/tasks/${taskId}`, {
+      headers: { authorization: `Bearer ${tokenB}` },
+    });
+    expect(own.status).toBe(200);
+    const cross = await call(plane.port, 'GET', `/v1/tasks/${taskId}`, {
+      headers: { authorization: `Bearer ${tokenC}` },
+    });
+    expect(cross.status).toBe(404);
+    const cancelCross = await call(plane.port, 'POST', `/v1/tasks/${taskId}:cancel`, {
+      headers: { authorization: `Bearer ${tokenC}` },
+    });
+    expect(cancelCross.status).toBe(404);
+
+    const listB = await call(plane.port, 'GET', '/v1/tasks', {
+      headers: { authorization: `Bearer ${tokenB}` },
+    });
+    expect(listB.json<{ tasks: { taskId: string }[] }>().tasks.map((t) => t.taskId)).toContain(taskId);
+    const listDefault = await call(plane.port, 'GET', '/v1/tasks', {
+      headers: { authorization: `Bearer ${tokenDefault}` },
+    });
+    expect(listDefault.json<{ tasks: { taskId: string }[] }>().tasks.map((t) => t.taskId)).not.toContain(
+      taskId,
+    );
     plane.close();
   });
 

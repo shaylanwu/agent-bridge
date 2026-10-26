@@ -58,6 +58,8 @@ export interface ControlPlaneDeps {
   store: SessionStore;
   /** 附件 TTL 管理 */
   artifacts: ArtifactTransferManager;
+  /** 按租户取附件管理器；缺省复用 artifacts */
+  artifactsForTenant?: (tenantId: string) => ArtifactTransferManager;
   scan: (opts: { fresh?: boolean }) => Promise<AgentListItem[]>;
   log: SessionLog;
   /** 能力清单（与 `hello.capabilities` 同源） */
@@ -73,7 +75,7 @@ export interface ControlPlaneDeps {
   };
   /** 令牌校验器（默认 `infra/service-token`；注入以便单测） */
   verify?: (token: string | undefined, scope: ServiceScope) => VerifyResult;
-  /** 可选 principal JWT 校验器；只接受默认租户，避免未租户化读取前串租户 */
+  /** 可选 principal JWT 校验器；请求按 principal.tenantId 隔离读取 */
   jwt?: JwtVerifier;
 }
 
@@ -97,6 +99,8 @@ export interface ControlPlaneInstance {
 
 interface TaskRecord {
   taskId: string;
+  /** 所属租户；缺省 default */
+  tenantId?: string;
   agentType: string;
   cwd: string;
   state: TaskStatus;
@@ -176,8 +180,8 @@ function readBody(req: IncomingMessage): Promise<string> {
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
 
 /** 对外视图：句柄（含 Promise / 函数）不进 JSON */
-const view = (r: TaskRecord): Omit<TaskRecord, 'handle'> => {
-  const { handle: _handle, ...rest } = r;
+const view = (r: TaskRecord): Omit<TaskRecord, 'handle' | 'tenantId'> => {
+  const { handle: _handle, tenantId: _tenantId, ...rest } = r;
   return rest;
 };
 
@@ -196,6 +200,15 @@ export async function startControlPlane(
   const records = new Map<string, TaskRecord>();
   const order: string[] = [];
   const idempotency = new Map<string, string>();
+  const tenantOf = (ctx: RouteContext): string => ctx.tenantId ?? DEFAULT_TENANT;
+  const visibleRecord = (ctx: RouteContext, id: string): TaskRecord | undefined => {
+    const rec = records.get(id);
+    if (!rec) return undefined;
+    return (rec.tenantId ?? DEFAULT_TENANT) === tenantOf(ctx) ? rec : undefined;
+  };
+  const visibleRegistry = (ctx: RouteContext, id: string) => deps.registry.get(id, tenantOf(ctx));
+  const artifactsOf = (ctx: RouteContext): ArtifactTransferManager =>
+    deps.artifactsForTenant?.(tenantOf(ctx)) ?? deps.artifacts;
 
   const remember = (r: TaskRecord): void => {
     if (!records.has(r.taskId)) order.push(r.taskId);
@@ -211,6 +224,7 @@ export async function startControlPlane(
       existing ??
       {
         taskId: m.taskId,
+        tenantId: deps.registry.get(m.taskId)?.tenantId ?? DEFAULT_TENANT,
         agentType: 'unknown',
         cwd: '',
         state: m.status,
@@ -382,7 +396,8 @@ export async function startControlPlane(
 
     // 幂等：同一 key 重复提交返回同一 taskId（网络重试不至于跑两遍）
     const idemRaw = ctx.req.headers['idempotency-key'];
-    const idem = Array.isArray(idemRaw) ? idemRaw[0] : idemRaw;
+    const idemHeader = Array.isArray(idemRaw) ? idemRaw[0] : idemRaw;
+    const idem = idemHeader ? `${tenantOf(ctx)}:${idemHeader}` : undefined;
     if (idem) {
       const known = idempotency.get(idem);
       if (known) {
@@ -397,6 +412,7 @@ export async function startControlPlane(
     const taskId = `bt_${randomBytes(6).toString('hex')}`;
     const record: TaskRecord = {
       taskId,
+      tenantId: tenantOf(ctx),
       agentType,
       cwd,
       state: 'running',
@@ -493,9 +509,10 @@ export async function startControlPlane(
     const cursor = ctx.url.searchParams.get('cursor');
     const start = cursor ? order.indexOf(cursor) + 1 : 0;
     const slice = order.slice(Math.max(0, start), Math.max(0, start) + limit);
+    const tenant = tenantOf(ctx);
     const items = slice
       .map((id) => records.get(id))
-      .filter((r): r is TaskRecord => r !== undefined)
+      .filter((r): r is TaskRecord => r !== undefined && (r.tenantId ?? DEFAULT_TENANT) === tenant)
       .map(view);
     const last = items.at(-1)?.taskId;
     json(ctx.res, 200, {
@@ -506,7 +523,7 @@ export async function startControlPlane(
   };
 
   const handleGetTask = (ctx: RouteContext, id: string): void => {
-    const rec = records.get(id);
+    const rec = visibleRecord(ctx, id);
     if (!rec) {
       problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
       return;
@@ -515,9 +532,9 @@ export async function startControlPlane(
   };
 
   const handleDiff = (ctx: RouteContext, id: string): void => {
-    const rec = records.get(id);
+    const rec = visibleRecord(ctx, id);
     // 平台任务没有控制面 records 台账：用共享注册表兜底，保证结果页双通道一致
-    const viewFromRegistry = deps.registry.get(id);
+    const viewFromRegistry = visibleRegistry(ctx, id);
     if (!rec && !viewFromRegistry) {
       problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
       return;
@@ -532,7 +549,7 @@ export async function startControlPlane(
 
   /** 步骤时间线（C 批次）：任务注册表出完整步骤序列 + 最终回答 */
   const handleSteps = (ctx: RouteContext, id: string): void => {
-    const v = deps.registry.get(id);
+    const v = visibleRegistry(ctx, id);
     if (!v) {
       problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
       return;
@@ -572,7 +589,7 @@ export async function startControlPlane(
     '.pptx': OFFICE_MIME_TYPES['.pptx']!,
   };
   const handleFilePreview = (ctx: RouteContext, id: string): void => {
-    const cwd = deps.registry.cwdOf(id);
+    const cwd = visibleRegistry(ctx, id) ? deps.registry.cwdOf(id) : undefined;
     if (!cwd) {
       problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
       return;
@@ -640,7 +657,7 @@ export async function startControlPlane(
   };
 
   const handleCancel = (ctx: RouteContext, id: string): void => {
-    const rec = records.get(id);
+    const rec = visibleRecord(ctx, id);
     if (!rec) {
       problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
       return;
@@ -657,7 +674,7 @@ export async function startControlPlane(
     }
     // 真正的取消走 supervisor（SIGTERM → 2s → SIGKILL）；终态由它经 Emitter 回传，不在这里代发
     rec.handle.cancel();
-    json(ctx.res, 200, view(records.get(id) ?? rec));
+    json(ctx.res, 200, view(rec));
   };
 
   const handleSessions = (ctx: RouteContext): void => {
@@ -674,7 +691,7 @@ export async function startControlPlane(
 
   const handleArtifactDownload = (ctx: RouteContext, sessionId: string, artifactId: string): void => {
     if (!authorize(ctx, 'task:read')) return;
-    const found = deps.artifacts.artifactPath(sessionId, artifactId);
+    const found = artifactsOf(ctx).artifactPath(sessionId, artifactId);
     if (!found) {
       problem(ctx.res, 404, 'internal', `未找到附件：${artifactId}`);
       return;
@@ -705,7 +722,7 @@ export async function startControlPlane(
       problem(ctx.res, 400, 'cwd_not_allowed', 'ttlDays 必须是正整数');
       return;
     }
-    const result = deps.artifacts.cleanupArtifacts({
+    const result = artifactsOf(ctx).cleanupArtifacts({
       olderThanMs: ttlDays * 24 * 60 * 60 * 1000,
       dryRun: body.dryRun === true,
     });
@@ -826,6 +843,10 @@ export async function startControlPlane(
 
   /** SSE：晚订阅先从环形缓冲补发，再接实时事件 */
   const handleEvents = (ctx: RouteContext, id: string): void => {
+    if (!visibleRecord(ctx, id) && !visibleRegistry(ctx, id)) {
+      problem(ctx.res, 404, 'internal', `未跟踪的任务：${id}`);
+      return;
+    }
     ctx.res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
@@ -900,15 +921,6 @@ export async function startControlPlane(
               return;
             }
             ctx.tenantId = ctx.principal.tenantId ?? DEFAULT_TENANT;
-            if (
-              ctx.tenantId !== DEFAULT_TENANT &&
-              (path.startsWith('/v1/tasks') ||
-                path === '/v1/artifacts:gc' ||
-                path.includes('/artifacts/'))
-            ) {
-              problem(res, 403, 'tenant_not_supported', '任务/看板/附件尚未按租户分区');
-              return;
-            }
           }
         }
 
