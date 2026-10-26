@@ -399,7 +399,21 @@ function scheduleIdleClose(deps: ConversationDeps, sessionId: string): void {
     if (!session || session.status !== 'running' || session.phase !== 'waiting_user') return;
     deps.residentSessions?.get(sessionId)?.close();
     deps.residentSessions?.delete(sessionId);
+    const lastTurn = deps.store.snapshot(sessionId).turns.at(-1);
+    const event = deps.store.appendEvent({
+      sessionId,
+      type: 'task_status',
+      payload: { status: 'success', reason: 'idle_timeout', turnId: lastTurn?.turnId },
+    });
     deps.store.closeSession(sessionId, 'success', 'idle_timeout');
+    deps.emitter.emit({
+      type: 'task_status',
+      taskId: sessionId,
+      status: 'success',
+      turnId: lastTurn?.turnId,
+      error: 'idle_timeout',
+      eventSeq: event.eventSeq,
+    });
     deps.log('info', `[agent-bridge] 会话 ${sessionId} 空闲超时，已关闭`);
   }, idleMs);
   timer.unref?.();

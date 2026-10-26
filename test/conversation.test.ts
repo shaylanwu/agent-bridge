@@ -81,8 +81,8 @@ describe('conversation turns', () => {
     expect(sent.some((m) => m.type === 'task_status' && m.phase === 'waiting_user')).toBe(true);
   });
 
-  it('waiting_user 空闲超时会关闭会话', async () => {
-    const { store, deps } = setup();
+  it('waiting_user 空闲超时会关闭会话并推终态', async () => {
+    const { store, sent, deps } = setup();
     deps.idleTimeoutMs = 30;
     deps.idleTimers = new Map();
     dispatchConversationRun(
@@ -102,6 +102,12 @@ describe('conversation turns', () => {
     expect(store.getSession('bt_conv_idle')?.status).toBe('success');
     expect(store.getSession('bt_conv_idle')?.phase).toBe('settled');
     expect(store.getTombstone('bt_conv_idle')?.reason).toBe('idle_timeout');
+    expect(sent.at(-1)).toMatchObject({
+      type: 'task_status',
+      taskId: 'bt_conv_idle',
+      status: 'success',
+      error: 'idle_timeout',
+    });
   });
 
   it('send_message 持久化 user message、回 ack，并启动下一 Turn', () => {
