@@ -500,8 +500,7 @@ export async function startControlPlane(
     // 以**最新**台账为准：startTask 可能同步就把终态回调了（此时 record 还是 running）
     remember({ ...(records.get(taskId) ?? record), handle });
 
-    const { handle: _handle, ...publicView } = records.get(taskId) ?? record;
-    json(ctx.res, 201, { ...publicView, events: `/v1/tasks/${taskId}/events` });
+    json(ctx.res, 201, { ...view(records.get(taskId) ?? record), events: `/v1/tasks/${taskId}/events` });
   };
 
   const handleListTasks = (ctx: RouteContext): void => {
