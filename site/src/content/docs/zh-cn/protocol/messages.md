@@ -621,7 +621,7 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 
 ### interaction_url — 交互短期 URL
 
-URL 仅存 bridge 进程内，带 TTL；不写入 SQLite 或日志。
+URL 仅存 bridge 进程内，带 TTL；不写入 SQLite 或日志。过期回 interaction_url_expired，从未注册/已撤销回 interaction_url_not_found。
 
 **字段**
 

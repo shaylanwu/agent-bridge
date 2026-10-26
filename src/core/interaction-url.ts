@@ -41,19 +41,34 @@ export class InteractionUrlVault {
     return { sessionId, requestId, url, expiresAt: entry.expiresAt };
   }
 
-  get(sessionId: string, requestId: string, now = Date.now()): InteractionUrlEntry | undefined {
+  /**
+   * 区分「没有」和「过期」：调用方要能回 interaction_url_expired，而不是把过期当不存在。
+   * 过期项读取即删除，避免长期占内存。
+   */
+  lookup(
+    sessionId: string,
+    requestId: string,
+    now = Date.now(),
+  ): { entry?: InteractionUrlEntry; expired: boolean } {
     const entry = this.entries.get(this.key(sessionId, requestId));
-    if (!entry) return undefined;
+    if (!entry) return { expired: false };
     if (entry.expiresAtMs <= now) {
       this.entries.delete(this.key(sessionId, requestId));
-      return undefined;
+      return { expired: true };
     }
     return {
-      sessionId: entry.sessionId,
-      requestId: entry.requestId,
-      url: entry.url,
-      expiresAt: entry.expiresAt,
+      entry: {
+        sessionId: entry.sessionId,
+        requestId: entry.requestId,
+        url: entry.url,
+        expiresAt: entry.expiresAt,
+      },
+      expired: false,
     };
+  }
+
+  get(sessionId: string, requestId: string, now = Date.now()): InteractionUrlEntry | undefined {
+    return this.lookup(sessionId, requestId, now).entry;
   }
 
   revoke(sessionId: string, requestId: string): void {

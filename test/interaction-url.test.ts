@@ -10,6 +10,14 @@ describe('InteractionUrlVault', () => {
     expect(vault.get('bt_2', 'ir_1', 1500)).toBeUndefined();
   });
 
+  it('lookup 区分不存在与已过期', () => {
+    const vault = new InteractionUrlVault();
+    vault.register('bt_1', 'ir_1', 'https://a', 100, 1000);
+    expect(vault.lookup('bt_1', 'ir_1', 1050)).toMatchObject({ expired: false });
+    expect(vault.lookup('bt_1', 'ir_1', 1200)).toEqual({ expired: true });
+    expect(vault.lookup('bt_1', 'missing', 1200)).toEqual({ expired: false });
+  });
+
   it('过期与 revoke 都返回 undefined，cleanup 计数', () => {
     const vault = new InteractionUrlVault();
     vault.register('bt_1', 'ir_1', 'https://a', 100, 1000);

@@ -184,7 +184,8 @@ export function createSession(opts: SessionOptions): BridgeSession {
           });
           return;
         }
-        const entry = urls.get(msg.taskId, msg.requestId);
+        const lookup = urls.lookup(msg.taskId, msg.requestId);
+        const entry = lookup.entry;
         emitter.emit({
           type: 'interaction_url',
           taskId: msg.taskId,
@@ -192,7 +193,11 @@ export function createSession(opts: SessionOptions): BridgeSession {
           ok: Boolean(entry),
           url: entry?.url,
           expiresAt: entry?.expiresAt,
-          errorCode: entry ? undefined : 'interaction_url_not_found',
+          errorCode: entry
+            ? undefined
+            : lookup.expired
+              ? 'interaction_url_expired'
+              : 'interaction_url_not_found',
         });
         return;
       }
