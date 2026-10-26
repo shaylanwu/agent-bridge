@@ -18,8 +18,8 @@
 > `task_interaction_request` 并把 `task_interaction_response.optionId` 回送 ACP；无 token 仍回落 headless。
 > 2026-10-26 实测 8 个原生 ACP：codebuddy / gemini / opencode / mimo / kimi / minimax / grok / trae；
 > 剩余 4 个（claude/qoder/codex/dsh）方案见 `research/non-acp-agents.md`：
-> Codex app-server JSON-RPC 已接入（thread/resume、审批；steer 待补），Claude/Qoder 走双向 stream-json，
-> DSH 走 SDK/headless resume。
+> Codex app-server JSON-RPC 已接入（thread/resume、审批、turn/steer），Claude/Qoder 已接 `--resume`，
+> DSH 仍走 SDK/headless resume。
 
 ## 1. 决策、标准与安全边界
 

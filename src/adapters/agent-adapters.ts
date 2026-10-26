@@ -176,6 +176,7 @@ export const AGENTS: AgentDef[] = [
     capability: 'interactive_only',
     // 官方文档（docs.qoder.com/cli/run-in-scripts）：-p + --output-format stream-json；实测 claude 同构
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
+    resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--resume', '{{sessionId}}'],
     steps: 'claude-json',
     credential: { envs: [], files: [join(home(), '.qoder')], loginCommand: 'qodercli' },
   },
