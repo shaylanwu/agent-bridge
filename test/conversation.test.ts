@@ -81,6 +81,29 @@ describe('conversation turns', () => {
     expect(sent.some((m) => m.type === 'task_status' && m.phase === 'waiting_user')).toBe(true);
   });
 
+  it('waiting_user 空闲超时会关闭会话', async () => {
+    const { store, deps } = setup();
+    deps.idleTimeoutMs = 30;
+    deps.idleTimers = new Map();
+    dispatchConversationRun(
+      {
+        type: 'run_task',
+        taskId: 'bt_conv_idle',
+        agentType: 'codex',
+        cwd: '/tmp/work',
+        args: [],
+        prompt: 'hello',
+        sessionMode: 'conversation',
+      },
+      deps,
+    );
+    expect(store.getSession('bt_conv_idle')?.phase).toBe('waiting_user');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(store.getSession('bt_conv_idle')?.status).toBe('success');
+    expect(store.getSession('bt_conv_idle')?.phase).toBe('settled');
+    expect(store.getTombstone('bt_conv_idle')?.reason).toBe('idle_timeout');
+  });
+
   it('send_message 持久化 user message、回 ack，并启动下一 Turn', () => {
     const { store, sent, deps } = setup();
     store.createSession({

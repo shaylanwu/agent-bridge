@@ -29,6 +29,8 @@ export interface BridgeConfig {
   diffDefault?: boolean;
   /** 强制要求有效的服务令牌才执行任务（缺省 false = 兼容无令牌的老平台） */
   requireServiceToken?: boolean;
+  /** waiting_user 会话空闲多久自动关闭（毫秒，缺省 0 = 不自动关闭） */
+  sessionIdleMs?: number;
   /** 本地回环控制面（默认关闭；见 resolveControlPlane） */
   controlPlane?: {
     enabled?: boolean;
@@ -72,6 +74,18 @@ export function resolveMaxTasks(fromConfig?: number, override?: number): number 
  * 队列上限：默认 60，夹在 0~1024（0 = 不允许排队，超限直接失败）。
  * 优先级：启动参数 `--max-queue` > `AGENT_BRIDGE_MAX_QUEUE` > config.toml 的 `max_queue` > 默认。
  */
+/**
+ * waiting_user 空闲关闭：默认 0（不自动关闭，保持旧行为）。
+ * 环境变量 `AGENT_BRIDGE_SESSION_IDLE_MS` > config.toml `session_idle_ms`。
+ * 上限 24h，防止手滑写成 `99999999999` 把会话永久占住。
+ */
+export function resolveSessionIdleMs(fromConfig?: number): number {
+  const envRaw = Number(process.env['AGENT_BRIDGE_SESSION_IDLE_MS'] ?? '');
+  const chosen = Number.isFinite(envRaw) && envRaw >= 0 ? envRaw : fromConfig;
+  if (!Number.isFinite(chosen ?? NaN) || (chosen ?? 0) <= 0) return 0;
+  return Math.min(24 * 60 * 60 * 1000, Math.floor(chosen as number));
+}
+
 export const DEFAULT_MAX_QUEUED = 60;
 const MAX_QUEUED_CEILING = 1024;
 
@@ -226,6 +240,7 @@ function serializeConfig(cfg: BridgeConfig): string {
   if (cfg.diffMaxBytes !== undefined) out['diff_max_bytes'] = cfg.diffMaxBytes;
   if (cfg.diffDefault !== undefined) out['diff_default'] = cfg.diffDefault;
   if (cfg.requireServiceToken !== undefined) out['require_service_token'] = cfg.requireServiceToken;
+  if (cfg.sessionIdleMs !== undefined) out['session_idle_ms'] = cfg.sessionIdleMs;
   if (cfg.controlPlane !== undefined) {
     const controlPlane: Record<string, unknown> = {};
     if (cfg.controlPlane.enabled !== undefined) controlPlane['enabled'] = cfg.controlPlane.enabled;
@@ -285,6 +300,12 @@ export function loadConfig(): BridgeConfig | null {
     throw invalidConfig(file, 'allowed_cwd 必须是非空字符串数组');
   }
   const allowedCwd = normalizeAllowedCwd(allowedRaw);
+  const sessionIdleMs = optionalNumber(
+    raw['session_idle_ms'] ?? raw['sessionIdleMs'],
+    'session_idle_ms',
+    file,
+    0,
+  );
   const maxTasks = optionalNumber(raw['max_tasks'] ?? raw['maxTasks'], 'max_tasks', file, 1);
   const maxQueued = optionalNumber(raw['max_queue'] ?? raw['maxQueued'], 'max_queue', file, 0);
   const diffMaxBytes = optionalNumber(raw['diff_max_bytes'] ?? raw['diffMaxBytes'], 'diff_max_bytes', file, 1);
@@ -322,6 +343,7 @@ export function loadConfig(): BridgeConfig | null {
     ...(diffMaxBytes !== undefined ? { diffMaxBytes } : {}),
     ...(diffDefault !== undefined ? { diffDefault } : {}),
     ...(requireServiceToken !== undefined ? { requireServiceToken } : {}),
+    ...(sessionIdleMs !== undefined ? { sessionIdleMs } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
     ...(label !== undefined ? { label } : {}),
     ...(boundAt !== undefined ? { boundAt } : {}),

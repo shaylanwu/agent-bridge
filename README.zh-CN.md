@@ -166,6 +166,7 @@ CodeBuddy 优先用显式 `CODEBUDDY_AUTH_TOKEN`；未设置时从本机 CodeBud
 diff_default = false          # true = 即使平台没下发 captureDiff 也捕获
 diff_max_bytes = 262144       # diff 文本上限（默认 256 KB），AGENT_BRIDGE_DIFF_MAX_BYTES 可覆盖
 require_service_token = false # true = 无有效服务令牌的任务一律拒绝（默认关闭以保持兼容）
+session_idle_ms = 0           # waiting_user 空闲关闭（0=不关闭；AGENT_BRIDGE_SESSION_IDLE_MS 可覆盖）
 ```
 
 ## 安全边界

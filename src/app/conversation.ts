@@ -35,6 +35,9 @@ export interface ConversationDeps {
   log: SessionLog;
   /** 存在时启用 Claude/Qoder 常驻会话；测试/旧流程不传则走 startTask */
   residentSessions?: Map<string, ClaudeResident>;
+  /** waiting_user 空闲关闭（0/undefined = 关闭） */
+  idleTimeoutMs?: number;
+  idleTimers?: Map<string, NodeJS.Timeout>;
 }
 
 function phaseOf(status: TaskStatus, info?: TaskFinishInfo): TaskPhase {
@@ -160,6 +163,7 @@ export function startConversationTurn(
           phase: 'waiting_user',
           eventSeq: statusEvent.eventSeq,
         });
+        scheduleIdleClose(deps, sessionId);
         return;
       }
 
@@ -378,6 +382,30 @@ function startResidentTurn(
   return handle;
 }
 
+function clearIdleClose(deps: ConversationDeps, sessionId: string): void {
+  const timer = deps.idleTimers?.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  deps.idleTimers?.delete(sessionId);
+}
+
+function scheduleIdleClose(deps: ConversationDeps, sessionId: string): void {
+  clearIdleClose(deps, sessionId);
+  const idleMs = deps.idleTimeoutMs ?? 0;
+  if (idleMs <= 0 || !deps.idleTimers) return;
+  const timer = setTimeout(() => {
+    deps.idleTimers?.delete(sessionId);
+    const session = deps.store.getSession(sessionId);
+    if (!session || session.status !== 'running' || session.phase !== 'waiting_user') return;
+    deps.residentSessions?.get(sessionId)?.close();
+    deps.residentSessions?.delete(sessionId);
+    deps.store.closeSession(sessionId, 'success', 'idle_timeout');
+    deps.log('info', `[agent-bridge] 会话 ${sessionId} 空闲超时，已关闭`);
+  }, idleMs);
+  timer.unref?.();
+  deps.idleTimers.set(sessionId, timer);
+}
+
 function transcriptOf(deps: ConversationDeps, sessionId: string): string {
   return deps.store
     .listMessages(sessionId)
@@ -444,6 +472,7 @@ export async function dispatchConversationMessage(
   msg: SendMessageMessage,
   deps: ConversationDeps,
 ): Promise<void> {
+  clearIdleClose(deps, msg.taskId);
   const reject = (errorCode: string): void => {
     deps.emitter.emit({
       type: 'message_ack',

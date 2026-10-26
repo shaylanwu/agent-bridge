@@ -190,6 +190,7 @@ Whether a finished task carries a diff, and whether a service token is mandatory
 diff_default = false          # true = capture even when the platform did not ask for it
 diff_max_bytes = 262144       # cap for the diff text (default 256 KB); AGENT_BRIDGE_DIFF_MAX_BYTES overrides
 require_service_token = false # true = reject any task without a valid service token (off by default for compatibility)
+session_idle_ms = 0           # close waiting_user sessions after this idle time (0=off; AGENT_BRIDGE_SESSION_IDLE_MS overrides)
 ```
 
 ## Security boundaries

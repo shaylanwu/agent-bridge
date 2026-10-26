@@ -101,6 +101,18 @@ describe('严格配置读取', () => {
 });
 
 describe('配置原子保存与凭证清除', () => {
+  it('session_idle_ms 可解析并持久化', async () => {
+    await writeFile(
+      file,
+      `platformUrl = "https://platform.example.test"\ndeviceId = "${DEVICE_ID}"\nsession_idle_ms = 5000\n`,
+      'utf8',
+    );
+    expect((await loadConfig())?.sessionIdleMs).toBe(5000);
+    await saveConfig(boundConfig({ sessionIdleMs: 7000 }));
+    expect((await loadConfig())?.sessionIdleMs).toBe(7000);
+    expect(await readFile(file, 'utf8')).toContain('session_idle_ms = 7000');
+  });
+
   it('保存传入的业务设置并写入同值 deviceId 镜像', async () => {
     const cfg = boundConfig({
       refreshToken: 'refresh-secret',

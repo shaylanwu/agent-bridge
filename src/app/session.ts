@@ -45,6 +45,8 @@ export interface SessionOptions {
   /** 平台未指定 captureDiff 时的本地默认（config.toml 的 diff_default） */
   captureDiffByDefault: boolean;
   requireServiceToken: boolean;
+  /** waiting_user 空闲关闭（0 = 关闭） */
+  sessionIdleMs: number;
   /** 任务注册表（面板/台账共用视图；由 bootstrap 创建） */
   registry: TaskRegistry;
   /** 持久 Session/Turn/Event 权威源；由 bootstrap 创建并在 close 时关闭 */
@@ -140,6 +142,8 @@ export function createSession(opts: SessionOptions): BridgeSession {
         store: opts.store,
         log: opts.log,
         residentSessions: new Map(),
+        idleTimeoutMs: opts.sessionIdleMs,
+        idleTimers: new Map(),
       };
 
       if (msg.type === 'ping') {
@@ -151,6 +155,11 @@ export function createSession(opts: SessionOptions): BridgeSession {
         return;
       }
       if (msg.type === 'close_session') {
+        const idle = dispatchOpts.idleTimers.get(msg.taskId);
+        if (idle) {
+          clearTimeout(idle);
+          dispatchOpts.idleTimers.delete(msg.taskId);
+        }
         dispatchCloseSession(msg, dispatchOpts);
         return;
       }
