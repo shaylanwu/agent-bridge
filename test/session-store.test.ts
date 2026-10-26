@@ -50,6 +50,57 @@ describe('SessionStore', () => {
     expect(store.snapshot('bt_native').session.nativeSessionId).toBe('sess_abc123');
   });
 
+  it('form 交互可持久化、提交、幂等响应并拒绝二次响应', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_form', mode: 'conversation', agentType: 'claude-code', cwd: '/tmp/work' });
+    const turn = store.createTurn({ sessionId: 'bt_form', status: 'running' });
+    const request = store.requestInteraction({
+      sessionId: 'bt_form',
+      requestId: 'ir_form_1',
+      turnId: turn.turnId,
+      kind: 'form',
+      payload: {
+        title: 'Deploy target',
+        schema: { type: 'object', properties: { env: { type: 'string' } }, required: ['env'] },
+      },
+    });
+    expect(request).toMatchObject({ kind: 'form', state: 'pending' });
+
+    const submitted = store.resolveInteraction({
+      sessionId: 'bt_form',
+      requestId: 'ir_form_1',
+      state: 'submitted',
+      responseId: 'resp_1',
+      resultSeq: 1,
+      resultPayload: { env: 'staging' },
+    });
+    expect(submitted).toMatchObject({
+      state: 'submitted',
+      responseId: 'resp_1',
+      resultSeq: 1,
+      resultPayload: { env: 'staging' },
+    });
+    expect(
+      store.resolveInteraction({
+        sessionId: 'bt_form',
+        requestId: 'ir_form_1',
+        state: 'submitted',
+        responseId: 'resp_1',
+        resultSeq: 1,
+        resultPayload: { env: 'staging' },
+      }),
+    ).toMatchObject({ state: 'submitted', responseId: 'resp_1' });
+    expect(() =>
+      store.resolveInteraction({
+        sessionId: 'bt_form',
+        requestId: 'ir_form_1',
+        state: 'resolved',
+        responseId: 'resp_2',
+        resultSeq: 2,
+      }),
+    ).toThrow(SessionStoreError);
+  });
+
   it('eventSeq 单调递增且重复事件幂等', () => {
     const store = open();
     store.createSession({ sessionId: 'bt_2', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });

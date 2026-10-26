@@ -122,6 +122,7 @@
        tombstone/session_deleted/session_history_pruned 语义
 - [ ] 7.7 scope：create 不能 approve/respond；approve 不能 respond；cancel 独立；HTTP/WS 一致
 - [ ] 7.8 mock ACP 端到端：permission 与 Form 全生命周期、断线、超时、取消、帧分片/畸形报文
+      （permission/断线/超时/分片/畸形已覆盖；bridge 侧 form 持久化/幂等已测；MCP elicitation 未接）
 - [ ] 7.9 真实 CLI 可选 E2E：CodeBuddy/DSH ACP 在临时工作区验证；不执行破坏性命令，不读取真实密钥
 - [x] 7.10 `npm run gate`、`npm run harness:validate`、`npm run openspec:validate` 全绿并贴真实输出
 - [x] 7.11 build 后 `npm run e2e:smoke`；full 使用无害 mock，默认流程回归通过（13/13 PASS）
