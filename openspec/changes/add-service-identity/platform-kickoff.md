@@ -1,8 +1,51 @@
-# e2e-pilot 平台侧 P0-8（服务身份）开工包
+# e2e-pilot 平台侧 1.0 对接开工包（含 P0-8 服务身份）
 
-> 本文是**可直接贴进 e2e-pilot 新会话**的开工材料（贴「第 1~6 节」即可开工）。
-> 设备侧 agent-bridge 的 P0-8 已全部实现并验证（typecheck / 80 项单测 / e2e:smoke 全绿），
-> 本文档描述的 bridge 侧行为均为**已上线事实**，平台侧按此对接，不要更改 bridge 侧。
+> 本文是**可直接贴进 e2e-pilot 新会话**的开工材料。
+> 2026-10-26 更新：设备侧进入 **1.0.0 未发布**阶段，除 P0-8 外还包含会话、多轮、交互、附件与能力协商。
+> 平台侧按当前 `PROTOCOL_VERSION = 1` 与 `hello.capabilities` 对接；1.0.0 发布前仍可能调整，联调以本文和
+> `contracts/asyncapi-3.0.yaml` 为准。
+
+---
+
+## 1.0 握手与能力协商（新增，先接这段）
+
+bridge 建立 WS 后第一条上行是 `hello`：
+
+```jsonc
+{
+  "type": "hello",
+  "protocolVersion": 1,
+  "deviceId": "bd_<32hex>",
+  "cliVersion": "1.0.0",
+  "platform": "win32",
+  "hostname": "...",
+  "capabilities": ["task-step", "task-message", "task-snapshot", "session-control", "..."],
+  "capacity": { "maxTasks": 30, "maxQueued": 60 }
+}
+```
+
+平台必须：
+
+- 接受 `protocolVersion: 1`，不匹配时明确拒绝，不要静默降级；
+- 保存 `deviceId`（稳定身份，重绑不换 ID）；
+- 按 `capabilities` 决定是否显示步骤/会话/交互/附件，不要靠版本号猜；
+- 用 `capacity` 做派发水位，不要靠 `device_busy` 试错。
+
+新增 wire 消息（平台按需消费）：
+
+| 方向 | 消息 |
+| --- | --- |
+| bridge → 平台 | `task_step`、`task_message`、`task_snapshot`、`task_interaction_request`、`task_interaction_result`、`task_artifact`、`interaction_url` |
+| 平台 → bridge | `send_message`、`close_session`、`cancel_turn`、`get_task`、`task_interaction_response`、`artifact_upload_*`、`artifact_download_*` |
+
+会话语义：
+
+- `task_status` 新增 `turnId`、`eventSeq`、`phase`（`waiting_user` / `waiting_interaction`）；
+- 平台按 `eventSeq` 去重/补洞，不要只按到达顺序；
+- `waiting_user` 表示还可 `send_message`，`waiting_interaction` 表示等 `task_interaction_response`；
+- `run_task.env` 已移除；并发使用 `max_tasks` / `max_queue`。
+
+> 下面第 1~6 节是 P0-8 服务身份的专项对接，仍然有效；1.0 新增能力在上表范围内。
 
 ---
 

@@ -267,7 +267,11 @@ export function dispatchInteractionResponse(
       : undefined;
   const optionId =
     explicitOption ?? (typeof fallbackOption === 'string' ? fallbackOption : undefined);
-  o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, optionId);
+  const content =
+    typeof payload['content'] === 'object' && payload['content'] !== null
+      ? (payload['content'] as Record<string, unknown>)
+      : undefined;
+  o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, { optionId, content });
   emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
     responseId: resolved.responseId,
     resultSeq: resolved.resultSeq,

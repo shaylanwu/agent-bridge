@@ -194,7 +194,7 @@ describe('task dispatch → SessionStore', () => {
       state: 'accepted',
       resultSeq: expect.any(Number),
     });
-    expect(respond).toHaveBeenCalledWith('ir_1', 'allow_once');
+    expect(respond).toHaveBeenCalledWith('ir_1', expect.objectContaining({ optionId: 'allow_once' }));
 
     dispatchInteractionResponse(response, options);
     expect(sent.filter((msg) => msg.type === 'task_interaction_result')).toHaveLength(2);

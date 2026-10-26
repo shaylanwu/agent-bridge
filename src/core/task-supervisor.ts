@@ -102,14 +102,21 @@ export interface AcpInteractionRequest {
   expiresAt?: string;
 }
 
+export interface InteractionAnswer {
+  /** ACP permission 选项；空表示拒绝 */
+  optionId?: string;
+  /** MCP form / elicitation 的结构化内容 */
+  content?: Record<string, unknown>;
+}
+
 export interface TaskHandle {
   taskId: string;
   cancel: () => void;
   done: Promise<TaskStatus>;
   /** 仅 request.interactive=true 且 stdin 可用时存在；写入一行并返回是否成功 */
   write?: (line: string) => boolean;
-  /** ACP 权限响应：optionId 为空表示拒绝 */
-  respondInteraction?: (requestId: string, optionId?: string) => boolean;
+  /** 交互响应：permission 用 optionId，form 用 content */
+  respondInteraction?: (requestId: string, answer?: InteractionAnswer) => boolean;
   /** 仅原生支持 same-turn steer 的适配器（如 Codex app-server）存在 */
   steer?: (text: string) => Promise<boolean>;
 }
@@ -143,7 +150,7 @@ interface Entry {
   stepRefs: Map<string, number>;
   child?: ChildProcess;
   acpAbort?: AbortController;
-  acpPermissions?: Map<string, (optionId?: string) => void>;
+  acpPermissions?: Map<string, (answer?: InteractionAnswer) => void>;
   codexSteer?: (text: string) => Promise<void>;
   timer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
@@ -300,8 +307,8 @@ export class TaskSupervisor {
       cancel: () => this.cancelEntry(entry),
       done: entry.done,
       write: (line: string) => this.writeTo(entry, line),
-      respondInteraction: (requestId: string, optionId?: string) =>
-        this.respondAcp(entry, requestId, optionId),
+      respondInteraction: (requestId: string, answer?: InteractionAnswer) =>
+        this.respondAcp(entry, requestId, answer),
       steer: (text: string) => this.steerEntry(entry, text),
     };
   }
@@ -398,8 +405,8 @@ export class TaskSupervisor {
       cancel: () => this.cancelEntry(entry),
       done,
       write: (line: string) => this.writeTo(entry, line),
-      respondInteraction: (requestId: string, optionId?: string) =>
-        this.respondAcp(entry, requestId, optionId),
+      respondInteraction: (requestId: string, answer?: InteractionAnswer) =>
+        this.respondAcp(entry, requestId, answer),
       steer: (text: string) => this.steerEntry(entry, text),
     };
   }
@@ -412,11 +419,11 @@ export class TaskSupervisor {
     );
   }
 
-  private respondAcp(entry: Entry, requestId: string, optionId?: string): boolean {
+  private respondAcp(entry: Entry, requestId: string, answer?: InteractionAnswer): boolean {
     const resolve = entry.acpPermissions?.get(requestId);
     if (!resolve) return false;
     entry.acpPermissions?.delete(requestId);
-    resolve(optionId);
+    resolve(answer);
     return true;
   }
 
@@ -639,7 +646,7 @@ export class TaskSupervisor {
         if (!entry.hooks.onInteraction) return 'decline';
         const requestId = `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
         const answer = new Promise<string | undefined>((resolve) => {
-          entry.acpPermissions?.set(requestId, resolve);
+          entry.acpPermissions?.set(requestId, (value) => resolve(value?.optionId));
         });
         const options = [
           { optionId: 'accept', kind: 'allow_once', name: '允许一次' },
@@ -730,7 +737,7 @@ export class TaskSupervisor {
         if (!entry.hooks.onInteraction) return undefined;
         const requestId = `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
         const answer = new Promise<string | undefined>((resolve) => {
-          entry.acpPermissions?.set(requestId, resolve);
+          entry.acpPermissions?.set(requestId, (value) => resolve(value?.optionId));
         });
         entry.hooks.onInteraction({
           requestId,
