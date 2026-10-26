@@ -368,11 +368,24 @@ export class SessionStore {
 
   constructor(dbPath: string) {
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.pragma('busy_timeout = 5000');
-    this.migrate();
+    const opened = new Database(dbPath);
+    this.db = opened;
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+      this.db.pragma('busy_timeout = 5000');
+      this.migrate();
+    } catch (error) {
+      // 构造失败必须释放句柄；否则损坏库/权限错误会留下锁，测试和重启都清不掉文件。
+      try {
+        opened.close();
+      } catch {
+        /* already closed */
+      }
+      throw new Error(
+        `打开状态库失败（${dbPath}）：${(error as Error).message}；请检查文件是否损坏或权限是否可写`,
+      );
+    }
   }
 
   private migrate(): void {

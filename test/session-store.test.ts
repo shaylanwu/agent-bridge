@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -99,6 +99,16 @@ describe('SessionStore', () => {
         resultSeq: 2,
       }),
     ).toThrow(SessionStoreError);
+  });
+
+  it('损坏的 SQLite 文件给出可操作错误并释放句柄', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-corrupt-'));
+    dirs.push(dir);
+    const file = join(dir, 'state.db');
+    writeFileSync(file, 'not-a-sqlite-database');
+    expect(() => new SessionStore(file)).toThrow(/打开状态库失败/);
+    // 句柄已释放：Windows 下也能立即删除
+    expect(() => rmSync(file)).not.toThrow();
   });
 
   it('同 sessionId 在不同租户隔离，跨租户读取 404', () => {
