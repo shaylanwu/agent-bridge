@@ -40,10 +40,8 @@ Same main flow as `connect`, plus the **optional** loopback control plane.
 agent-bridge serve <platformUrl> [--port=8787] [--max-tasks=30] [--max-queue=60]
 ```
 
-- With `--port` (or `[control_plane] enabled = true` in config), a loopback HTTP API starts for
-  other programs on this machine.
-- **Without it, `serve` is identical to `connect` and opens no port.** The control plane is never
-  on by default.
+- `connect` starts the local Web panel on `127.0.0.1:8787` by default and falls forward if the port is taken.
+- `serve` honors `--port` (or `[control_plane] enabled = true` in config); without it, the default behavior applies.
 - Env overrides: `AGENT_BRIDGE_CONTROL_PLANE=true`, `AGENT_BRIDGE_CONTROL_PORT=8787`.
 
 ## status

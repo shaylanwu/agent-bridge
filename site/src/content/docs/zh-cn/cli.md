@@ -39,8 +39,8 @@ agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-brow
 agent-bridge serve <platformUrl> [--port=8787] [--max-tasks=30] [--max-queue=60]
 ```
 
-- 带 `--port`（或配置里 `[control_plane] enabled = true`）时，为同机程序开一个回环 HTTP API；
-- **不带时 `serve` 与 `connect` 完全等价，一个端口都不开** —— 控制面永远默认关闭；
+- `connect` 默认在 `127.0.0.1:8787` 启动本机 Web 面板，端口占用自动顺延；
+- `serve` 带 `--port`（或配置里 `[control_plane] enabled = true`）时按指定端口启动，不带时沿用默认行为；
 - 环境变量可覆盖：`AGENT_BRIDGE_CONTROL_PLANE=true`、`AGENT_BRIDGE_CONTROL_PORT=8787`。
 
 ## status

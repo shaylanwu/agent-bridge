@@ -178,7 +178,7 @@ session_idle_ms = 0           # waiting_user 空闲关闭（0=不关闭；AGENT_
 | 怎么执行       | 参数以数组传入，不做 shell 拼接（Windows `.cmd` 垫片单独做引号处理） |
 | 平台下发的 env | **不接受**：`run_task` 里的 `env` 一律忽略，子进程只用 bridge 自身的环境 |
 | 并发           | 同时最多 `max_tasks` 个（默认 30），其余按 FIFO 排队（`max_queue` 默认 60），排满才失败；`timeoutMs` 从入队开始算 |
-| 本地控制面     | 可选扩展，**默认关闭**；开启后只绑回环、强制 scoped Bearer、不返回 CORS 头 |
+| 本地控制面     | `connect` 默认在 `127.0.0.1:8787` 启动 Web 面板（占用自动顺延）；只绑回环、强制 scoped Bearer、不返回 CORS 头 |
 | 在哪里执行     | `cwd` 必须存在且是目录；可用 `allowed_cwd` 白名单进一步收窄范围      |
 | diff 捕获      | 只在 `captureDiff: true`（或 `diff_default`）时跑一次 `git diff`；未跟踪文件用完即还原索引，不提交、不改动工作区 |
 | 服务身份       | 服务令牌只存 SHA-256，按 scope 最小权限校验；`cancel_task` 需要 `task:cancel`，不是拿到 `task:create` 就能杀任务 |
@@ -375,21 +375,22 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | --- | --- |
 | `contracts/asyncapi-3.0.yaml` | WebSocket 通道（双向、全部消息、错误码） |
 | `contracts/openapi-3.1.yaml` | **平台必须实现**的 HTTP 端点（想驱动本 bridge 就看这份） |
-| `contracts/openapi.control-plane.yaml` | 本地回环控制面（可选扩展，默认关闭） |
+| `contracts/openapi.control-plane.yaml` | 本地回环控制面（connect 默认开启，只绑回环） |
 | `llms.txt` | 给 AI 客户端的入口索引 |
 
 `npm run contracts:check` 会校验代码里的每个 wire 类型、能力、错误码与平台端点都确实被记载 —— 漂移即红。
 
-### 本地回环控制面（可选扩展，默认关闭）
+### 本地回环控制面（connect 默认开启）
 
-`agent-bridge serve <platformUrl> [--port=8787]` = `connect` **之外**再开一个只绑回环的 HTTP 控制面。
+`agent-bridge connect <platformUrl>` 默认在 `127.0.0.1:8787` 启动本机 Web 面板；端口被占用时自动顺延。
+`agent-bridge serve <platformUrl> [--port=8787]` 仍可按配置/参数显式控制。
 它服务的是**本机上的其它程序**（IDE 插件、脚本、MCP server、CI runner）；远程平台仍然走出站 WebSocket，
 控制面是**另一条**通道，不是替代品。
 
 | 规则 | 取值 |
 | --- | --- |
 | 绑定 | 只绑 `127.0.0.1` / `::1`，非回环直接在启动时拒绝 |
-| 默认 | **关闭**。用 `[control_plane] enabled = true` 写进配置，或本次带 `--port` 临时开 |
+| 默认 | `connect` 从 8787 起自动启动（连续 20 个端口都占用才降级）；`serve` 仍按 `[control_plane]` / `--port` 决定 |
 | 鉴权 | scoped Bearer（`abs_<kid>_<secret>`，与 P0-8 同一套令牌）；`/v1/health` 与面板页壳 `/` 免鉴权；EventSource 场景允许 `?token=` 兜底（仅回环，勿外发）。**Web 面板零操作**：serve 启动时自动生成一个只读（task:read/device:read）内存令牌并拼进面板地址，进程退出即失效 |
 | CORS | 一律不返回 —— 浏览器脚本无法静默调用本机端口 |
 | JWT | 可选 `[jwt] jwks_url = "..."`；验签后按 `tenant_id` 隔离 `/v1/sessions` 与 `/v1/board`。任务/附件尚未租户化，非默认租户回 403 `tenant_not_supported` |

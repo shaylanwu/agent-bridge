@@ -4,16 +4,16 @@ info:
   version: '1.0.0'
   summary: Loopback-only HTTP surface for other programs on the same machine.
   description: |
-    An optional extension: `agent-bridge serve <platformUrl> --port=8787`.
+    `agent-bridge connect` starts it on `127.0.0.1:8787` by default and falls forward when the port
+    is occupied; `agent-bridge serve <platformUrl> --port=8787` can still set it explicitly.
 
-    It is OFF by default (`[control_plane] enabled = true` to turn it on) and binds loopback only,
-    so it is not an inbound network surface. Its audience is **other programs on this machine**
-    (IDE extensions, scripts, MCP servers, CI runners) — remote platforms keep using the outbound
-    WebSocket described by `asyncapi-3.0.yaml`; this is a separate channel.
+    It binds loopback only, so it is not an inbound network surface. Its audience is **other
+    programs on this machine** (IDE extensions, scripts, MCP servers, CI runners) — remote platforms
+    keep using the outbound WebSocket described by `asyncapi-3.0.yaml`; this is a separate channel.
 
-    Rules enforced by the harness (`npm run arch:check`): loopback bind only, an `enabled` switch that
-    defaults to off, and no CORS headers ever. Every route except `/v1/health` requires a scoped Bearer
-    token (`abs_<kid>_<secret>`) issued by `agent-bridge services issue`.
+    Rules enforced by the harness (`npm run arch:check`): loopback bind only and no CORS headers ever.
+    Every route except `/v1/health` requires a scoped Bearer token (`abs_<kid>_<secret>`) issued by
+    `agent-bridge services issue`.
 
     Errors are RFC 9457 `application/problem+json` and carry the same controlled `code` enum as the
     wire protocol (`src/core/errors.ts`), so clients branch on `code`, never on prose.

@@ -13,11 +13,11 @@ Use the **loopback control plane** — a small HTTP API on `127.0.0.1`.
 ## Read this first
 
 :::caution
-The control plane is **off by default** and is not a network surface
-- It only starts when explicitly enabled (`agent-bridge serve --port=8787`, or
-  `[control_plane] enabled = true`).
+`connect` starts the local Web panel by default, but it is not a network surface
+- `agent-bridge connect` starts on `127.0.0.1:8787` and falls forward when the port is taken;
+  `serve` still lets you set it explicitly.
 - It binds **loopback only** (`127.0.0.1` / `::1`) — never `0.0.0.0`.
-- It **never** returns CORS headers, so a web page cannot reach it.
+- It **never** returns CORS headers, so a web page cannot reach it silently.
 - Every route except `/v1/health` requires a scoped Bearer token.
 
 If you were asked to "open a port" — that is not this. The device still makes no inbound

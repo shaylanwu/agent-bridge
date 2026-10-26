@@ -21,6 +21,24 @@ afterEach(() => {
 });
 
 describe('终端任务面板', () => {
+  it('控制面未启用时仍显示面板行并给出开启方式', () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(process.stdout, 'columns', { value: 120, configurable: true });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const registry = new TaskRegistry();
+
+    const panel = startPanel({
+      registry,
+      capacity: () => ({ running: 0, queued: 0, maxTasks: 30, maxQueued: 30 }),
+      platformUrl: 'http://localhost:5173',
+      deviceName: 'dev-machine',
+    });
+    panel?.stop();
+
+    const raw = write.mock.calls.map((call) => String(call[0])).join('');
+    expect(raw.replace(ANSI, '')).toContain('│ 面板  未启用 · serve --port=8787 开启');
+  });
+
   it('按主题绿与状态色渲染，地址无下划线且信息/列表行保留间距', () => {
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
     Object.defineProperty(process.stdout, 'columns', { value: 120, configurable: true });

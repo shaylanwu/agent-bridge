@@ -26,7 +26,7 @@ export interface PanelOptions {
   platformUrl: string;
   /** 展示用设备名称（配置 label；缺省为主机名），不是 deviceId */
   deviceName: string;
-  /** serve 启动控制面后给出 Web 面板地址（已内嵌只读令牌） */
+  /** serve 启动控制面后给出 Web 面板地址（已内嵌只读令牌）；缺省时显示未启用提示 */
   webUrl?: string;
 }
 
@@ -188,10 +188,15 @@ export function startPanel(opts: PanelOptions): PanelHandle | null {
           [String(counts.failed), counts.failed > 0 ? C.red : null],
         ]),
       );
-      if (opts.webUrl) {
-        lines.push(boxBlank());
-        lines.push(boxRow('面板', [[opts.webUrl, C.blue]]));
-      }
+      // 面板行始终显示：没有地址时明确告诉用户怎么开，不能靠猜。
+      lines.push(boxBlank());
+      lines.push(
+        boxRow('面板', [
+          opts.webUrl
+            ? [opts.webUrl, C.blue]
+            : ['未启用 · serve --port=8787 开启', C.dim],
+        ]),
+      );
       lines.push(boxBlank());
       lines.push(accent(`╰${'─'.repeat(W - 2)}╯`));
       lines.push('');

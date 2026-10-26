@@ -202,7 +202,7 @@ session_idle_ms = 0           # close waiting_user sessions after this idle time
 | How it is executed     | Argument arrays, no shell interpolation (Windows `.cmd` shims are quoted explicitly).  |
 | Env from the platform  | **Not accepted**: any `env` inside `run_task` is ignored; children always run with the bridge's own environment. |
 | Concurrency            | `max_tasks` (default 30) run at once; the rest queue FIFO up to `max_queue` (default 60), then fail. `timeoutMs` counts from queueing. |
-| Local control plane     | Optional extension, **off by default**; when enabled it binds loopback only, requires a scoped Bearer token, and never sends CORS headers. |
+| Local control plane     | `connect` starts the Web panel on `127.0.0.1:8787` by default (falls forward if occupied); loopback only, scoped Bearer required, no CORS headers. |
 | Diff capture           | One `git diff` per task, only when `captureDiff` is set; untracked paths are restored afterwards. Nothing is committed and the index is left as it was. |
 | Service identity       | Service tokens are stored as SHA-256 only and checked per scope; `cancel_task` needs `task:cancel`, holding `task:create` is not enough. |
 | Where it runs          | `cwd` must exist and be a directory; `allowed_cwd` (optional) confines it further.     |
@@ -411,16 +411,18 @@ Prose drifts; contracts are checked in CI.
 `npm run contracts:check` verifies every wire type, capability, error code and platform endpoint in the code
 is actually documented — drift fails the build.
 
-### Local control plane (optional, off by default)
+### Local control plane (connect starts it by default)
 
-`agent-bridge serve <platformUrl> [--port=8787]` is `connect` **plus** a loopback-only HTTP control plane.
+`agent-bridge connect <platformUrl>` starts the local Web panel on `127.0.0.1:8787` by default and
+falls forward when the port is occupied. `agent-bridge serve <platformUrl> [--port=8787]` still
+lets you control it explicitly through config or flags.
 It exists for **other programs on this machine** — IDE extensions, scripts, MCP servers, CI runners.
 Remote platforms keep using the outbound WebSocket; this is a separate channel, not a replacement.
 
 | Rule | Value |
 | --- | --- |
 | Bind | `127.0.0.1` / `::1` only — a non-loopback host is rejected at startup |
-| Default | **off**. Enable with `[control_plane] enabled = true` in `config.toml`, or `--port` for this run only |
+| Default | `connect` tries 8787..8806 and degrades only if all are taken; `serve` still follows `[control_plane]` / `--port` |
 | Auth | scoped Bearer (`abs_<kid>_<secret>`, the same tokens as P0-8); `/v1/health` and the dashboard shell `/` are open; `?token=` is accepted for EventSource (loopback only — never share the URL). **Zero-setup dashboard**: `serve` mints a read-only in-memory token (`task:read`/`device:read`) at startup and embeds it in the printed dashboard URL; it dies with the process |
 | CORS | never sent — a browser script cannot call it silently |
 | JWT | optional `[jwt] jwks_url = "..."`; verified principals scope `/v1/sessions` and `/v1/board` by `tenant_id`. Tasks/artifacts are not tenant-scoped yet, so non-default tenants get 403 `tenant_not_supported` |
