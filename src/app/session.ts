@@ -155,11 +155,6 @@ export function createSession(opts: SessionOptions): BridgeSession {
         return;
       }
       if (msg.type === 'close_session') {
-        const idle = dispatchOpts.idleTimers.get(msg.taskId);
-        if (idle) {
-          clearTimeout(idle);
-          dispatchOpts.idleTimers.delete(msg.taskId);
-        }
         dispatchCloseSession(msg, dispatchOpts);
         return;
       }

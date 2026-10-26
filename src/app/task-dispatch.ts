@@ -44,6 +44,15 @@ export interface TaskDispatchOptions {
   log: SessionLog;
   /** 常驻 conversation 进程（close_session 成功后才回收） */
   residentSessions?: Map<string, import('./claude-resident.js').ClaudeResident>;
+  /** waiting_user 空闲计时器（close_session 成功后才清除） */
+  idleTimers?: Map<string, NodeJS.Timeout>;
+}
+
+function clearIdleTimer(o: TaskDispatchOptions, sessionId: string): void {
+  const timer = o.idleTimers?.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  o.idleTimers?.delete(sessionId);
 }
 
 /** 取消同样要鉴权：拿到 task:create 的令牌不等于能杀别人的任务 */
@@ -91,6 +100,7 @@ export function dispatchCloseSession(msg: CloseSessionMessage, o: TaskDispatchOp
     return;
   }
   if (session.status !== 'running') {
+    clearIdleTimer(o, msg.taskId);
     o.residentSessions?.get(msg.taskId)?.close();
     o.residentSessions?.delete(msg.taskId);
     ackSession(o, msg, 'close_session', true, { status: session.status });
@@ -98,6 +108,7 @@ export function dispatchCloseSession(msg: CloseSessionMessage, o: TaskDispatchOp
   }
   const handle = o.tasks.get(msg.taskId);
   if (handle) {
+    clearIdleTimer(o, msg.taskId);
     handle.cancel();
     ackSession(o, msg, 'close_session', true, { status: 'cancelled' });
     return;
@@ -110,6 +121,7 @@ export function dispatchCloseSession(msg: CloseSessionMessage, o: TaskDispatchOp
       finishedAt: new Date().toISOString(),
     });
   }
+  clearIdleTimer(o, msg.taskId);
   const closed = o.store.closeSession(msg.taskId, 'cancelled', 'session_closed');
   o.residentSessions?.get(msg.taskId)?.close();
   o.residentSessions?.delete(msg.taskId);

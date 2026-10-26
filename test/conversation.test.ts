@@ -178,6 +178,32 @@ describe('conversation turns', () => {
     expect(runnerMocks.startTask).not.toHaveBeenCalled();
   });
 
+  it('未授权的 send_message 不清 idle 计时器', async () => {
+    const { store, deps } = setup();
+    store.createSession({
+      sessionId: 'bt_idle_auth',
+      mode: 'conversation',
+      agentType: 'codex',
+      cwd: '/tmp/work',
+      phase: 'waiting_user',
+    });
+    deps.requireServiceToken = true;
+    deps.idleTimers = new Map();
+    const timer = setTimeout(() => undefined, 10_000);
+    deps.idleTimers.set('bt_idle_auth', timer);
+    await dispatchConversationMessage(
+      {
+        type: 'send_message',
+        taskId: 'bt_idle_auth',
+        messageId: 'msg_no_auth',
+        parts: [{ kind: 'text', text: 'hi' }],
+      },
+      deps,
+    );
+    expect(deps.idleTimers.get('bt_idle_auth')).toBe(timer);
+    clearTimeout(timer);
+  });
+
   it('没有原生 steer 的适配器明确回 steer_unsupported', async () => {
     const { store, sent, deps } = setup();
     store.createSession({

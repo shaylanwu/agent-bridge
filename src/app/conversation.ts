@@ -472,7 +472,6 @@ export async function dispatchConversationMessage(
   msg: SendMessageMessage,
   deps: ConversationDeps,
 ): Promise<void> {
-  clearIdleClose(deps, msg.taskId);
   const reject = (errorCode: string): void => {
     deps.emitter.emit({
       type: 'message_ack',
@@ -491,6 +490,8 @@ export async function dispatchConversationMessage(
   if (!session) return reject('session_not_found');
   if (session.mode !== 'conversation') return reject('session_not_continuable');
   if (session.status !== 'running') return reject('session_closed');
+  // 鉴权与状态校验通过后才停 idle 计时；未授权请求不能靠空转保活会话。
+  clearIdleClose(deps, msg.taskId);
 
   const text = msg.parts.map((part) => part.text).join('\n').trim();
   if (!text) return reject('empty_message');

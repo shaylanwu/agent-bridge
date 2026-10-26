@@ -39,6 +39,7 @@ describe('task dispatch → SessionStore', () => {
     const sent: ClientMessage[] = [];
     const emitter = new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) });
     const close = vi.fn();
+    const idleTimer = setTimeout(() => undefined, 10_000);
     const options: TaskDispatchOptions = {
       emitter,
       tasks: new Map(),
@@ -53,6 +54,7 @@ describe('task dispatch → SessionStore', () => {
       residentSessions: new Map([['bt_close_auth', { close }]]) as unknown as NonNullable<
         TaskDispatchOptions['residentSessions']
       >,
+      idleTimers: new Map([['bt_close_auth', idleTimer]]),
     };
 
     dispatchCloseSession(
@@ -60,6 +62,7 @@ describe('task dispatch → SessionStore', () => {
       options,
     );
     expect(close).not.toHaveBeenCalled();
+    expect(options.idleTimers?.get('bt_close_auth')).toBe(idleTimer);
     expect(store.getSession('bt_close_auth')?.status).toBe('running');
 
     options.requireServiceToken = false;
@@ -68,6 +71,7 @@ describe('task dispatch → SessionStore', () => {
       options,
     );
     expect(close).toHaveBeenCalledTimes(1);
+    expect(options.idleTimers?.has('bt_close_auth')).toBe(false);
     expect(store.getSession('bt_close_auth')?.status).not.toBe('running');
   });
 
