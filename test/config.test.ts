@@ -2,7 +2,14 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { clearConfig, loadConfig, saveConfig, stateDbPath, type BoundBridgeConfig } from '../src/infra/config.js';
+import {
+  clearConfig,
+  loadConfig,
+  resolveSessionIdleMs,
+  saveConfig,
+  stateDbPath,
+  type BoundBridgeConfig,
+} from '../src/infra/config.js';
 
 const DEVICE_ID = 'bd_0123456789abcdef0123456789abcdef';
 
@@ -111,6 +118,21 @@ describe('配置原子保存与凭证清除', () => {
     await saveConfig(boundConfig({ sessionIdleMs: 7000 }));
     expect((await loadConfig())?.sessionIdleMs).toBe(7000);
     expect(await readFile(file, 'utf8')).toContain('session_idle_ms = 7000');
+  });
+
+  it('session_idle_ms 解析：空环境变量不覆盖配置', () => {
+    const previous = process.env['AGENT_BRIDGE_SESSION_IDLE_MS'];
+    delete process.env['AGENT_BRIDGE_SESSION_IDLE_MS'];
+    try {
+      expect(resolveSessionIdleMs(5000)).toBe(5000);
+      process.env['AGENT_BRIDGE_SESSION_IDLE_MS'] = '';
+      expect(resolveSessionIdleMs(5000)).toBe(5000);
+      process.env['AGENT_BRIDGE_SESSION_IDLE_MS'] = '1234';
+      expect(resolveSessionIdleMs(5000)).toBe(1234);
+    } finally {
+      if (previous === undefined) delete process.env['AGENT_BRIDGE_SESSION_IDLE_MS'];
+      else process.env['AGENT_BRIDGE_SESSION_IDLE_MS'] = previous;
+    }
   });
 
   it('保存传入的业务设置并写入同值 deviceId 镜像', async () => {

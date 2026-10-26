@@ -80,8 +80,9 @@ export function resolveMaxTasks(fromConfig?: number, override?: number): number 
  * 上限 24h，防止手滑写成 `99999999999` 把会话永久占住。
  */
 export function resolveSessionIdleMs(fromConfig?: number): number {
-  const envRaw = Number(process.env['AGENT_BRIDGE_SESSION_IDLE_MS'] ?? '');
-  const chosen = Number.isFinite(envRaw) && envRaw >= 0 ? envRaw : fromConfig;
+  const raw = process.env['AGENT_BRIDGE_SESSION_IDLE_MS'];
+  const envRaw = raw === undefined || raw.trim() === '' ? undefined : Number(raw);
+  const chosen = envRaw !== undefined && Number.isFinite(envRaw) && envRaw >= 0 ? envRaw : fromConfig;
   if (!Number.isFinite(chosen ?? NaN) || (chosen ?? 0) <= 0) return 0;
   return Math.min(24 * 60 * 60 * 1000, Math.floor(chosen as number));
 }
