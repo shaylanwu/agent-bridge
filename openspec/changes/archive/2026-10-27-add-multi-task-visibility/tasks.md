@@ -113,4 +113,4 @@
 
 ## 7. 归档
 
-- [ ] 7.1 全部批次完成、人工评审通过后归档，specs 增量合并入 `openspec/specs/`
+- [x] 7.1 全部批次完成、人工评审通过后归档，specs 增量合并入 `openspec/specs/`（2026-10-27 已合并：`bridge-protocol` 的「容量水位上报」「任务步骤上报」，`task-execution` 的「任务幂等」）

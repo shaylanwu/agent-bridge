@@ -2,10 +2,11 @@
 
 ## Purpose
 
-定义 bridge 在本机执行远端任务时的边界。本能力规格**按提案增量逐步建立**：当前只覆盖
-`add-cwd-allowlist`（2026-10-22）落地的目录白名单语义。
+定义 bridge 在本机执行远端任务时的边界。本能力规格**按提案增量逐步建立**，当前覆盖：
+`add-cwd-allowlist`（目录白名单）、`harden-runner-env-and-concurrency` 与 `tune-concurrency-defaults`
+（并发/排队与默认值）、`add-diff-capture`（终态差异捕获）、`add-multi-task-visibility`（任务幂等）。
 
-其余已实现但尚未立规格的行为（工具白名单、参数数组传递、超时与取消、平台报文形状校验）见
+仍未立规格的已实现行为（工具白名单、参数数组传递、超时与取消、平台报文形状校验）见
 `.harness/rules/always-on.md` §4 与 `.harness/rules/protocol-contract-rules.md`；为它们补规格需各自走一次提案
 （保持一致：`openspec/specs/` 的每条 Requirement 都必须能追溯到已获批的 delta）。
 
@@ -60,16 +61,23 @@ bridge SHALL NOT 把任何平台下发的环境变量传给子进程。`run_task
 
 ### Requirement: 并发上限与排队
 
-bridge SHALL 限制同时运行的任务数（默认 3，`max_tasks` 可调，夹 1–32），超出上限的任务 SHALL 进入
-**先入先出**队列而非被拒绝；队列长度 SHALL 有上限（默认 32，`max_queue` 可调，夹 0–1024，0 表示不允许排队），
-队列已满时 SHALL 立即回 `task_status: failed`。`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE`
-环境变量 SHALL 优先于配置文件。任务的 `timeoutMs` SHALL 从**入队**时刻开始计时。
+bridge SHALL 限制同时运行的任务数（默认 30，`max_tasks` 可调，夹 1–128），超出上限的任务 SHALL 进入
+**先入先出**队列而非被拒绝；队列长度 SHALL 有上限（默认 60，`max_queue` 可调，夹 0–1024，0 表示不允许排队），
+队列已满时 SHALL 立即回 `task_status: failed`。生效优先级 SHALL 为：
+启动参数（`--max-tasks` / `--max-queue`）> 环境变量（`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE`）
+> 配置文件 > 默认值。任务的 `timeoutMs` SHALL 从**入队**时刻开始计时。
 
 #### Scenario: 排队后依次执行
 
 - **WHEN** `max_tasks = 1`、`max_queue = 2`，平台连续下发 4 个任务
 - **THEN** 第 1 个立即运行，第 2、3 个排队；前一个进入终态后队列头依次启动；
   第 4 个因队列已满立即回 `{ "status": "failed", "error": "任务队列已满（并发 1，排队 2）…" }`
+
+#### Scenario: 启动参数覆盖
+
+- **WHEN** 用户以 `agent-bridge connect <url> --max-tasks=12 --max-queue=100` 启动
+- **THEN** 本次会话并发上限为 12、队列上限为 100，无论配置文件与环境变量取何值；
+  不写参数则回落到「环境变量 > 配置 > 默认（30 / 60）」链
 
 #### Scenario: 取消排队中的任务
 
@@ -90,3 +98,61 @@ bridge SHALL 限制同时运行的任务数（默认 3，`max_tasks` 可调，�
 
 - **WHEN** `config.toml` 写入 `max_tasks = 6`、`max_queue = 0`
 - **THEN** 同时最多运行 6 个任务，且不允许排队（第 7 个立即失败）
+
+### Requirement: 工作区差异捕获
+
+当 `run_task` 携带 `captureDiff: true`（或本地 `diff_default` 开启）时，bridge SHALL 在任务进入终态
+（success / failed / cancelled / timeout，含启动前就被拒绝的情形）后，在任务的 `cwd` 上执行一次**只读**的
+git 差异捕获，并把结果随 `task_status` 一并回传。两项都未开启时 SHALL NOT 执行任何 git 子进程。
+
+差异 SHALL 为标准 unified diff（`git diff --no-color` 输出），供第三方系统直接做人工审核。
+
+#### Scenario: 平台显式要求捕获
+
+- **WHEN** 平台下发 `{ "type": "run_task", ..., "captureDiff": true }` 且 `cwd` 是 git 工作树
+- **THEN** 终态 `task_status` SHALL 携带 `diff`（unified diff 文本）、`changedFiles`（仓库相对路径数组）
+
+#### Scenario: 非 git 目录
+
+- **WHEN** `captureDiff` 为真但 `cwd` 不在任何 git 工作树内
+- **THEN** bridge SHALL 回传 `diff: ""`（或省略）与 `changedFiles: []`，SHALL NOT 报错、SHALL NOT 影响任务终态
+
+#### Scenario: 未跟踪的新文件也要进 diff
+
+- **WHEN** CLI 新建了一个尚未 `git add` 的文件
+- **THEN** bridge SHALL 先对该文件 `git add -N`，取完 diff 后 SHALL 执行 `git reset -q -- <path>` 还原索引，
+  使捕获过程对索引不留副作用
+
+#### Scenario: diff 超过上限
+
+- **WHEN** 差异文本超过 `diff_max_bytes`（默认 262144 字节）
+- **THEN** bridge SHALL 按**行边界**截断（不得切断一行），并置 `diffTruncated: true`；
+  `changedFiles` SHALL 仍给出完整清单（上限 500 条）
+
+#### Scenario: 捕获失败不影响执行
+
+- **WHEN** git 子进程超时、被杀或返回非预期输出
+- **THEN** bridge SHALL 降级为空 diff（可带 `diffTruncated: false`），SHALL NOT 改变任务终态，
+  SHALL NOT 因此把任务标记为失败
+
+#### Scenario: 索引还原的幂等
+
+- **WHEN** 捕获过程中途异常（如超时）
+- **THEN** bridge SHALL 在 `finally` 中还原已 `git add -N` 的路径，不留 intent-to-add 残留
+
+### Requirement: 任务幂等
+
+bridge SHALL 按 `taskId` 去重：同一 `taskId` 的 `run_task` 重复到达时 SHALL NOT 重复 spawn。
+任务未终态时 SHALL 回当前状态快照（`task_status`，含 `phase` / `queuePosition`）；
+已终态时 SHALL 回放终态快照（含 `exitCode` / `errorCode`）。去重记录 SHALL 有界
+（LRU，与 Emitter 的 `maxSettled` 同口径）。
+
+#### Scenario: 网络重发不双跑
+
+- **WHEN** 平台因断线重连重发同一 `taskId` 的 `run_task`，该任务仍在运行
+- **THEN** bridge 回一条当前状态的 `task_status`（`running`），进程仍只有一个
+
+#### Scenario: 终态重发放快照
+
+- **WHEN** 平台重发一个已 `success` 的 `taskId`
+- **THEN** bridge 立即回放 `{ status: 'success', exitCode: 0 }`，不产生任何子进程

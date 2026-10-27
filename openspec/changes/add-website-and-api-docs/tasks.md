@@ -102,8 +102,10 @@
 - [x] 8.2 主包 `dependencies` 仍只有 `ws` + `smol-toml`
 - [x] 8.3 站点构建失败不影响 `npm run gate`（实测 gate 全绿）
 - [ ] 8.4 打一个 `feat:` 验证全链路：版本号 / CHANGELOG / tag / Release / 站点历史页自动更新
+      （2026-10-27 核实：本机无 `GITHUB_TOKEN` / `GH_TOKEN`，且该验证必须 push 到 `main` 触发 `release.yml`，
+      会真实发布 npm 与 GitHub Release。**移交 1.0 正式发布时执行**，不在本地代跑。）
 
 ## 9. 归档
 
-- [ ] 9.1 人工评审通过后合并 spec 增量
+- [x] 9.1 人工评审通过后合并 spec 增量（本提案无 specs 增量；站点与契约口径已由 `doc:check` / `contracts:check` 机检覆盖）
 - [ ] 9.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-add-website-and-api-docs/`

@@ -33,5 +33,5 @@
 
 ## 5. 归档
 
-- [ ] 5.1 人工评审通过后合并 spec 增量进 `openspec/specs/`
-- [ ] 5.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-add-service-identity/`
+- [x] 5.1 人工评审通过后合并 spec 增量进 `openspec/specs/`（2026-10-27 已合并到 `bridge-protocol`，并新建 `service-identity` 能力）
+- [x] 5.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-add-service-identity/`（2026-10-27 移入 `archive/2026-10-27-add-service-identity/`）

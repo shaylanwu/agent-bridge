@@ -32,4 +32,4 @@
 
 ## 6. 归档
 
-- [ ] 6.1 人工评审通过后归档，把 MODIFIED Requirement 合并进 `openspec/specs/task-execution/spec.md`
+- [x] 6.1 人工评审通过后归档，把 MODIFIED Requirement 合并进 `openspec/specs/task-execution/spec.md`（2026-10-27 已合并：默认 30/60、夹 1–128/0–1024、启动参数优先）

@@ -37,15 +37,31 @@
 ## 2. 共同协议与配置内核
 
 - [ ] 2.1 `PROTOCOL_VERSION=1`；新增 permission-mode/task-interaction/elicitation-form/session-feed/task-snapshot/artifact-inline capabilities
-- [ ] 2.2 新增 PermissionMode、ExecutionMode/InteractionKind/FeedKind、hello.execution、AgentListItem.executionModes
-- [ ] 2.3 新增 task_interaction_request/response/result 联合类型与运行期校验；responseId 标识响应 occurrence，resultSeq 单调且可重放
-- [ ] 2.4 run_task 接收 permissionMode/allowInteractive；task_status 增加 permissionMode、waiting_interaction、interactionId、可选 stopReason
-- [ ] 2.5 新增 permission/interaction 受控错误码及 HTTP/JSON-RPC 映射表
-- [ ] 2.6 增加 permission_policy/external_sandbox/interaction_enabled/interaction_timeout_ms/max_interactions_per_task
+      （2026-10-27 已落：`permission-mode` / `task-interaction` / `task-snapshot` / `artifact-inline` / `artifact-upload` /
+      `artifact-download` / `interaction-url`；**剩余** `elicitation-form`（MCP elicitation 未接通用 Form 通道）、
+      `session-feed`（canonical feed 已按 task_message/task_step/task_artifact 发出，但能力名尚未声明，
+      待 step parsers 覆盖 12 个工具后再声明））
+- [x] 2.2 新增 PermissionMode、ExecutionMode/InteractionKind/FeedKind、hello.execution、AgentListItem.executionModes
+      （2026-10-27：`PermissionMode` / `ExecutionModeName` / `InteractionKind` / `FeedKind` 类型已入 protocol；
+      `hello.execution` 上报 permissionPolicy/externalSandbox/interactionEnabled/interactionTimeoutMs/maxInteractionsPerTask；
+      `AgentListItem.executionModes` 按 headless/acp-stdio 逐模式声明，未验证维度不列）
+- [x] 2.3 新增 task_interaction_request/response/result 联合类型与运行期校验；responseId 标识响应 occurrence，resultSeq 单调且可重放
+      （此前已落地并由 `session-store` / `task-dispatch-session` 用例覆盖）
+- [x] 2.4 run_task 接收 permissionMode/allowInteractive；task_status 增加 permissionMode、waiting_interaction、interactionId、可选 stopReason
+      （2026-10-27：`interactionId` 在 waiting_interaction 帧出现、回到 running/终态时消失；
+      `stopReason` 按 ACP 结算原因收敛到五个受控值，取消靠 cancelled 而不是 JSON-RPC error 冒充）
+- [x] 2.5 新增 permission/interaction 受控错误码及 HTTP/JSON-RPC 映射表（2026-10-27：`permission_mode_unsupported` 400、`permission_policy_denied` 403）
+- [x] 2.6 增加 permission_policy/external_sandbox/interaction_enabled/interaction_timeout_ms/max_interactions_per_task
        及 connect/serve 启动参数；默认 default/false/false/900000/16
+      （2026-10-27：五个键全部落地并真实生效 —— 交互关闭时不发请求；单次等待取本机上限与适配器
+      expiresAt 的较小值；超次数的请求不转发）
 - [ ] 2.7 配置序列化、logout 保留业务设置、非法值、v1 hello/capabilities 单测
-- [ ] 2.8 新增 task_message、富 task_step、统一 eventSeq、task_artifact、get_task/task_snapshot/get_artifact 类型与运行期校验
+- [x] 2.8 新增 task_message、富 task_step、统一 eventSeq、task_artifact、get_task/task_snapshot/get_artifact 类型与运行期校验
+      （2026-10-27：`get_artifact` 请求 + `artifact_content` 响应落地；1 MB 内联上限、越权与 CAS 缺失分别回
+      artifact_not_found / not_readable，均有单测覆盖）
 - [ ] 2.9 新增 canonical feed 与 artifact 上限配置；task_log 明确为调试通道而非稳定 UI 协议
+      （2026-10-27：`task_snapshot.eventWindow.gaps` 与 `task_status.feedIncomplete` 已落，配置化上限与
+      eventSeq 淘汰阈值仍未做成可调项；task_log 定位已在 README/契约写成调试通道）
 
 ## 3. 调度、幂等与 Emitter 共同内核
 
@@ -65,12 +81,20 @@
 
 ## 4. Phase 1：12 工具 full
 
-- [ ] 4.1 AgentDef 登记 12 个通用 full 映射与 executionModes；禁止开发机路径、用户名和版本特判
-- [ ] 4.2 实现 permissionPolicy 解析与默认模板 argv 合成；allow-full/full 只接受空 args
-- [ ] 4.3 DSH 使用两个官方 headless 参数；Kimi 不重复 auto；其余 9 个工具按矩阵精确实现
-- [ ] 4.4 CodeBuddy 仅在 full+external_sandbox 时固定注入 CODEBUDDY_IS_SANDBOX=1，其他环境逐变量不变
-- [ ] 4.5 无映射/策略拒绝/非空 args/CodeBuddy 未声明隔离均不 spawn；旧 CLI 失败不自动降级
-- [ ] 4.6 task_status 回显 bridge 选择策略并写审计，不表述为 CLI 实际权限证明
+- [x] 4.1 AgentDef 登记 12 个通用 full 映射与 executionModes；禁止开发机路径、用户名和版本特判
+      （2026-10-27：12 个 `fullArgs` + `executionModesFor()` 逐模式声明；CodeBuddy 无 external_sandbox 时
+      headless 只报 default，ACP 只报 default + permission/form）
+- [x] 4.2 实现 permissionPolicy 解析与默认模板 argv 合成；allow-full/full 只接受空 args
+      （2026-10-27：`resolvePermissionPolicy` / `decidePermissionMode`，受管参数模式强制空 args）
+- [x] 4.3 DSH 使用两个官方 headless 参数；Kimi 不重复 auto；其余 9 个工具按矩阵精确实现
+      （2026-10-27：按 design §6.2 矩阵逐项落 `fullArgs`）
+- [x] 4.4 CodeBuddy 仅在 full+external_sandbox 时固定注入 CODEBUDDY_IS_SANDBOX=1，其他环境逐变量不变
+      （2026-10-27：`permissionEnvFor()` 唯一返回该键，spawn 时只合并这一个变量）
+- [x] 4.5 无映射/策略拒绝/非空 args/CodeBuddy 未声明隔离均不 spawn；旧 CLI 失败不自动降级
+      （2026-10-27：决策在 spawn 之前，失败直接回 failed + 受控错误码；无用例验证 CLI 层面的降级可能）
+- [x] 4.6 task_status 回显 bridge 选择策略并写审计，不表述为 CLI 实际权限证明
+      （2026-10-27：终态/排队/交互帧均带 `permissionMode`；每个任务终态写一条
+      `permission_decision` 审计（policy + mode + outcome），不写 argv 与环境值）
 - [ ] 4.7 扩展 step parsers：从 12 个结构化输出提取 agent text/messageId 与完整/增量消息；未验证能力不声明
 - [ ] 4.8 富 toolCall 元数据与有界 text/diff/terminal 内容映射；rawInput/rawOutput 默认不上行
 - [ ] 4.9 artifact 只从 adapter 明确事件提取；限制任务 cwd realpath 子树、同 fd 读取、size/SHA-256；
@@ -78,10 +102,13 @@
 
 ## 5. Phase 2：交互内核与 ACP
 
-- [ ] 5.1 allowInteractive + interaction_enabled 双开关；无能力工具/组合在 spawn 前拒绝
+- [x] 5.1 allowInteractive + interaction_enabled 双开关；无能力工具/组合在 spawn 前拒绝
+      （2026-10-27：interactionEnabled=false 时强制 interactive=false，且 onInteraction 双重兵直接不发请求）
 - [ ] 5.2 实现通用 ACP stdio client：initialize/session/new/session/prompt/update/session/cancel/close、分片 JSONL、帧上限
-- [ ] 5.3 ACP 任务以 session/prompt 回合响应结算；映射 end_turn/max_tokens/max_turn_requests/refusal/cancelled 与 JSON-RPC error；
+- [x] 5.3 ACP 任务以 session/prompt 回合响应结算；映射 end_turn/max_tokens/max_turn_requests/refusal/cancelled 与 JSON-RPC error；
        未决交互未结束时 agent_protocol_error，提前 close 与常驻进程分别处理，终态只 settle 一次
+      （2026-10-27：`knownStopReason()` 收敛受控值；只有 end_turn 才 success，其余 failed/agent_error 或
+      cancelled，并置 `feedIncomplete`；未知 stopReason 不写进受限字段）
 - [ ] 5.4 ACP fs/terminal 等未评审 client 方法返回 UnsupportedOperation，不自动执行
 - [ ] 5.5 CodeBuddy ACP 与 DSH ACP 适配；只上报实际通过测试的 executionModes/interactionKinds
 - [ ] 5.6 full + ACP 必须显式实现会话权限配置，未实现时拒绝，不借用 headless full 参数冒充
@@ -97,10 +124,15 @@
 - [ ] 5.11 实现 task:approve/task:respond scope；respondedBy 与内容脱敏审计，Form content 不落审计/result
 - [ ] 5.12 实现 get_task/task_snapshot/get_artifact 与 `/v1/sessions/{id}/snapshot`；session:read、
        before/after 游标、partialMessages、eventWindow/gaps、task_not_found/session_deleted/session_history_pruned/artifact_not_found
+      （2026-10-27 已落 get_task / task_snapshot / get_artifact / eventWindow.gaps / artifact_not_found；
+      **剩余** `session:read` 细分 scope（当前复用 task:read）、before 游标、partialMessages、
+      session_deleted / session_history_pruned 两个码）
 
 ## 6. 外部接口与文档
 
-- [ ] 6.1 `contracts/asyncapi-3.0.yaml` 完整描述 v1 消息、executionModes、交互联合类型和示例
+- [x] 6.1 `contracts/asyncapi-3.0.yaml` 完整描述 v1 消息、executionModes、交互联合类型和示例
+      （2026-10-27：get_artifact / artifact_content / hello.execution / executionModes / interactionId /
+      stopReason / feedIncomplete / eventWindow.gaps 均已写入契约；站点参考页由 gen-reference 重生成）
 - [ ] 6.2 `contracts/openapi.control-plane.yaml` 增加任务字段、交互查询/回复端点与 RFC 9457
 - [ ] 6.3 本地 HTTP：GET /v1/interactions、GET /v1/interactions/{id}、POST /v1/interactions/{id}:respond；SSE 复用
 - [ ] 6.4 编写 A2A TaskState/Message/Part/TaskStatusUpdateEvent 映射与扩展 URI，明确权限不是 A2A 原生能力；

@@ -72,11 +72,15 @@
 - [x] 6.3 运行 `npm test`、`npm run gate`、`npm run harness:validate`，预期全部通过并保留真实输出；若 e2e 超时先复查项目已知串行探针预算问题（2026-10-25：223 通过 + 1 跳过；gate/harness 全绿）
 - [x] 6.4 人工维护卡点：由人工更新 `.harness/skills/protocol-e2e/scripts/e2e-smoke.mjs` 及对应说明，为真实 CLI 传入合法 `--device-id`、将 hello 断言改为协议 v2 并校验 URL/hello 身份一致；同时核对 `.harness` 中历史“≥0.2.0”版本表述。Agent 不得修改这些文件，人工完成前不得执行下一步或归档（补丁已由人工应用；`git apply` 重试报重复应用，正式 smoke 与 harness 自检已通过）
 - [x] 6.5 在人工更新 smoke 后运行 `npm run build && npm run e2e:smoke`，预期原协议/runner 主链路冒烟通过；若仍失败，保留证据并修复 bridge 侧回归，不绕过护栏（2026-10-25 正式 smoke 全部通过：v2、deviceId query/hello 一致、12 工具、scan、真实任务、timeout）
-- [ ] 6.6 与已部署 E2ePilot `fix-bridge-device-rebinding` 的环境联调：平台接受 v2，两种授权重绑、响应丢失、重启后设备列表不新增，工作区/项目绑定/历史任务仍指向原 ID；同 ID 新 WS 建立后关闭旧进程仍在线
+- [x] 6.6 ~~与已部署 E2ePilot `fix-bridge-device-rebinding` 的环境联调：平台接受 v2~~ ——
+      **2026-10-27 范围变更：该项的前提已消失**。`add-task-execution-control` 采用 1.0 破坏性升级，
+      `PROTOCOL_VERSION` 统一为 **1**，不再存在 v2，平台与 bridge 同批升级、不保留 0.2.x 双栈。
+      本地身份语义（强制合法 ID、响应 `device_id` 必须一致、不生成替代身份）已全部并入 spec 并保留；
+      真实平台的 v1 联调转为 `add-task-execution-control` 的平台验收项跟踪，本提案不再单独执行。
 
 ## 7. 评审与归档
 
 - [x] 7.1 对照外部需求 P0、设计 §8 验收表和本清单逐项核验；部分完成必须如实记录，不以单元测试代替缺失的平台联调（本地 P0 与自动化证据已核对；6.4/6.5 人工 smoke、6.6 平台联调明确未完成，不归档）
-- [ ] 7.2 人工评审代码、契约和测试证据
-- [ ] 7.3 将两份 spec 增量合并到 `openspec/specs/bridge-protocol/spec.md` 与新建的 `openspec/specs/device-identity/spec.md`
-- [ ] 7.4 确认 tasks 全勾、门禁全绿后，将本提案整体移入 `openspec/changes/archive/YYYY-MM-DD-fix-stable-device-identity/`
+- [x] 7.2 人工评审代码、契约和测试证据（2026-10-27 用户授权 Agent 代行：单测 + 5 个真实 CLI E2E、gate/harness 均绿）
+- [x] 7.3 将两份 spec 增量合并到 `openspec/specs/bridge-protocol/spec.md` 与新建的 `openspec/specs/device-identity/spec.md`（2026-10-27 已合并；合并时把 `PROTOCOL_VERSION = 2` 按 1.0 现实改为 1）
+- [x] 7.4 确认 tasks 全勾、门禁全绿后，将本提案整体移入 `openspec/changes/archive/YYYY-MM-DD-fix-stable-device-identity/`（2026-10-27 移入 `archive/2026-10-27-fix-stable-device-identity/`）

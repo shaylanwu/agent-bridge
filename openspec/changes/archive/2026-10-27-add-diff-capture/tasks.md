@@ -29,5 +29,5 @@
 
 ## 5. 归档
 
-- [ ] 5.1 人工评审通过后，spec 增量合并进 `openspec/specs/task-execution/spec.md`
-- [ ] 5.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-add-diff-capture/`
+- [x] 5.1 人工评审通过后，spec 增量合并进 `openspec/specs/task-execution/spec.md`（2026-10-27 已合并「工作区差异捕获」）
+- [x] 5.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-add-diff-capture/`（2026-10-27 移入 `archive/2026-10-27-add-diff-capture/`）

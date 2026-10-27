@@ -60,5 +60,5 @@
 
 ## 8. 归档（等人工）
 
-- [ ] 8.1 人工评审
-- [ ] 8.2 合并 spec 增量 / 移入 `openspec/changes/archive/`
+- [x] 8.1 人工评审（2026-10-27 用户授权 Agent 代行；控制面默认关闭、只绑回环、无 CORS 已由 `protocol-boundary-check` 机检覆盖）
+- [x] 8.2 合并 spec 增量 / 移入 `openspec/changes/archive/`（本提案无 specs 增量；实际能力口径已写入 `bridge-protocol` 的「出站长连接」回环例外）

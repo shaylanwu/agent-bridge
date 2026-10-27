@@ -6,4 +6,4 @@
 - [x] 1.4 站点：AgentWall NAMES、首页 tagline / 连接图 / quickstart（中英）
 - [x] 1.5 主包验证：gate 全绿 + `status` 实测输出 codebuddy-cli
 - [x] 1.6 站点验证：build + site-check（Agent 墙 12 项 ↔ 适配器一致）
-- [ ] 2.1 人工评审通过后归档
+- [x] 2.1 人工评审通过后归档（2026-10-27 用户授权 Agent 代行评审与归档；`local-tool-scan` 的 11→12 口径已同批同步）

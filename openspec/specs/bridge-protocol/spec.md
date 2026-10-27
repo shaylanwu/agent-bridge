@@ -10,7 +10,11 @@
 ### Requirement: 出站长连接
 
 bridge SHALL 主动向平台发起 WebSocket 连接（`/api/bridge/ws?deviceId=<id>`），握手携带
-`Authorization: Bearer <device_token>`，且 SHALL NOT 监听任何入站端口（授权期 `127.0.0.1` 回调除外）。
+`Authorization: Bearer <device_token>`，且 SHALL NOT 监听任何**对外**入站端口。
+
+仅有两类本机回环监听例外，且都必须只绑 `127.0.0.1` / `::1`：授权期的临时回调服务（拿到授权码后立即关闭），
+以及本地控制面（`[control_plane] enabled` / `agent-bridge serve`，**默认关闭**，不回 `Access-Control-Allow-Origin`）。
+回环监听不构成对外网络暴露。
 
 #### Scenario: 握手成功
 
@@ -33,7 +37,7 @@ bridge SHALL 在每次连上后上报本机工具清单，并响应平台的 `sc
 `ready` / `installed_no_cred` / `not_installed`，找到二进制但无法执行时 SHALL 额外标记 `installedButBroken`。
 每项 SHALL 包含工具名（`display`）、版本（`version`，探测不到时省略）、状态（`status`）与品牌图标（`logo`），
 `logo` 为 `data:image/svg+xml;base64,…` 的 24×24 单色矢量，缺失时 SHALL 省略该字段。
-扫描 SHALL 并发进行（同时探测不超过 4 个工具），且 SHALL 在扫描过程中**实时**推送已完成项。
+扫描 SHALL 并发进行（同时探测不超过 6 个工具），且 SHALL 在扫描过程中**实时**推送已完成项。
 
 #### Scenario: 实时进度
 
@@ -100,25 +104,135 @@ bridge SHALL 将子进程 stdout/stderr 以 `task_log` 分片即时回传，每�
 
 ### Requirement: 设备绑定授权
 
-bridge SHALL 支持三种绑定方式：浏览器回环回调（PKCE S256）、设备码（无浏览器场景）、
-预签发 token（CI）。回环回调 SHALL 只绑 `127.0.0.1`，且拿到授权码后立即关闭临时服务。
-使用预签发 token 时，bridge SHALL 按 **`--device-id` 参数 > `AGENT_BRIDGE_DEVICE_ID` 环境变量 > 已保存配置
-（平台地址一致时）** 的顺序解析 `deviceId`；解析不到时 SHALL 省略 WS 查询参数中的 `deviceId`、以空串填充
-`hello.deviceId`，并明确提示平台按 token 反查设备。
+bridge SHALL 支持三种绑定方式：浏览器回环回调（PKCE S256）、设备码（无浏览器场景）、预签发 token（CI）。
+回环回调 SHALL 只绑 `127.0.0.1`，且拿到授权码后立即关闭临时服务。
+
+交互授权前，bridge SHALL 按 `device-identity` 能力取得并持久化本地稳定 `deviceId`。`POST /api/bridge/token` SHALL 携带 `code`、`codeVerifier`、`redirectUri`、`clientId`、`deviceId`、`hostname`、`platform`、`cliVersion`；`POST /api/bridge/device-token` SHALL 携带 `device_code`、`clientId`、相同的 `deviceId` 与元信息。两个成功响应中的 `device_id` SHALL 等于请求中的 `deviceId`，否则 bridge 不得保存凭证或建立连接。
+
+预签发 token 模式 SHALL 复用已持久化身份，或在身份文件不存在时从旧配置、`--device-id`、`AGENT_BRIDGE_DEVICE_ID` 迁移已有 ID。无法取得合法 ID 时 SHALL 明确失败，不得生成随机 ID 或以空 ID 连接。所有 WS 连接 SHALL 在 URL query 与 `hello.deviceId` 中携带同一个本地身份。
+
+本 Requirement 移除了旧版「省略 `deviceId` / `hello.deviceId` 空串」的兼容行为。1.0 是破坏性升级，
+`PROTOCOL_VERSION = 1` 且不保留 0.2.x 双栈，平台与 bridge 同批升级。
 
 #### Scenario: 浏览器授权
 
 - **WHEN** 用户执行 `agent-bridge connect https://platform.example.com`
-- **THEN** bridge 起临时回调服务 → 打开 `/bridge/authorize?...code_challenge=...` → 收到 `code` 后
-  以 `POST /api/bridge/token` 换取 `device_token` 并写入 `config.toml`（0600）
+- **THEN** bridge 先持久化本地身份，再起临时回调服务并打开授权页；收到 `code` 后以携带该身份的 `POST /api/bridge/token` 换取 `device_token`，凭证保存成功后以同一身份建立 WS
+
+#### Scenario: 设备码授权
+
+- **WHEN** 用户以 `--no-browser` 执行 `connect`
+- **THEN** bridge 复用授权前已保存的身份，轮询 `POST /api/bridge/device-token` 时持续携带该 ID 与元信息，成功后使用同一身份建立 WS
+
+#### Scenario: 平台响应身份不一致
+
+- **WHEN** token 成功响应中的 `device_id` 缺失、格式非法或不等于请求 ID
+- **THEN** bridge 报协议错误，不保存 token、不建立 WS、不改写本地身份
 
 #### Scenario: CI 场景（已知设备 ID）
 
-- **WHEN** 用户执行 `connect <url> --token=<device-token> --device-id=bd_9f1c`
-- **THEN** bridge 跳过授权直接连 WS，URL 为 `/api/bridge/ws?deviceId=bd_9f1c`，`hello.deviceId` 为 `bd_9f1c`
+- **WHEN** 用户执行 `connect <url> --token=<device-token> --device-id=bd_9f1c00000000`
+- **THEN** bridge 将既有 ID 迁移或确认后跳过交互授权，WS URL 与 `hello.deviceId` 均为该 ID
 
 #### Scenario: CI 场景（未提供设备 ID）
 
-- **WHEN** 用户只给 `--token`，未提供 `--device-id` 且无同名环境变量与已存配置
-- **THEN** bridge 连接 URL 省略 `deviceId` 参数（不带 `?deviceId=` 空值），`hello.deviceId` 为空串，
-  并在终端提示「平台需按 token 反查设备」；连接与任务执行不受影响
+- **WHEN** 用户只给 `--token`，且本地没有任何可迁移身份
+- **THEN** bridge 在建立 WS 前明确失败并提示提供 `--device-id`，不生成替代身份、不发送空 `deviceId`
+
+#### Scenario: 协议版本
+
+- **WHEN** 新实现发送 hello
+- **THEN** `protocolVersion` 为 1，`deviceId` 符合固定正则且与 WS query 一致
+
+### Requirement: 平台绑定错误处理
+
+bridge SHALL 解析公开 orchestrator JSON 错误响应顶层的 `code` 与 HTTP 状态，并保留机器可读错误信息。bridge SHALL NOT 通过更换本地 `deviceId` 规避平台错误，也 SHALL NOT 把错误响应原文或敏感凭证写入日志。
+
+授权码被用于交换后不得自动重放。设备码仅在 `428 authorization_pending` 期间按服务端间隔重复轮询；收到成功、终态错误或交换结果不可知后，重试 SHALL 获取新设备码并继续使用原身份。
+
+#### Scenario: 本地身份被平台判定非法
+
+- **WHEN** 平台返回 `400 invalid_device_id`
+- **THEN** bridge 报本地身份格式错误并保留现场，不自动重建身份
+
+#### Scenario: 跨账号或历史身份冲突
+
+- **WHEN** 平台返回 `409 device_bound_to_other_account` 或 `409 device_identity_ambiguous`
+- **THEN** bridge 显示对应的管理处理提示并停止授权，不自动换 ID、转移所有权或合并设备
+
+#### Scenario: 凭证或授权失败
+
+- **WHEN** 平台返回 `401` 或 `403`
+- **THEN** bridge 按凭证/授权失败处理并保留原身份，不重放已消费的授权码或设备码
+
+#### Scenario: 设备码等待用户确认
+
+- **WHEN** 轮询返回 `428 authorization_pending`
+- **THEN** bridge 按服务端 interval 继续轮询同一设备码，不重新生成本地身份
+
+### Requirement: 能力协商
+
+bridge SHALL 在 `hello` 中携带 `capabilities: string[]`，列出本设备支持的**可选能力**，
+使任何第三方平台能在握手阶段判断可用功能，而不是靠客户端版本号猜。
+
+当前清单以 `src/protocol.ts` 的 `PROTOCOL_CAPABILITIES` 为唯一真源（`npm run doc:check` 会机检一致性），
+包含 `diff` / `service-token` / `queue` / `scan-progress` / `cloud-events` / `capacity` / `task-step` /
+`task-message` / `task-snapshot` / `session-control` / `session-multi-turn` / `task-interaction` /
+`artifact-upload` / `artifact-download` / `interaction-url`。
+
+#### Scenario: 平台按能力降级
+
+- **WHEN** 平台收到的 `hello.capabilities` 不含 `diff`
+- **THEN** 平台 SHALL NOT 下发 `captureDiff: true`，并按"无 diff 能力"渲染 UI
+
+### Requirement: 服务身份透传
+
+`run_task` / `cancel_task` SHALL 接受可选字段 `requestedBy`（≤128 字符）、`purpose`（≤64 字符）与
+`serviceToken`（≤256 字符）。bridge SHALL 在终态 `task_status` 上回显 `requestedBy`，供平台落库审计。
+
+#### Scenario: 回显给平台审计
+
+- **WHEN** 平台下发 `run_task { requestedBy: "svc:repair-orchestrator" }`
+- **THEN** 终态 `task_status` SHALL 携带同一个 `requestedBy`
+
+#### Scenario: 超长/畸形字段
+
+- **WHEN** `requestedBy` 超过 128 字符或不是字符串
+- **THEN** bridge SHALL 忽略该字段（不报错），保持前向兼容
+
+### Requirement: 容量水位上报
+
+bridge SHALL 在 `hello` 中携带 `capacity: { maxTasks, maxQueued }`（本次会话生效值），
+并 SHALL 在每次调度状态变化（任务入队 / 启动 / 终态）后发送 `capacity_update` 上行消息：
+`{ running, queued, maxTasks, maxQueued }`。平台与控制面两条通道 SHALL 共用同一调度器，
+水位 SHALL 反映两条通道的合计占用。
+
+#### Scenario: 握手即知上限
+
+- **WHEN** 设备以 `--max-tasks=12 --max-queue=100` 启动并连上平台
+- **THEN** `hello.capacity` 为 `{ maxTasks: 12, maxQueued: 100 }`（与环境变量/配置无关）
+
+#### Scenario: 状态变化即上报
+
+- **WHEN** 一个任务从队列启动（running 3→4，queued 5→4）
+- **THEN** bridge 发送一条 `capacity_update { running: 4, queued: 4, ... }`，平台无需等待终态
+
+### Requirement: 任务步骤上报
+
+bridge SHALL 为具备结构化事件输出的工具（适配器逐项标注）把子进程的**动态步骤流**以
+`task_step` 上行消息回传：`{ taskId, seq, action, label?, state, ok?, at }`。
+`seq` SHALL 从 1 开始按发生顺序单调递增；`state` 为 `started | finished`，`finished` 时
+SHALL 带 `ok`；`label` SHALL 截断（≤160 字符）并按日志同口径脱敏。
+不具备结构化事件的工具 SHALL NOT 发送伪造步骤，且 SHALL 在 `agent_list` / `scan_result`
+中逐项以 `steps: false` 如实标注。任务终态后的 `task_step` SHALL 被丢弃（与 `task_log` 同规则）。
+
+#### Scenario: 结构化工具的步骤流
+
+- **WHEN** 平台对一个 `steps: true` 的工具下发任务，CLI 依次执行 Read → Edit → Bash
+- **THEN** 平台按序收到三条 `task_step`（seq 1/2/3，action 分别为 Read/Edit/Bash），
+  步骤面板可实时渲染「当前在第几步」
+
+#### Scenario: 纯文本工具如实降级
+
+- **WHEN** 平台对一个 `steps: false` 的工具下发任务
+- **THEN** 平台只收到 `task_status` / `task_log`，不会收到任何 `task_step`

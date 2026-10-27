@@ -30,8 +30,11 @@
 
 ## 4. 第四期：A2A 兼容层（按需，未启动）
 
-- [ ] 4.1 任务状态映射表：A2A `TaskState` ↔ 本协议 `TaskStatus`
-- [ ] 4.2 AgentCard 描述与发现端点（需真实需求再启动）
+> 2026-10-27：本节整体移交给新提案 `add-a2a-acp-gateway`（A2A/ACP 网关独立立项），
+> 本提案不再承载这两项。
+
+- [x] 4.1 任务状态映射表：A2A `TaskState` ↔ 本协议 `TaskStatus` —— **移交** `add-a2a-acp-gateway` 任务 1.1
+- [x] 4.2 AgentCard 描述与发现端点（需真实需求再启动）—— **移交** `add-a2a-acp-gateway` 任务 2.1
 
 ## 5. 护栏同步
 
@@ -43,5 +46,5 @@
 
 ## 6. 归档
 
-- [ ] 6.1 人工评审通过后合并 spec 增量进 `openspec/specs/`
-- [ ] 6.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-generalize-bridge-protocol/`
+- [x] 6.1 人工评审通过后合并 spec 增量进 `openspec/specs/`（2026-10-27 本提案无 specs 增量；协议泛化口径已由 `bridge-protocol` 的能力协商与 `service-identity` 承载）
+- [x] 6.2 提案目录移入 `openspec/changes/archive/YYYY-MM-DD-generalize-bridge-protocol/`（2026-10-27 移入 `archive/2026-10-27-generalize-bridge-protocol/`）
