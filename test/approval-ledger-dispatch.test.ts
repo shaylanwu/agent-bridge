@@ -264,3 +264,58 @@ describe('持久授权：命中链路', () => {
     expect(hit).toBeUndefined();
   });
 });
+
+describe('持久授权：没有资源就不授权（fail closed）', () => {
+  it('toolCall 无位置/命令/URL 时不写库', () => {
+    const { store, o, dir } = setup();
+    store.requestInteraction({
+      sessionId: TASK,
+      requestId: 'ir_no_resource',
+      kind: 'permission',
+      payload: { toolCall: { kind: 'other' }, options: OPTIONS },
+    });
+    dispatchInteractionResponse(
+      {
+        type: 'task_interaction_response',
+        taskId: TASK,
+        requestId: 'ir_no_resource',
+        responseId: 'rs_nr',
+        state: 'accepted',
+        payload: { optionId: 'always' },
+      },
+      o,
+    );
+    expect(store.listApprovals('default')).toHaveLength(0);
+    void dir;
+  });
+
+  it('即使表里有同工具记录，无资源请求也不自动批准', () => {
+    const { store, o, dir } = setup();
+    answer(o, 'always');
+    // 手工塞一条「空资源」记录，模拟历史数据/异常路径留下的脏记录
+    store.addApproval({
+      tenantId: 'default',
+      approvalId: 'ap_dirty',
+      principalId: 'local',
+      agentType: 'codebuddy-cli',
+      tool: 'other',
+      action: 'permission',
+      resource: '-',
+      scope: 'allow_always',
+      fingerprint: '0'.repeat(32),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const hit = resolveApproval(
+      o,
+      {
+        agentType: 'codebuddy-cli',
+        cwd: dir,
+        permissionMode: 'default',
+        toolCall: { kind: 'other' },
+        options: OPTIONS,
+      },
+      TASK,
+    );
+    expect(hit).toBeUndefined();
+  });
+});

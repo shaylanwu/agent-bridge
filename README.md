@@ -255,7 +255,9 @@ the answer still applies to the current session, it is just not remembered (audi
 with `outcome=denied`). Later requests are auto-approved **only** when all three hold: the mode is
 `default`, the request really offers a persistent allow option, and the fingerprint (agent + tool kind +
 normalized resource) matches an unexpired record. `full` mode never uses the ledger, and model text or tool
-titles never create or widen an approval. Inspect and revoke with `agent-bridge approvals list` /
+titles never create or widen an approval. A request with no normalizable resource (no location, command or
+URL in its `toolCall`) is **never** auto-approved and never written to the ledger — otherwise one approval
+would silently cover every unnamed call of that tool. Inspect and revoke with `agent-bridge approvals list` /
 `agent-bridge approvals revoke <approvalId>` (audited as `approval_hit` / `approval_revoke`).
 
 ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and

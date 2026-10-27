@@ -890,6 +890,21 @@ function persistApproval(
   }
 
   const target = permissionTarget(requestPayload['toolCall'], session?.cwd);
+  // 同上：没有资源就不落库。写一条「通用授权」等于给该工具开永久后门。
+  if (target.resourceKey === '-') {
+    writeAudit({
+      at,
+      action: 'approval_grant',
+      outcome: 'denied',
+      taskId: msg.taskId,
+      agent: agentType,
+      cwd: session?.cwd,
+      requestedBy: msg.respondedBy,
+      reason: 'no_resource_to_bind',
+    });
+    o.log('warn', '[ledger] 该请求没有可绑定的资源，不写入持久授权（仅在当前会话有效）');
+    return;
+  }
   const fingerprint = approvalFingerprint({ agentType, tool: target.tool, resourceKey: target.resourceKey });
   const approvalId = `ap_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
   try {
@@ -954,6 +969,12 @@ export function resolveApproval(
   // 账本未开启时既没有记录也不该查（等价于从未授过权）
   if (ledger?.enabled !== true) return undefined;
   const target = permissionTarget(input.toolCall, input.cwd);
+  // 没有可归一化的资源时一律不自动批准：否则所有「无资源」请求会共享同一个指纹，
+  // 等于批准一次就永久放开该工具的全部调用 —— 这比不给账本更危险。
+  if (target.resourceKey === '-') {
+    o.log('info', '[ledger] 请求没有可归一化的资源，不自动批准（继续询问）');
+    return undefined;
+  }
   const fingerprint = approvalFingerprint({
     agentType: input.agentType,
     tool: target.tool,

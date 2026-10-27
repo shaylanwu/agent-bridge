@@ -227,8 +227,10 @@ approval_ttl_ms = 604800000       # 7 天（夹 1 分钟 ~ 90 天）
 但**响应方还必须在 `task:approve` 之外持有 `approval:persist`**；不满足时该回答只对当前会话有效、
 不被记住（审计记 `approval_grant` + `outcome=denied`）。后续自动批准必须**同时**满足：模式是 `default`、
 请求本身真的提供了持久允许选项、指纹（agent + 工具类别 + 归一化资源）命中未过期记录。
-`full` 模式永不用账本，模型文本与工具标题也不会创建或扩大授权。查看与撤销：
-`agent-bridge approvals list` / `agent-bridge approvals revoke <approvalId>`（审计记 `approval_hit` / `approval_revoke`）。
+`full` 模式永不用账本，模型文本与工具标题也不会创建或扩大授权。**没有可归一化资源的请求**（`toolCall`
+里既无路径、也无命令/URL）一律不自动批准、也不写入账本 —— 否则一条授权会静默覆盖该工具所有无名调用。
+查看与撤销：`agent-bridge approvals list` / `agent-bridge approvals revoke <approvalId>`
+（审计记 `approval_hit` / `approval_revoke`）。
 
 ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
 `trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
