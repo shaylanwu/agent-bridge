@@ -139,6 +139,8 @@
        v1.0.1 终态由 status.state 表达并关闭流，不添加 final 字段
 - [ ] 6.5 编写 ACP/MCP 映射：ACP 显式 form、MCP 版本承载差异隔离、权限使用 agent-bridge 命名空间
 - [ ] 6.6 两份 README、站点协议/CLI/集成文档、错误码、配置、12 工具矩阵和安全边界同批更新
+  - 已完成：两份 README 的「逐工具能力矩阵」（full argv / 执行模式 / 续会话）+ `capability` 为 0.x 遗留标签的口径
+  - 待办：站点协议页与 CLI 页的同一份矩阵、`executionModes` 字段说明（两份 README 仍无该字段段落）
 - [ ] 6.7 文档示例使用通用路径/ID/token/URL，不引用开发机配置，不宣称未实现能力
 - [ ] 6.8 编写 task_message/task_artifact/task_snapshot 到 A2A Message/Artifact/tasks-get 的映射；delta 与 raw log 不冒充标准消息
 

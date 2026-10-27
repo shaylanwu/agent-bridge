@@ -192,6 +192,33 @@ verified full mapping, or CodeBuddy runs without `external_sandbox = true`, the 
 `permission_mode_unsupported` rather than silently downgraded to `default`. Startup flags
 `--permission-policy=` / `--external-sandbox` override the config file for one session.
 
+### Per-agent capability matrix
+
+`agent_list` describes every tool honestly — an omitted capability means **not verified**, never "assume it works":
+
+| agentType | full argv (appended to the task template) | modes | continuation |
+| --- | --- | --- | --- |
+| `claude-code` | `--dangerously-skip-permissions` | headless | native `--resume` |
+| `codebuddy-cli` | `-y` (+ fixed `CODEBUDDY_IS_SANDBOX=1`, needs `external_sandbox = true`) | headless, ACP | native `--resume` |
+| `codex` | `--dangerously-bypass-approvals-and-sandbox` | headless | app-server thread |
+| `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless | native `--session-id` |
+| `gemini` | `--yolo` | headless, ACP | ACP session |
+| `opencode` | `--auto` | headless, ACP | ACP session |
+| `mimo-code` | `--dangerously-skip-permissions` | headless, ACP | ACP session |
+| `qoder-cli` | `--dangerously-skip-permissions` | headless | native `--resume` |
+| `grok-cli` | `--always-approve` | headless, ACP | ACP session |
+| `kimi-code` | *(none — `-p` already runs auto)* | headless, ACP | ACP session |
+| `minimax-code` | `--permission full` | headless, ACP | ACP session |
+| `trae-cli` | `--yolo` | headless, ACP | ACP session |
+
+ACP mode is always `default` (it uses native permission prompts instead of a bypass flag), so a `full` request
+is either served by headless or rejected — never silently downgraded. A later `send_message` turn resumes
+through the channel above; only a tool with no continuation channel replays the canonical transcript.
+
+`AgentListItem.capability` (`non_interactive` / `interactive_only`) is a 0.x display label kept for old
+platforms — most `interactive_only` entries do run headless here. **Treat `executionModes` as
+authoritative** and use `capability` only for copy.
+
 **Interactions (permission prompts / forms / auth URLs) are off by default.** While off, the bridge never
 sends a `task_interaction_request`; upstream sees no answer and settles the request as declined/cancelled —
 which beats making the platform wait for a question that will never arrive:

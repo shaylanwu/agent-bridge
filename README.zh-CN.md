@@ -168,6 +168,33 @@ external_sandbox = false        # 仅 CodeBuddy 的 full 需要
 请求会被 `permission_mode_unsupported` 拒绝，**不会**偷偷降级成 default 继续跑。
 启动参数 `--permission-policy=` / `--external-sandbox` 可临时覆盖配置。
 
+### 逐工具能力矩阵
+
+`agent_list` 如实标注每项能力 —— **省略即「未验证」，不是「假定能跑」**：
+
+| agentType | full 追加参数（接在任务模板后） | 执行模式 | 续会话 |
+| --- | --- | --- | --- |
+| `claude-code` | `--dangerously-skip-permissions` | headless | 原生 `--resume` |
+| `codebuddy-cli` | `-y`（+ 固定 `CODEBUDDY_IS_SANDBOX=1`，需 `external_sandbox = true`） | headless、ACP | 原生 `--resume` |
+| `codex` | `--dangerously-bypass-approvals-and-sandbox` | headless | app-server 线程 |
+| `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless | 原生 `--session-id` |
+| `gemini` | `--yolo` | headless、ACP | ACP 会话 |
+| `opencode` | `--auto` | headless、ACP | ACP 会话 |
+| `mimo-code` | `--dangerously-skip-permissions` | headless、ACP | ACP 会话 |
+| `qoder-cli` | `--dangerously-skip-permissions` | headless | 原生 `--resume` |
+| `grok-cli` | `--always-approve` | headless、ACP | ACP 会话 |
+| `kimi-code` | *（不追加 —— `-p` 已是 auto）* | headless、ACP | ACP 会话 |
+| `minimax-code` | `--permission full` | headless、ACP | ACP 会话 |
+| `trae-cli` | `--yolo` | headless、ACP | ACP 会话 |
+
+ACP 模式恒为 `default`（走原生权限确认，不用绕过参数），所以 `full` 请求要么走 headless、要么被拒绝，
+不会悄悄降级。后续 `send_message` 回合按上表的通道续会话；只有完全没有续会话通道的工具才会重放
+canonical transcript。
+
+`AgentListItem.capability`（`non_interactive` / `interactive_only`）是留给旧平台的 0.x 展示标签 ——
+标成 `interactive_only` 的多数工具在这里其实能跑 headless。**能力以 `executionModes` 为准**，
+`capability` 只用于文案。
+
 **交互（权限确认 / 表单 / 授权 URL）默认关闭**：关着时 bridge 不会向平台发任何
 `task_interaction_request`，上游拿不到回答会自行按拒绝或取消处理 —— 这比让平台干等一个永远不会来的问题要好：
 
