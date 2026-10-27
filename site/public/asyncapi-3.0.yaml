@@ -12,10 +12,11 @@ info:
     退避：断线后 1s→2s→…→30s 指数退避重连；`4401` / `4403` 表示凭据被吊销，**不再重连**。
     补发：断线期间的上行报文进有界缓冲（日志 256KB，控制类 200 条），重连后按序补发。
 
-    版本规则：**新增可选字段 = 协议版本不变**（当前 PROTOCOL_VERSION = 2）；
+    版本规则：**新增可选字段/新增能力字符串 = 协议版本不变**（当前 PROTOCOL_VERSION = 1，
+    由 `contracts:check` 与 `src/protocol.ts` 对表，改一边不改另一边会让门禁红）；
     语义变更或新增必填字段 = 版本 +1。能力差异一律通过 `hello.capabilities` 协商，
-    而不是猜 CLI 版本号。v2 要求 WS URL query 与 `hello.deviceId` 使用同一个合法、
-    非空的本地稳定身份；不再允许空 ID 或仅凭 Bearer 反查设备身份。
+    而不是猜 CLI 版本号。1.0 要求 WS URL query 与 `hello.deviceId` 使用同一个合法、
+    非空的本地稳定身份；不允许空 ID 或仅凭 Bearer 反查设备身份。
   license:
     name: MIT
     identifier: MIT
@@ -39,7 +40,7 @@ channels:
           required: [type, protocolVersion, deviceId, cliVersion, platform, hostname]
           properties:
             type: { type: string, const: hello }
-            protocolVersion: { type: integer, const: 2 }
+            protocolVersion: { type: integer, const: 1 }
             deviceId:
               type: string
               minLength: 1
@@ -53,7 +54,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url / permission-mode / artifact-inline / approval-ledger。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / session-feed / task-interaction / elicitation-form / artifact-upload / artifact-download / interaction-url / permission-mode / artifact-inline / approval-ledger。
               items: { type: string }
             capacity:
               type: object
@@ -263,6 +264,34 @@ channels:
                   createdAt: { type: string, format: date-time }
             oldestEventSeq: { type: integer }
             latestEventSeq: { type: integer }
+            hasMoreBefore:
+              type: boolean
+              description: 窗口起点之前还有内容（尾部窗口在长会话上为 true，回翻控制器据此继续往前取）。
+            prunedThrough:
+              type: integer
+              minimum: 0
+              description: 历史裁剪水位；未裁剪的会话不带此字段。请求游标小于它时 errorCode=session_history_pruned。
+            partialMessages:
+              type: array
+              description: >-
+                本回合已吐出但还没定稿的助手文本（只在内存里、不落库）；中途重连时用来避免空白。
+                终态之后为空数组或缺失 —— 那时该读 events 里的 complete。没有流式文本通道的适配器
+                （headless）此处为空，属如实缺省。
+              items:
+                type: object
+                required: [messageId, role, text, updatedAt]
+                properties:
+                  messageId:
+                    type: string
+                    description: >-
+                      形如 pm_<taskId>。刻意区别于落库消息的 msg_* 幂等键：半截文本会被 complete 顶替，
+                      不要拿它做去重或与 MsgId 对等。
+                  role: { type: string, enum: [user, agent, system] }
+                  text: { type: string }
+                  updatedAt: { type: string, format: date-time }
+                  truncated:
+                    type: boolean
+                    description: 已达上限（32 KiB），后续增量不再累积。
             eventWindow:
               type: object
               description: 事件窗口完整性；gaps 为空数组表示序号连续。
@@ -532,7 +561,9 @@ channels:
       get_task:
         name: get_task
         title: 补取任务历史
-        description: 按 afterEventSeq 返回有界窗口；终态后仍可调用，需 task:read scope。
+        description: >-
+          补取任务历史。不给游标回尾部窗口（最新 limit 条）；afterEventSeq 升序补洞；
+          beforeEventSeq 回翻（严格小于游标的最新 limit 条，输出仍升序）；两者互斥。终态后仍可调用，需 session:read。
         payload:
           type: object
           required: [type, taskId]
@@ -541,6 +572,10 @@ channels:
             taskId: { type: string }
             requestId: { type: string, description: 会原样带回 task_snapshot }
             afterEventSeq: { type: integer, minimum: 0 }
+            beforeEventSeq:
+              type: integer
+              minimum: 0
+              description: 与 afterEventSeq 互斥；同时出现回 protocol_incompatible。
             limit: { type: integer, minimum: 1, maximum: 1000 }
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64 }
@@ -803,10 +838,11 @@ components:
           description: |
             按执行模式列出的能力（缺省 = 只有 headless 且等于 legacy capability）。
             新平台以它为准：某模式的 permissionModes 不含 full，就别请求 full（bridge 会在 spawn 前拒绝）；
-            interactionKinds 为空表示该模式不能回问。
+            interactionKinds 为空表示该模式不能回问；continuation 说明后续回合怎么接回本会话，
+            single-turn 的工具开 conversation 会在创建时回 session_not_continuable。
           items:
             type: object
-            required: [mode, permissionModes, interactionKinds, feedKinds]
+            required: [mode, permissionModes, interactionKinds, feedKinds, continuation]
             properties:
               mode: { type: string, enum: [headless, acp-stdio] }
               permissionModes:
@@ -818,6 +854,14 @@ components:
               feedKinds:
                 type: array
                 items: { type: string, enum: [messages, steps, artifacts] }
+              continuation:
+                type: string
+                enum: [native-session, resume-session, replay-session, single-turn]
+                description: |
+                  native-session = 会话由 agent 持有，bridge 只回传 ID（ACP session/load|resume、app-server thread/resume）；
+                  resume-session = 靠 CLI 续接参数接上同一个原生会话；
+                  replay-session = 新进程 + 完整持久 transcript 当 prompt（12/12 的底线）；
+                  single-turn = CLI 不接受后续 prompt，不能开 conversation。
     ErrorCode:
       type: string
       description: 受控错误码（与 src/core/errors.ts 的 BRIDGE_ERROR_CODES 同源）
@@ -840,3 +884,8 @@ components:
         - tenant_not_supported
         - permission_mode_unsupported
         - permission_policy_denied
+        - session_deleted
+        - session_history_pruned
+        - task_not_found
+        - artifact_not_found
+        - session_not_continuable

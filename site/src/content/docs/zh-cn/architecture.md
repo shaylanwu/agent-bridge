@@ -57,13 +57,13 @@ cli.ts                    入口：argv → dispatch()
 - 取消是 SIGTERM，2 秒后 SIGKILL；
 - 长时间无动静的任务由看门狗置为 `lost` —— 这个值属于平台侧账本，不在 wire 上。
 
-## 稳定身份与协议 v2
+## 稳定身份与协议 1.0
 
 `infra/device-identity-store.ts` 在交互授权前持久化 `identity.toml`；`config.toml` 只保存同值兼容镜像、
 凭证与设置。所配置 `config.toml` 的父目录就是 profile。profile 锁串行保护身份迁移、授权、凭证写入
 和 logout，但不会延伸到 WebSocket 生命周期。
 
-授权请求、WS URL query 与 `hello.deviceId` 都使用这一个本地 ID。协议 v2 要求它非空且合法；
+授权请求、WS URL query 与 `hello.deviceId` 都使用这一个本地 ID。协议 1.0 要求它非空且合法；
 预签发 token 没有已持久化、可迁移或显式 ID 时直接失败，不创建身份。logout 清凭证但保留身份与设置。
 
 ## 契约即真源

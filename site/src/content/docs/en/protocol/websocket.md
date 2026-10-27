@@ -33,7 +33,7 @@ As soon as the socket opens, the device sends `hello`:
 }
 ```
 
-Protocol v2 requires a non-empty `deviceId` matching `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`; it is
+Protocol 1.0 requires a non-empty `deviceId` matching `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`; it is
 the locally persisted identity, not a value derived from the Bearer token. Reject a missing, malformed,
 or URL/hello-mismatched ID. If your platform speaks a different `protocolVersion`, close with
 `protocol_incompatible` — do not proceed and hope.

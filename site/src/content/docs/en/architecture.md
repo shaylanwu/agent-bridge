@@ -63,14 +63,14 @@ extension, not a second front door: tasks it creates still flow through the shar
 - Cancellation is SIGTERM, then SIGKILL after 2 s.
 - A watchdog marks long-silent tasks `lost`; that state exists for platforms, not on the wire.
 
-## Stable identity and protocol v2
+## Stable identity and protocol 1.0
 
 `infra/device-identity-store.ts` persists `identity.toml` before interactive authorization; `config.toml`
 keeps only a same-value compatibility mirror plus credentials and settings. The parent of the configured
 `config.toml` is the profile. A profile lock serializes identity migration, authorization, credential
 writes, and logout without being held for the WebSocket lifetime.
 
-Authorization requests, the WS URL query, and `hello.deviceId` all use this one local ID. Protocol v2
+Authorization requests, the WS URL query, and `hello.deviceId` all use this one local ID. Protocol 1.0
 requires it to be non-empty and valid; a pre-issued token without a persisted, migratable, or explicit ID
 fails instead of creating an identity. Logout removes credentials but keeps identity and settings.
 

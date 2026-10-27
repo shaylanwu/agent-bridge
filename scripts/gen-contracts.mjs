@@ -69,10 +69,43 @@ for (const p of PLATFORM_ENDPOINTS) {
   if (!openapi.includes(`${p}:`)) problems.push(`openapi 未记载平台端点：${p}`);
 }
 
+/**
+ * 协议版本：`hello.protocolVersion` 的 const 必须等于 `PROTOCOL_VERSION`。
+ *
+ * 这是最容易漂的一处 —— v2 方案作废后代码回到 1.0，契约里却留着 `const: 2`，
+ * 而原来的检查只比对消息名/能力/错误码，字段常量根本没人管。平台如果按契约写成
+ * 「protocolVersion === 2 才受理」，会把每一台真实设备都判成版本不兼容。
+ */
+const codeVersion = /PROTOCOL_VERSION\s*=\s*(\d+)/.exec(protocol);
+const contractVersion = /protocolVersion:\s*\{[^}]*const:\s*(\d+)[^}]*\}/.exec(asyncapi);
+if (!codeVersion) problems.push('protocol.ts 解析不出 PROTOCOL_VERSION');
+if (!contractVersion) problems.push('asyncapi 解析不出 hello.protocolVersion 的 const');
+if (codeVersion && contractVersion && codeVersion[1] !== contractVersion[1]) {
+  problems.push(
+    `asyncapi 的 hello.protocolVersion.const=${contractVersion[1]} 与 PROTOCOL_VERSION=${codeVersion[1]} 不一致`,
+  );
+}
+
+/**
+ * 站点总览页的两张表是**手工维护**的（能力表、受控错误码表），最容易只加代码不加文档：
+ * 实测漏过 6 个错误码、13 个能力。这里做存在性检查 —— 不校验措辞，只保证「代码里有的，
+ * 两个语种的页面都提到了」，漏项会当场变红。
+ */
+for (const locale of ['en', 'zh-cn']) {
+  const page = read(`/site/src/content/docs/${locale}/protocol/overview.md`);
+  for (const capability of capabilities) {
+    if (!page.includes(`\`${capability}\``)) problems.push(`site/${locale} 总览页缺少能力：${capability}`);
+  }
+  for (const code of errorCodes) {
+    if (!page.includes(`\`${code}\``)) problems.push(`site/${locale} 总览页缺少错误码：${code}`);
+  }
+}
+
 notes.push(`wire 消息 ${wireTypes.length} 个：${wireTypes.join(', ')}`);
 notes.push(`capabilities ${capabilities.length} 个：${capabilities.join(', ')}`);
 notes.push(`受控错误码 ${errorCodes.length} 个：${errorCodes.join(', ')}`);
 notes.push(`平台端点 ${PLATFORM_ENDPOINTS.length} 个`);
+notes.push(`协议版本 ${codeVersion ? codeVersion[1] : '?'}`);
 
 // ---------- 输出 ----------
 for (const n of notes) console.log(`  ℹ️  ${n}`);

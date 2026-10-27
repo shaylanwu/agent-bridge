@@ -30,7 +30,7 @@ socket 一打开，设备立即发 `hello`：
 }
 ```
 
-协议 v2 要求非空 `deviceId` 匹配 `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`；它是本地持久化身份，
+协议 1.0 要求非空 `deviceId` 匹配 `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`；它是本地持久化身份，
 不是从 Bearer 令牌推导的值。缺失、非法或 URL/hello 不一致的 ID 都应拒绝。若平台使用另一个
 `protocolVersion`，请以 `protocol_incompatible` 关闭连接 —— 不要硬着头皮继续。
 

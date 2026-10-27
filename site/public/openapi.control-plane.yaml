@@ -42,8 +42,19 @@ paths:
     get:
       tags: [device]
       summary: Liveness / readiness / version
-      description: The only route that needs no token — safe for container and CI probes.
+      description: |
+        The only route that needs no token — safe for container and CI probes.
+        The state DB runs `PRAGMA quick_check` on open and refuses to start when it fails
+        (a corrupt file that still opens would otherwise fail mid-task). Pass
+        `?integrity=quick` to re-run that check now; it reads the whole DB, so it stays off
+        the default probe path.
       security: []
+      parameters:
+        - name: integrity
+          in: query
+          required: false
+          schema: { type: string, enum: [quick] }
+          description: Re-run the state-DB integrity check and include `db` in the response.
       responses:
         '200':
           description: OK
@@ -55,6 +66,13 @@ paths:
                   status: { type: string, const: ok }
                   version: { type: string }
                   ready: { type: boolean }
+                  db:
+                    type: object
+                    description: Present only when `?integrity=quick` was requested.
+                    properties:
+                      ok: { type: boolean }
+                      detail: { type: string, description: First few problems reported by quick_check }
+                    required: [ok]
                   controlPlane:
                     type: object
                     properties:
@@ -306,6 +324,124 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/interactions:
+    get:
+      tags: [interactions]
+      summary: 交互列表（有界，按 created_at 倒序；`state=pending` 最常用）
+      description: |
+        只读。需要 `session:read`，1.0 之前签发的 `task:read` 仍被接受（窄 scope 优先）。
+        Form 的答案从不在此返回（只存字段名），auth-url 的完整 URL 只在进程内 vault 里。
+      parameters:
+        - name: taskId
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, accepted, declined, cancelled, expired, failed]
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [interactions]
+                properties:
+                  interactions:
+                    type: array
+                    items: { $ref: '#/components/schemas/InteractionSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/interactions/{requestId}:
+    get:
+      tags: [interactions]
+      summary: 单条交互快照（pending 请求 + 已结算结果）
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [interaction]
+                properties:
+                  interaction: { $ref: '#/components/schemas/InteractionSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/interactions/{requestId}:respond:
+    post:
+      tags: [interactions]
+      summary: 响应一条交互（HTTP 通道，与 WS 共用同一套判定）
+      description: |
+        permission 交互需要 `task:approve`；form / auth-url 需要 `task:respond`。
+        同 `responseId` 重放是幂等的（回既有终态）；换 `responseId` 再答已结算的请求回 409。
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  enum: [accepted, declined, cancelled]
+                responseId:
+                  type: string
+                  description: 幂等键；缺省由服务端生成
+                payload:
+                  type: object
+                  description: permission 传 optionId；form 传 content（按 requestedSchema 校验）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskId, requestId, state]
+                properties:
+                  taskId: { type: string }
+                  requestId: { type: string }
+                  state: { type: string, enum: [accepted, declined, cancelled] }
+                  responseId: { type: string }
+                  resultSeq: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 已结算（responseId 与既有不同）
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '410':
+          description: 交互已过期
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '501':
+          description: 该进程未启用交互响应通道（只读模式）
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /v1/tasks:
     get:
       tags: [tasks]
@@ -532,6 +668,25 @@ components:
           type: string
           description: Same controlled enum as the wire protocol (src/core/errors.ts)
       required: [type, title, status, code]
+    InteractionSummary:
+      type: object
+      properties:
+        taskId: { type: string }
+        requestId: { type: string }
+        kind: { type: string, enum: [permission, form, auth-url] }
+        state: { type: string, enum: [pending, accepted, declined, cancelled, expired, failed] }
+        payload:
+          type: object
+          description: permission 为 toolCall/options；form 为 message/requestedSchema（永不含答案）
+        turnId: { type: string }
+        expiresAt: { type: string, format: date-time }
+        responseId: { type: string }
+        resultSeq: { type: integer }
+        resultPayload:
+          type: object
+          description: 已结算结果；Form 只保留 action 与字段名
+        createdAt: { type: string, format: date-time }
+      required: [taskId, requestId, kind, state, createdAt]
     SessionSummary:
       type: object
       properties:
@@ -575,17 +730,72 @@ components:
           items: { type: object, additionalProperties: true }
         oldestEventSeq: { type: integer }
         latestEventSeq: { type: integer }
+        hasMoreBefore:
+          type: boolean
+          description: 窗口起点之前还有内容（与 WS 的 task_snapshot 同义）
+        prunedThrough:
+          type: integer
+          description: 历史裁剪水位；未裁剪的会话不带该字段
+        partialMessages:
+          type: array
+          description: >-
+            本回合已吐出但未定稿的助手文本（内存态，不落库）；终态后为空或缺失。
+            仅当控制面注入了半截消息读取时出现，与 WS 的 task_snapshot.partialMessages 同源。
+          items: { $ref: '#/components/schemas/PartialMessage' }
       required: [session, turns, events, interactions, artifacts]
+    PartialMessage:
+      type: object
+      properties:
+        messageId: { type: string, description: '形如 pm_<taskId>，不是 msg_* 幂等键' }
+        role: { type: string, enum: [user, agent, system] }
+        text: { type: string }
+        updatedAt: { type: string, format: date-time }
+        truncated: { type: boolean, description: 已达 32 KiB 上限，后续增量不再累积 }
+      required: [messageId, role, text, updatedAt]
     AgentListItem:
       type: object
+      description: |
+        与 WS `agent_list` 的 AgentListItem 同一份对象（控制面不自造精简视图，否则字段一多就会漂移）。
+      required: [kind, display, status, capability]
       properties:
         kind: { type: string }
         display: { type: string }
         status: { type: string, enum: [ready, installed_no_cred, not_installed] }
         version: { type: [string, 'null'] }
         path: { type: [string, 'null'] }
+        credentialSource:
+          type: string
+          description: 凭据来源（`env:NAME` / `file:~/.codex/auth.json` / `platform`），不含密钥
+        capability:
+          type: string
+          enum: [non_interactive, interactive_only]
+          description: 0.x 展示标签，仅为旧平台保留；能力以 `executionModes` 为准
         installedButBroken: { type: boolean }
+        logo: { type: string, description: 品牌图标 data URI（24×24 单色），按 kind 缓存 }
         steps: { type: boolean, description: 是否支持 task_step 步骤流 }
+        executionModes:
+          type: array
+          description: |
+            按执行模式列出的能力。每项含 `continuation`（native-session / resume-session /
+            replay-session / single-turn），说明后续回合怎么接回本会话；
+            `single-turn` 的工具无法创建 conversation（创建时回 session_not_continuable）。
+          items:
+            type: object
+            required: [mode, permissionModes, interactionKinds, feedKinds, continuation]
+            properties:
+              mode: { type: string, enum: [headless, acp-stdio] }
+              permissionModes:
+                type: array
+                items: { type: string, enum: [default, full] }
+              interactionKinds:
+                type: array
+                items: { type: string, enum: [permission, form, auth-url] }
+              feedKinds:
+                type: array
+                items: { type: string, enum: [messages, steps, artifacts] }
+              continuation:
+                type: string
+                enum: [native-session, resume-session, replay-session, single-turn]
     CreateTask:
       type: object
       properties:

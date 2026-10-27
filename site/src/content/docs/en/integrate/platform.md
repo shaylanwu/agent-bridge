@@ -48,21 +48,39 @@ live on the [interactive page](/agent-bridge/en/api/index).
 
 ## 2. The task channel (WebSocket)
 
-Accept from the device: `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`,
-`task_status`, `capacity_update`, `pong`.
-Send to the device: `run_task`, `cancel_task`, `scan`, `ping`.
+**Accept from the device** (24 messages, `ClientMessage` in `src/protocol.ts`):
+
+- handshake and inventory: `hello`, `agent_list`, `scan_progress`, `scan_result`, `capacity_update`, `pong`
+- tasks and events: `task_status`, `task_log`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`
+- sessions: `message_ack`, `session_ack`
+- interactions: `task_interaction_request`, `task_interaction_result`, `interaction_url`
+- artifacts: `artifact_content`, `artifact_upload_ready` / `_chunk_ack` / `_result`,
+  `artifact_download_ready` / `_chunk` / `_result`
+
+**Send to the device** (16 messages, `ServerMessage`): `run_task`, `cancel_task`, `cancel_turn`,
+`close_session`, `send_message`, `get_task`, `scan`, `ping`, `get_artifact`, `get_interaction_url`,
+`task_interaction_response`, `artifact_upload_start` / `_chunk` / `_complete`,
+`artifact_download_start` / `_chunk_ack`.
 
 Field-level reference: [Protocol messages](/agent-bridge/en/protocol/messages).
 
 Rules that bite in production:
 
-- **Require protocol v1 identity.** `hello.protocolVersion` is `1`; its non-empty `deviceId` matches
+- **Require protocol 1.0 identity.** `hello.protocolVersion` is `1`; its non-empty `deviceId` matches
   `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$` and must equal the WS URL query. There is no empty-ID/Bearer
   reverse-lookup fallback.
 - **Degrade on `capabilities`, not on version numbers.** If `diff` is absent, never ask for it and
   never render a diff pane.
-- **Branch on `errorCode`, never on prose.** See the 15 codes in
+- **Branch on `errorCode`, never on prose.** See the 23 codes in
   [Protocol overview](/agent-bridge/en/protocol/overview#controlled-error-codes).
+- **Check `executionModes[].continuation` before going multi-turn.** `sessionMode: "conversation"` only
+  holds for a tool where at least one mode can continue; a `single-turn` tool answers
+  `session_not_continuable` at *creation*. Do not assume success first and find out later.
+- **Half-finished assistant text lives in `task_snapshot.partialMessages`.** It never reaches the wire as
+  a `delta` frame (that enum value is reserved); the snapshot carries it as `pm_<taskId>`, memory-only,
+  never persisted.
+- **Fill gaps with cursors, not by replaying.** `get_task?afterEventSeq=` returns events strictly after
+  the cursor in ascending order; `beforeEventSeq=` pages backwards. Asking for both is rejected.
 - **Treat `status: "running"` as "not finished".** Queued tasks look the same but carry
   `phase: "queued"` and `queuePosition`.
 - **Heartbeat every 15 s** from the platform is optional, but you should mark a device offline if
@@ -95,9 +113,10 @@ act for this user?); the bridge authenticates (is this token real, in scope, un-
 
 - [ ] PKCE S256 verified; stable request ID rebound idempotently; response `device_id` checked; only token hashes stored
 - [ ] Public `code` returned for `invalid_device_id`, both 409 conflicts, credential failures, and `authorization_pending`
-- [ ] `hello` v2 and URL/hello ID equality checked; unknown capabilities degraded gracefully
+- [ ] `hello.protocolVersion` is `1` and URL/hello ID equality checked; unknown capabilities degraded gracefully
 - [ ] Terminal `task_status` handled idempotently (it can arrive twice after a reconnect)
-- [ ] All 15 error codes mapped to something a human can act on
+- [ ] All 23 error codes mapped to something a human can act on
 - [ ] Queued tasks rendered via `phase`, not by inventing a status
+- [ ] `executionModes[].continuation` checked before opening a conversation, `session_not_continuable` handled
 - [ ] Watchdog settles tasks that went silent
-- [ ] Log gaps after a reconnect are surfaced, not hidden
+- [ ] Gaps after a reconnect filled with `get_task?afterEventSeq`, and surfaced rather than hidden

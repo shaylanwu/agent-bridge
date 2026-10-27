@@ -12,10 +12,11 @@ info:
     退避：断线后 1s→2s→…→30s 指数退避重连；`4401` / `4403` 表示凭据被吊销，**不再重连**。
     补发：断线期间的上行报文进有界缓冲（日志 256KB，控制类 200 条），重连后按序补发。
 
-    版本规则：**新增可选字段 = 协议版本不变**（当前 PROTOCOL_VERSION = 2）；
+    版本规则：**新增可选字段/新增能力字符串 = 协议版本不变**（当前 PROTOCOL_VERSION = 1，
+    由 `contracts:check` 与 `src/protocol.ts` 对表，改一边不改另一边会让门禁红）；
     语义变更或新增必填字段 = 版本 +1。能力差异一律通过 `hello.capabilities` 协商，
-    而不是猜 CLI 版本号。v2 要求 WS URL query 与 `hello.deviceId` 使用同一个合法、
-    非空的本地稳定身份；不再允许空 ID 或仅凭 Bearer 反查设备身份。
+    而不是猜 CLI 版本号。1.0 要求 WS URL query 与 `hello.deviceId` 使用同一个合法、
+    非空的本地稳定身份；不允许空 ID 或仅凭 Bearer 反查设备身份。
   license:
     name: MIT
     identifier: MIT
@@ -39,7 +40,7 @@ channels:
           required: [type, protocolVersion, deviceId, cliVersion, platform, hostname]
           properties:
             type: { type: string, const: hello }
-            protocolVersion: { type: integer, const: 2 }
+            protocolVersion: { type: integer, const: 1 }
             deviceId:
               type: string
               minLength: 1

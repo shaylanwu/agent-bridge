@@ -46,10 +46,23 @@ numbers.**
 | `cloud-events` | Upstream messages carry a CloudEvents 1.0 envelope |
 | `capacity` | `hello.capacity` advertises the caps; `capacity_update` streams the water level |
 | `task-step` | Structured agents stream `task_step` (`steps: false` agents degrade to status only) |
+| `task-message` | Canonical `task_message` frames with `eventSeq` (complete only; `delta` is reserved and never sent) |
+| `task-snapshot` | `get_task` / `task_snapshot` rebuild state and page history by `eventSeq` (`afterEventSeq` / `beforeEventSeq`) |
+| `session-control` | `close_session` / `cancel_turn`, answered with an idempotent `session_ack` |
+| `session-multi-turn` | `send_message` / `message_ack`; a conversation waits in `waiting_user` between turns |
+| `session-feed` | `task_message` / `task_step` / `task_artifact` share one `eventSeq` across turns; `get_task` fills gaps and pages history, so `task_log` never has to be parsed |
+| `task-interaction` | Permission / form / URL requests, responses, results and expiry |
+| `elicitation-form` | Relays agent form requests (`session/request_form` and ACP `elicitation/create`) and returns the structured answer |
+| `artifact-upload` | Inbound chunked upload with SHA-256, CAS and `task_artifact` |
+| `artifact-download` | Chunked download from CAS (ready / chunk / ack / result) |
+| `interaction-url` | `get_interaction_url`; URLs live in process memory with a short TTL |
+| `permission-mode` | `run_task.permissionMode` is understood (the local `permission_policy` can still deny it) |
+| `artifact-inline` | `get_artifact` can inline content; beyond 1 MB it returns `too_large` and you switch to chunked download |
+| `approval-ledger` | An interactive `allow_always` can be remembered (default mode, fingerprint match, expiry) and revoked with `agent-bridge approvals revoke` |
 
 ## Controlled error codes
 
-15 codes, mirrored in the AsyncAPI contract. Clients branch on `code`; prose is for humans only.
+23 codes, mirrored in the AsyncAPI contract. Clients branch on `code`; prose is for humans only.
 
 | Code | HTTP (RFC 9457) | Meaning |
 | --- | --- | --- |
@@ -69,6 +82,13 @@ numbers.**
 | `token_expired` | 401 | Expired or revoked token |
 | `insufficient_scope` | 403 | Token valid, scope missing |
 | `tenant_not_supported` | 403 | Non-default tenant presented before tenant-scoped reads |
+| `permission_mode_unsupported` | 400 | This host/tool cannot serve `full` (no mapping, or `external_sandbox` unset) |
+| `permission_policy_denied` | 403 | Local policy forbids that combination (`full` under `default`, custom args in managed-arg modes) |
+| `session_deleted` | 410 | The taskId hit a tombstone; content was reclaimed by retention and the ID is never reused |
+| `session_history_pruned` | 410 | The cursor falls inside retention-trimmed history, so the full range cannot be returned |
+| `task_not_found` | 404 | The taskId never existed, or belongs to another tenant |
+| `artifact_not_found` | 404 | Unknown or evicted artifactId |
+| `session_not_continuable` | 409 | The tool has no way to continue a session (`continuation = single-turn`), so no conversation |
 
 ## Queuing semantics
 

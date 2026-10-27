@@ -39,10 +39,23 @@ sidebar:
 | `cloud-events` | 上行报文带 CloudEvents 1.0 信封 |
 | `capacity` | `hello.capacity` 上报额度上限，调度变化时推 `capacity_update` |
 | `task-step` | 结构化工具实时回传 `task_step` 步骤流（`steps: false` 的工具降级为仅状态） |
+| `task-message` | 上行 canonical `task_message` 帧，带 `eventSeq`（只发 `complete`；`delta` 是保留位，bridge 不推） |
+| `task-snapshot` | 支持 `get_task` / `task_snapshot` 按 `eventSeq` 重建与回翻（`afterEventSeq` / `beforeEventSeq`） |
+| `session-control` | 支持 `close_session` / `cancel_turn`，回幂等 `session_ack` |
+| `session-multi-turn` | 支持 `send_message` / `message_ack`；conversation 回合之间停在 `waiting_user` |
+| `session-feed` | `task_message` / `task_step` / `task_artifact` 跨回合共用一条 `eventSeq`；`get_task` 可补洞与回翻，不必解析 `task_log` |
+| `task-interaction` | 权限 / 表单 / URL 的请求、应答、结果与过期 |
+| `elicitation-form` | 中转 agent 的结构化表单请求（`session/request_form` 与 ACP `elicitation/create`），并把答案原路回传 |
+| `artifact-upload` | 入站分块上传：SHA-256 + CAS + `task_artifact` |
+| `artifact-download` | 从 CAS 分块下载（ready / chunk / ack / result） |
+| `interaction-url` | `get_interaction_url`；URL 只留在进程内存并带短 TTL |
+| `permission-mode` | 认得 `run_task.permissionMode`（本机 `permission_policy` 仍可拒绝） |
+| `artifact-inline` | `get_artifact` 可内联内容（超过 1 MB 回 `too_large`，改走分块下载） |
+| `approval-ledger` | 交互里的 `allow_always` 可被记住（仅 `default` 模式 + 指纹命中 + 有到期时间），并可用 `agent-bridge approvals revoke` 撤销 |
 
 ## 受控错误码
 
-15 个，与 AsyncAPI 契约镜像。客户端按 `code` 分支，文案只给人看。
+23 个，与 AsyncAPI 契约镜像。客户端按 `code` 分支，文案只给人看。
 
 | 错误码 | HTTP（RFC 9457） | 含义 |
 | --- | --- | --- |
@@ -62,6 +75,13 @@ sidebar:
 | `token_expired` | 401 | 令牌过期或已吊销 |
 | `insufficient_scope` | 403 | 令牌有效但 scope 不足 |
 | `tenant_not_supported` | 403 | 带了非默认租户，但控制面尚未租户化读取 |
+| `permission_mode_unsupported` | 400 | 本机/该工具不满足 `full` 运行条件（无映射、缺 `external_sandbox`） |
+| `permission_policy_denied` | 403 | 本机策略不允许该权限组合（`default` 策略下请求 `full`、受管参数模式带自定义 args） |
+| `session_deleted` | 410 | taskId 命中 tombstone，内容已随 retention 删除且永不复用 |
+| `session_history_pruned` | 410 | 游标落在已被裁剪的历史区间，取不回完整内容 |
+| `task_not_found` | 404 | taskId 从未存在，或不属于该租户 |
+| `artifact_not_found` | 404 | artifactId 未知或已淘汰 |
+| `session_not_continuable` | 409 | 该工具没有任何续接回合的通道（`continuation = single-turn`），不能开 conversation |
 
 ## 排队语义
 

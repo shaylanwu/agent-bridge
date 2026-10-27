@@ -42,17 +42,34 @@ sidebar:
 
 ## 2. 任务通道（WebSocket）
 
-从设备接收：`hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`capacity_update`、`pong`。
-向设备下发：`run_task`、`cancel_task`、`scan`、`ping`。
+**从设备接收**（24 条，对应 `src/protocol.ts` 的 `ClientMessage`）：
+
+- 握手与清单：`hello`、`agent_list`、`scan_progress`、`scan_result`、`capacity_update`、`pong`
+- 任务与事件：`task_status`、`task_log`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`
+- 会话：`message_ack`、`session_ack`
+- 交互：`task_interaction_request`、`task_interaction_result`、`interaction_url`
+- 产物：`artifact_content`、`artifact_upload_ready` / `_chunk_ack` / `_result`、
+  `artifact_download_ready` / `_chunk` / `_result`
+
+**向设备下发**（16 条，对应 `ServerMessage`）：`run_task`、`cancel_task`、`cancel_turn`、`close_session`、
+`send_message`、`get_task`、`scan`、`ping`、`get_artifact`、`get_interaction_url`、
+`task_interaction_response`、`artifact_upload_start` / `_chunk` / `_complete`、
+`artifact_download_start` / `_chunk_ack`。
 
 字段级参考见[协议消息](/agent-bridge/zh-cn/protocol/messages)。
 
 生产环境里真正会踩到的规则：
 
-- **校验协议 v1 身份**：`hello.protocolVersion` 为 `1`；非空 `deviceId` 匹配
+- **校验协议 1.0 身份**：`hello.protocolVersion` 为 `1`；非空 `deviceId` 匹配
   `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`，且必须等于 WS URL query。没有空 ID / Bearer 反查降级；
 - **按 `capabilities` 降级，不要按版本号猜。** 没有 `diff` 就别要 diff，也别渲染 diff 面板；
-- **按 `errorCode` 分支，不要按文案。** 见[协议总览](/agent-bridge/zh-cn/protocol/overview#受控错误码)里的 15 个码；
+- **按 `errorCode` 分支，不要按文案。** 见[协议总览](/agent-bridge/zh-cn/protocol/overview#受控错误码)里的 23 个码；
+- **多轮先看 `executionModes[].continuation`。** `sessionMode: "conversation"` 只对「至少有一种模式能续接」的工具
+  成立；`single-turn` 的工具会在**创建时**回 `session_not_continuable`，不要先按成功处理；
+- **半截文本看 `task_snapshot.partialMessages`。** 本轮未定稿的助手文本只在快照里（`pm_<taskId>`，内存态、
+  不落库）；`task_message.state` 的 `delta` 是保留位，bridge **不推 delta 帧**；
+- **重连补洞用游标，不要靠重放。** `get_task?afterEventSeq=` 取严格大于游标的事件（升序），
+  `beforeEventSeq=` 往前翻；两者同给会被拒；
 - **`status: "running"` 一律当作"没结束"。** 排队中的任务看起来一样，但会带 `phase: "queued"` 与 `queuePosition`；
 - 设备侧每 15 秒心跳；平台不需要主动 ping，但应在长时间无帧时把设备标为离线。设备会以 1s→30s 退避自行重连；
 - **`lost` 状态归平台自己。** 任务长时间没动静应由你的看门狗收尾 —— bridge 只上报它知道的，机器可能中途断电。
@@ -79,9 +96,10 @@ bridge 校验令牌，并在终态 `task_status` 回显 `requestedBy`，让你�
 
 - [ ] PKCE S256 已校验；按请求稳定 ID 幂等重绑并核对响应 `device_id`；只存令牌哈希
 - [ ] `invalid_device_id`、两类 409、凭证失败与 `authorization_pending` 均返回公开顶层 `code`
-- [ ] `hello` v2 与 URL/hello ID 一致性已校验；未知能力能优雅降级
+- [ ] `hello.protocolVersion` 为 `1` 且与 URL/hello 的 ID 一致；未知能力能优雅降级
 - [ ] 终态 `task_status` 幂等处理（重连后可能到两次）
-- [ ] 15 个错误码都映射成了人能行动的信息
+- [ ] 23 个错误码都映射成了人能行动的信息
 - [ ] 排队任务按 `phase` 渲染，而不是自造状态值
+- [ ] 开 conversation 前看过 `executionModes[].continuation`，并处理 `session_not_continuable`
 - [ ] 看门狗能收尾长时间无动静的任务
-- [ ] 重连后的日志缺口被显式呈现，而不是藏起来
+- [ ] 重连后用 `get_task?afterEventSeq` 补洞，缺口被显式呈现而不是藏起来
