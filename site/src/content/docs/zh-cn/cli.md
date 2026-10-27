@@ -114,6 +114,20 @@ agent-bridge approvals purge               # 清理过期记录
 归一化资源）命中未过期记录。`full` 模式永不用账本，模型文本与工具标题也不会创建或扩大授权。
 命中与撤销分别记 `approval_hit` / `approval_grant` / `approval_revoke` 审计。
 
+## sessions
+
+本地状态库里会话历史的查看与清理。`purge` 是 `session_deleted`（410）这个错误码的**唯一产生点** ——
+`close_session` 只写 tombstone 并保留历史（关了不等于没了），只有整会话删除后平台才会收到 410。
+
+```bash
+agent-bridge sessions list                        # 会话 + 事件区间 + 最后更新时间
+agent-bridge sessions purge --session=<taskId>    # 删一个会话
+agent-bridge sessions purge --older-than=<天>      # 删一批（按最后更新时间）
+```
+
+只删已终结的会话，`running` 的会被跳过（删掉等于让平台永远等不到终态）。tombstone 保留，
+该 taskId 永不复用，平台应把 `session_deleted` 当作**放弃重试**的信号，而不是 `task_not_found`。
+
 ## daemon
 
 ```bash

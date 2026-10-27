@@ -30,6 +30,14 @@ export const BRIDGE_ERROR_CODES = [
   // —— 权限策略（1.0 Phase 2）——
   'permission_mode_unsupported', // 本机/该工具不满足 full 运行条件（无映射、缺 external_sandbox）
   'permission_policy_denied', // 本机策略不允许该权限组合（default 策略下请求 full、受管参数模式带自定义 args）
+  // —— 会话历史（1.0）——
+  // 两者都是 410 Gone：任务曾经存在，但内容已不可完整取得，重试同一个 taskId 也不会变好。
+  'session_deleted', // taskId 命中 tombstone（内容已随 retention 删除，且永不复用）
+  'session_history_pruned', // 请求的游标落在已被 retention 裁剪的历史里，无法完整 replay
+  // 这两个早就在 task_snapshot / artifact_content 上以字符串形式发出去了，
+  // 进受控表只是把它们钉住：自由串会随文案漂，平台没法稳定分支。
+  'task_not_found', // taskId 从未存在，或不属于该租户
+  'artifact_not_found', // artifactId 未知或已淘汰
 ] as const;
 
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
@@ -76,6 +84,10 @@ export const ERROR_HTTP_STATUS: Record<BridgeErrorCode, number> = {
   tenant_not_supported: 403,
   permission_mode_unsupported: 400,
   permission_policy_denied: 403,
+  session_deleted: 410,
+  session_history_pruned: 410,
+  task_not_found: 404,
+  artifact_not_found: 404,
 };
 
 /** RFC 9457 `application/problem+json` 对象 */

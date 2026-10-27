@@ -61,6 +61,8 @@ export interface BridgeConfig {
   interactionTimeoutMs?: number;
   /** 单任务交互次数上限（缺省 16） */
   maxInteractionsPerTask?: number;
+  /** 单会话事件保留上限（缺省 5000，0 = 不裁剪） */
+  eventRetentionMaxEvents?: number;
   /**
    * 是否启用持久授权账本（1.0，缺省 false）。
    * 开启后，人工选择 persistent allow（allow_always）且响应方具备 `approval:persist` 时，
@@ -216,6 +218,23 @@ export function resolveMaxInteractionsPerTask(fromConfig?: number, override?: nu
   const pick = [override, env, fromConfig].find((v) => typeof v === 'number' && Number.isFinite(v));
   if (pick === undefined) return DEFAULT_MAX_INTERACTIONS_PER_TASK;
   return Math.min(MAX_INTERACTIONS_CEILING, Math.max(1, Math.floor(pick as number)));
+}
+
+/**
+ * 单会话事件保留上限：默认 5000 条，0 = 不裁剪，夹在 0 ~ 100 万。
+ *
+ * 为什么按条数而不是按天：裁剪必须可预测、无需定时任务，也不能让"这条会话才开了 10 分钟
+ * 但 agent 刷了 2 万条日志"把 SQLite 撑爆。按条数能直接约束库大小，语义也更好解释。
+ */
+export const DEFAULT_EVENT_RETENTION_MAX_EVENTS = 5000;
+const EVENT_RETENTION_CEILING = 1_000_000;
+
+export function resolveEventRetentionMaxEvents(fromConfig?: number, override?: number): number {
+  const raw = process.env['AGENT_BRIDGE_EVENT_RETENTION_MAX_EVENTS'];
+  const env = raw === undefined || raw.trim() === '' ? undefined : Number(raw);
+  const pick = [override, env, fromConfig].find((v) => typeof v === 'number' && Number.isFinite(v));
+  if (pick === undefined) return DEFAULT_EVENT_RETENTION_MAX_EVENTS;
+  return Math.min(EVENT_RETENTION_CEILING, Math.max(0, Math.floor(pick as number)));
 }
 
 /** diff 上限：默认 256 KB，夹在 1 KB ~ 8 MB（人工审核看不了几 MB，也别让报文失控） */
@@ -381,6 +400,7 @@ function serializeConfig(cfg: BridgeConfig): string {
   if (cfg.interactionEnabled !== undefined) out['interaction_enabled'] = cfg.interactionEnabled;
   if (cfg.interactionTimeoutMs !== undefined) out['interaction_timeout_ms'] = cfg.interactionTimeoutMs;
   if (cfg.maxInteractionsPerTask !== undefined) out['max_interactions_per_task'] = cfg.maxInteractionsPerTask;
+  if (cfg.eventRetentionMaxEvents !== undefined) out['event_retention_max_events'] = cfg.eventRetentionMaxEvents;
   if (cfg.approvalLedgerEnabled !== undefined) out['approval_ledger_enabled'] = cfg.approvalLedgerEnabled;
   if (cfg.approvalTtlMs !== undefined) out['approval_ttl_ms'] = cfg.approvalTtlMs;
   if (cfg.mcp !== undefined) {
@@ -505,6 +525,12 @@ export function loadConfig(): BridgeConfig | null {
     file,
     1,
   );
+  const eventRetentionMaxEvents = optionalNumber(
+    raw['event_retention_max_events'] ?? raw['eventRetentionMaxEvents'],
+    'event_retention_max_events',
+    file,
+    0,
+  );
   const approvalLedgerEnabled = optionalBoolean(
     raw['approval_ledger_enabled'] ?? raw['approvalLedgerEnabled'],
     'approval_ledger_enabled',
@@ -609,6 +635,7 @@ export function loadConfig(): BridgeConfig | null {
     ...(interactionEnabled !== undefined ? { interactionEnabled } : {}),
     ...(interactionTimeoutMs !== undefined ? { interactionTimeoutMs } : {}),
     ...(maxInteractionsPerTask !== undefined ? { maxInteractionsPerTask } : {}),
+    ...(eventRetentionMaxEvents !== undefined ? { eventRetentionMaxEvents } : {}),
     ...(approvalLedgerEnabled !== undefined ? { approvalLedgerEnabled } : {}),
     ...(approvalTtlMs !== undefined ? { approvalTtlMs } : {}),
     ...(mcp !== undefined ? { mcp } : {}),

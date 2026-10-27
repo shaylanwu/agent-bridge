@@ -391,7 +391,8 @@ export function dispatchInteractionResponse(
   };
 }
 
-export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {  const gate = authorizeService(msg, 'get_task', msg.taskId, 'task:read', o.requireServiceToken);
+export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {
+  const gate = authorizeService(msg, 'get_task', msg.taskId, 'task:read', o.requireServiceToken);
   if (!gate.ok) {
     o.emitter.emit({
       type: 'task_snapshot',
@@ -402,16 +403,52 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
     });
     return;
   }
+  // 两个游标语义相反，同时给只能猜一个 —— 宁可明确拒绝，也不静默挑一个
+  if (msg.afterEventSeq !== undefined && msg.beforeEventSeq !== undefined) {
+    o.emitter.emit({
+      type: 'task_snapshot',
+      taskId: msg.taskId,
+      requestId: msg.requestId,
+      found: false,
+      errorCode: 'protocol_incompatible',
+    });
+    return;
+  }
+  // 会话不存在要分成两种：从没存在过 / 存在过但内容已删（tombstone）。后者永不复用该 ID，
+  // 平台据 session_deleted 就该放弃重试，而不是拿 task_not_found 反复重发。
+  if (!o.store.getSession(msg.taskId)) {
+    const tombstone = o.store.getTombstone(msg.taskId);
+    o.emitter.emit({
+      type: 'task_snapshot',
+      taskId: msg.taskId,
+      requestId: msg.requestId,
+      found: false,
+      errorCode: tombstone ? 'session_deleted' : 'task_not_found',
+    });
+    return;
+  }
   try {
     const snapshot = o.store.snapshot(msg.taskId, {
-      afterEventSeq: msg.afterEventSeq,
+      ...(msg.afterEventSeq !== undefined ? { afterEventSeq: msg.afterEventSeq } : {}),
+      ...(msg.beforeEventSeq !== undefined ? { beforeEventSeq: msg.beforeEventSeq } : {}),
       limit: msg.limit,
     });
+    const prunedThrough = snapshot.prunedThrough ?? 0;
+    // 游标落在已裁剪区间：内容确实取不回来了。found 仍为 true（任务在），
+    // errorCode 表达的是「这次补取的完整性结论」，平台据此显示"更早的历史已清理"。
+    const cursor =
+      msg.beforeEventSeq !== undefined
+        ? msg.beforeEventSeq
+        : msg.afterEventSeq !== undefined
+          ? msg.afterEventSeq
+          : undefined;
+    const pruned = cursor !== undefined && cursor < prunedThrough;
     o.emitter.emit({
       type: 'task_snapshot',
       taskId: msg.taskId,
       requestId: msg.requestId,
       found: true,
+      ...(pruned ? { errorCode: 'session_history_pruned' } : {}),
       session: snapshot.session as unknown as Record<string, unknown>,
       turns: snapshot.turns as unknown as Record<string, unknown>[],
       events: snapshot.events.map((event) => ({
@@ -422,6 +459,8 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
       })),
       oldestEventSeq: snapshot.oldestEventSeq,
       latestEventSeq: snapshot.latestEventSeq,
+      hasMoreBefore: snapshot.hasMoreBefore ?? false,
+      ...(prunedThrough > 0 ? { prunedThrough } : {}),
       // 缺口必须一起给：平台拿到连续的 [oldest, latest] 不代表中间没丢
       eventWindow: {
         oldestEventSeq: snapshot.oldestEventSeq,

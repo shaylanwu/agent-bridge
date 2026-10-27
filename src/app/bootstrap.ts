@@ -29,6 +29,7 @@ import {
   resolveInteractionEnabled,
   resolveInteractionTimeoutMs,
   resolveMaxInteractionsPerTask,
+  resolveEventRetentionMaxEvents,
   resolveApprovalLedgerEnabled,
   resolveApprovalTtlMs,
   resolveMaxQueued,
@@ -152,8 +153,15 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
   const maxInteractionsOverride = numFlagMin(flags, 'max-interactions-per-task', 1);
   const approvalLedgerOverride = boolFlag(flags, 'approval-ledger') || undefined;
   const approvalTtlOverride = numFlagMin(flags, 'approval-ttl-ms', 60_000);
+  // 事件保留：0 是合法值（= 不裁剪），所以下限用 0 而不是 1
+  const eventRetentionOverride = numFlagMin(flags, 'event-retention-max-events', 0);
 
-  const store = new SessionStore(stateDbPath());
+  const store = new SessionStore(stateDbPath(), {
+    retentionMaxEvents: resolveEventRetentionMaxEvents(
+      saved?.eventRetentionMaxEvents,
+      eventRetentionOverride,
+    ),
+  });
   const recovered = store.recoverInterrupted();
   if (recovered > 0) {
     log('info', `[agent-bridge] 已恢复 ${recovered} 个上次中断的会话（未自动重放副作用）`);

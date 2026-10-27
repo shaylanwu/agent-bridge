@@ -120,6 +120,22 @@ option, and the fingerprint (agent + tool kind + normalized resource) hits an un
 mode never uses the ledger, and model text or tool titles never create or widen an approval. Hits and
 revocations are audited as `approval_hit` / `approval_grant` / `approval_revoke`.
 
+## sessions
+
+Inspect and clean up session history in the local state DB. `purge` is the **only** producer of the
+`session_deleted` (410) error code — `close_session` merely writes a tombstone and keeps the history
+(closed is not the same as gone), so a platform only receives 410 after the whole session is deleted.
+
+```bash
+agent-bridge sessions list                        # sessions with their event range and last update
+agent-bridge sessions purge --session=<taskId>    # delete one session
+agent-bridge sessions purge --older-than=<days>   # delete a batch, by last update
+```
+
+Only terminated sessions are deleted; `running` ones are skipped (deleting them would leave the
+platform waiting for a terminal state forever). Tombstones are kept, the taskId is never reused, and
+`session_deleted` should be treated as **give up**, not as `task_not_found`.
+
 ## daemon
 
 ```bash

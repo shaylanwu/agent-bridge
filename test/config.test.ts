@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_EVENT_RETENTION_MAX_EVENTS,
   clearConfig,
   loadConfig,
+  resolveEventRetentionMaxEvents,
   resolveSessionIdleMs,
   saveConfig,
   stateDbPath,
@@ -178,6 +180,32 @@ describe('配置原子保存与凭证清除', () => {
       if (previous === undefined) delete process.env['AGENT_BRIDGE_SESSION_IDLE_MS'];
       else process.env['AGENT_BRIDGE_SESSION_IDLE_MS'] = previous;
     }
+  });
+
+  it('event_retention_max_events 可解析并持久化', async () => {
+    await writeFile(
+      file,
+      `platformUrl = "https://platform.example.test"\ndeviceId = "${DEVICE_ID}"\nevent_retention_max_events = 1234\n`,
+      'utf8',
+    );
+    expect((await loadConfig())?.eventRetentionMaxEvents).toBe(1234);
+    await saveConfig(boundConfig({ eventRetentionMaxEvents: 4321 }));
+    expect((await loadConfig())?.eventRetentionMaxEvents).toBe(4321);
+    expect(await readFile(file, 'utf8')).toContain('event_retention_max_events = 4321');
+  });
+
+  it('event_retention_max_events 解析：override > 配置 > 默认，0 合法、有上限夹取', () => {
+    expect(resolveEventRetentionMaxEvents()).toBe(DEFAULT_EVENT_RETENTION_MAX_EVENTS);
+    expect(resolveEventRetentionMaxEvents(800)).toBe(800);
+    expect(resolveEventRetentionMaxEvents(800, 120)).toBe(120);
+    // 0 = 不裁剪，是合法值，不能当成「未配置」回落默认
+    expect(resolveEventRetentionMaxEvents(0)).toBe(0);
+    expect(resolveEventRetentionMaxEvents(800, 0)).toBe(0);
+    // 手滑写超大值不能让状态库无限长
+    expect(resolveEventRetentionMaxEvents(9_999_999)).toBe(1_000_000);
+    // 负数/小数一律收敛到合法区间
+    expect(resolveEventRetentionMaxEvents(-5)).toBe(0);
+    expect(resolveEventRetentionMaxEvents(10.9)).toBe(10);
   });
 
   it('保存传入的业务设置并写入同值 deviceId 镜像', async () => {

@@ -99,6 +99,11 @@ agent-bridge services revoke svc_9f1c2a
 agent-bridge approvals list            # --all also shows revoked rows
 agent-bridge approvals revoke ap_7c31f0d2a4b8   # stop auto-approving that fingerprint
 agent-bridge approvals purge           # drop expired rows
+
+# Session history (1.0): the only producer of session_deleted (410) — close_session keeps history
+agent-bridge sessions list                        # sessions + event range + last update
+agent-bridge sessions purge --session=tk_9f1c2a   # delete one terminated session
+agent-bridge sessions purge --older-than=14       # delete terminated sessions idle for 14+ days
 ```
 
 > `agent-bridge daemon start <platformUrl>` / `stop` / `status` provides lightweight background management
@@ -276,6 +281,35 @@ titles never create or widen an approval. A request with no normalizable resourc
 URL in its `toolCall`) is **never** auto-approved and never written to the ledger — otherwise one approval
 would silently cover every unnamed call of that tool. Inspect and revoke with `agent-bridge approvals list` /
 `agent-bridge approvals revoke <approvalId>` (audited as `approval_hit` / `approval_revoke`).
+
+**Event history is bounded by count, not by age**, so a long conversation cannot grow the state DB forever:
+
+```toml
+event_retention_max_events = 5000   # per-session event cap (0 = keep everything, ceiling 1000000)
+```
+
+Trimming is lazy — every 100th appended event trims the session back to the newest
+`event_retention_max_events` rows. The high-water mark is persisted, so `eventSeq` stays monotonic and a
+number is never re-issued after its row was reclaimed. Only events are trimmed: turns, artifacts and
+interactions are the evidence that the task happened and stay. `--event-retention-max-events=` overrides for
+one session.
+
+`get_task` therefore has three cursor shapes, and they mean different things:
+
+| request | returns | use it for |
+| --- | --- | --- |
+| no cursor | the newest `limit` events (tail) | rebuilding current state after a reload |
+| `afterEventSeq` | ascending events **strictly after** the cursor | filling a gap after a reconnect |
+| `beforeEventSeq` | the newest `limit` events **strictly before** the cursor, ascending | paging history backwards |
+
+`hasMoreBefore` tells you whether anything exists before the returned window (the tail page sets it to
+`true` on a long session). When a cursor points into reclaimed history, `get_task` still answers
+`found: true` but adds `errorCode: "session_history_pruned"` plus `prunedThrough`, meaning "the older part is
+gone, this is where retention starts" — not "the task ended there". Supplying both `afterEventSeq` and
+`beforeEventSeq` is rejected with `protocol_incompatible` instead of silently picking one. Closed sessions
+stay readable after `close_session`; only deleted ones answer `session_deleted` (410), and only
+`agent-bridge sessions purge` deletes: `task_not_found` means the id never existed, `session_deleted` means
+give up and stop retrying.
 
 ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and
 `trae-cli` declare native ACP and prefer it for tasks/conversations. `codex` uses the

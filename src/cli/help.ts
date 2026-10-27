@@ -43,6 +43,9 @@ ${C.bold('agent-bridge')} ${version()} —— 把本机 AI 编码 CLI 接入你�
   agent-bridge approvals list|revoke|purge
       持久授权账本（1.0）：查看/撤销「永久允许」记住的授权（默认关闭，需 --approval-ledger 或配置开启）
       revoke <approvalId>；purge 清理过期记录；--all 连已撤销的一起列出
+  agent-bridge sessions list|purge
+      本地状态库里的会话历史：list 看会话与事件区间；purge 整会话删除（--session=<id> 或 --older-than=<天>）
+      purge 只删已终结会话，保留 tombstone —— 平台对这些 taskId 随后收到 session_deleted(410)，不应重试
   agent-bridge daemon start <platformUrl> | stop | status | install <platformUrl> | uninstall
       轻量后台进程管理（detached + PID + daemon.log）；install/uninstall 注册当前用户服务
       Linux systemd user / macOS LaunchAgent / Windows 计划任务；均支持 --dry-run

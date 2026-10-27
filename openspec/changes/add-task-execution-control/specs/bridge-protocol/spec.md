@@ -168,11 +168,17 @@ SHALL 大于所有 feed 事件；收尾失败 SHALL 在终态标记 feedIncomple
 ### Requirement: 会话快照、附件补取与历史分页
 
 bridge SHALL 支持 `get_task { taskId, include, afterEventSeq?, beforeEventSeq?, limit? }` 并回 `task_snapshot`。
-afterEventSeq 用于实时补取，beforeEventSeq 用于历史回翻，二者不得同时出现；limit 默认 200、上限 500、
-单响应 1 MiB 是默认可配置安全策略。快照 SHALL 包含状态、permissionMode、可选 stopReason、按 eventSeq 升序的 events、
-partialMessages、pendingInteraction、eventWindow { oldestRetainedEventSeq, lastEventSeq, gaps }、hasMoreBefore
-和 feedIncomplete，SHALL NOT 包含 raw task_log、Form content 或大文件正文。任务不存在回 task_not_found；
-生产模式任务不存在回 task_not_found；tombstone 命中回 session_deleted，历史裁剪回 session_history_pruned。
+游标三形态：不给游标回**尾部窗口**（最新 limit 条，刷新后重建当前状态）；afterEventSeq 用于实时补取
+（严格大于游标、升序）；beforeEventSeq 用于历史回翻（严格小于游标的最新 limit 条，输出仍升序）。
+afterEventSeq 与 beforeEventSeq 不得同时出现，同时出现回 `protocol_incompatible` 而不是静默挑一个。
+limit 默认 200、上限 1000，单响应 1 MiB 是默认可配置安全策略。快照 SHALL 包含状态、permissionMode、
+可选 stopReason、按 eventSeq 升序的 events、partialMessages、pendingInteraction、
+eventWindow { oldestRetainedEventSeq, lastEventSeq, gaps }、hasMoreBefore、可选 prunedThrough 和 feedIncomplete，
+SHALL NOT 包含 raw task_log、Form content 或大文件正文。任务不存在回 task_not_found（404，ID 从未存在）；
+tombstone 命中回 session_deleted（410，会话被删除且 ID 永不复用，平台应放弃重试）；
+游标落在已裁剪区间时仍回 `found: true`，但附 `errorCode: session_history_pruned`（410）与 prunedThrough，
+表达「更早的部分已回收」，不得表现为「没有更早的历史」。close_session 只关闭会话、保留历史，
+此类会话仍可读快照；「关了」与「没了」在协议层必须是两种结果。
 1.0 不保留内存兼容路径。get_task 需要 session:read。
 
 bridge SHALL 支持 `get_artifact { taskId, artifactId }`，返回同 eventSeq/artifactId 的保留 artifact；不得重新读取工作区。
@@ -188,6 +194,12 @@ bridge SHALL 支持 `get_artifact { taskId, artifactId }`，返回同 eventSeq/a
 
 - **WHEN** 客户端以 afterEventSeq 或 beforeEventSeq 请求
 - **THEN** bridge 返回对应范围的有界事件、hasMoreBefore 与 gaps；缺失区间必须显式，不得表现为无事件
+
+#### Scenario: 关闭与删除必须可区分
+
+- **WHEN** 客户端对已 close_session 的会话发 get_task，或对已删除的会话发 get_task
+- **THEN** 前者回 found:true 与完整历史（关闭不等于内容消失）；后者回 found:false + session_deleted（410），
+  且同一 taskId 不得再被创建或复用；两者都不得用 task_not_found 含糊表示
 
 #### Scenario: 快照或附件不可用
 

@@ -235,12 +235,26 @@ export type ClientMessage =
       /**
        * 事件窗口完整性（1.0）：`gaps` 是持久化事件序号的缺口区间（空数组 = 完整）。
        * 平台补洞必须先按 gaps 判定缺失，而不是假设窗口连续。
+       *
+       * 命名对应：`oldestEventSeq` = 存储里还保留的最旧序号（保留水位），`latestEventSeq` = 最新序号。
        */
       eventWindow?: {
         oldestEventSeq?: number;
         latestEventSeq?: number;
         gaps: Array<{ from: number; to: number }>;
       };
+      /** 窗口最旧一条之前还有没有内容（回翻控制器据此决定是否继续往前取） */
+      hasMoreBefore?: boolean;
+      /**
+       * 已被 retention 裁掉的最高序号。请求的游标（after/before）小于它时回
+       * `session_history_pruned` —— 那段时间的内容确实取不回来了，别让平台以为是"没有更早的历史"。
+       */
+      prunedThrough?: number;
+      /**
+       * 结果码（受控错误码）。`found: false` 时区分三种情况：
+       * `task_not_found`（从未存在）、`session_deleted`（tombstone 命中，内容已删且 ID 不复用）、
+       * `session_history_pruned`（存在但请求的游标落在已裁剪区间）。
+       */
       errorCode?: string;
     }
   | {
@@ -589,6 +603,11 @@ export interface GetTaskCommand extends ServiceIdentity {
   requestId?: string;
   /** 只补取该序号之后的事件；缺省返回从最旧开始的有界窗口 */
   afterEventSeq?: number;
+  /**
+   * 历史回翻：取该序号**之前**的有界窗口（升序返回）。
+   * 与 afterEventSeq 互斥 —— 同时出现回 protocol_incompatible，而不是猜一个优先级。
+   */
+  beforeEventSeq?: number;
   limit?: number;
 }
 

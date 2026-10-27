@@ -10,6 +10,7 @@ import { cmdConnect } from '../commands/connect.js';
 import { cmdDaemon } from '../commands/daemon.js';
 import { cmdLogout } from '../commands/logout.js';
 import { cmdServe } from '../commands/serve.js';
+import { cmdSessions } from '../commands/sessions.js';
 import { cmdServices } from '../commands/services.js';
 import { cmdStatus } from '../commands/status.js';
 import { parseFlags, type Flags } from './flags.js';
@@ -27,6 +28,7 @@ export const COMMANDS: Record<string, CommandFn> = {
   logout: cmdLogout,
   services: cmdServices,
   approvals: cmdApprovals,
+  sessions: cmdSessions,
   daemon: cmdDaemon,
 };
 

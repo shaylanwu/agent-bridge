@@ -125,13 +125,26 @@
 - [ ] 5.10 实现 pending→submitting 单 flight、responseId occurrence 去重、无效响应可重试、相同响应 duplicate、
        不同响应 conflict、写入不确定 delivery_unknown 后禁止重试、迟到响应不恢复
 - [ ] 5.11 实现 task:approve/task:respond scope；respondedBy 与内容脱敏审计，Form content 不落审计/result
-- [ ] 5.12 实现 get_task/task_snapshot/get_artifact 与 `/v1/sessions/{id}/snapshot`；session:read、
+- [x] 5.12 实现 get_task/task_snapshot/get_artifact 与 `/v1/sessions/{id}/snapshot`；session:read、
        before/after 游标、partialMessages、eventWindow/gaps、task_not_found/session_deleted/session_history_pruned/artifact_not_found
       （2026-10-27 已落 get_task / task_snapshot / get_artifact / eventWindow.gaps / artifact_not_found /
       **`session:read` 细分 scope**：新增第 8 个受控 scope，会话与交互的读端点改为「`session:read` 或
       `task:read`」任一命中（1.0 之前签发的粗粒度令牌不会当场失效），面板只读令牌也一并放行 session:read。
-      查证方式：`SERVICE_SCOPES` 8 项、`verifyServiceToken` 支持 any-of、控制面 3 个会话读端点已切；
-      **剩余** before 游标、partialMessages、session_deleted / session_history_pruned 两个码）
+      查证方式：`SERVICE_SCOPES` 8 项、`verifyServiceToken` 支持 any-of、控制面 3 个会话读端点已切。
+      **2026-10-27 补齐 before 游标 + 保留阈值 + 两个 410 码**：
+      ① 游标三形态定型 —— 无游标回**尾部窗口**（最新的 limit 条，`hasMoreBefore` 因此才有意义）、
+         `afterEventSeq` 升序补洞、`beforeEventSeq` 取 `< cursor` 最新 limit 条后 reverse 回升序；
+         两者同时给回 `protocol_incompatible`（不静默挑一个）。
+      ② `event_retention_max_events`（默认 5000，0 = 全留，上限 1e6，`--event-retention-max-events` 覆盖）：
+         按条数惰性裁剪（每第 100 条触发一次），水位落 `event_prunes` 表；`appendEvent` 发号下界取
+         `max(maxSeq, floor)`，避免裁光后从 1 重新发号撞历史。只裁 events，turns/artifacts 保留。
+      ③ `session_deleted` 此前**不可达**（close_session 只写 tombstone 并保留会话，删除路径根本不存在），
+         补 `SessionStore.deleteSession()` + `agent-bridge sessions list|purge`：拒绝删 running、保留 tombstone、
+         显式清 `artifact_transfers`（无外键）、其余子表走 CASCADE。该码由此成为真实可达状态。
+      ④ `get_task` 对 `cursor < prunedThrough` 回 `found: true` + `errorCode: session_history_pruned`
+         + `prunedThrough`；对 tombstone 命中回 `session_deleted`，从未存在回 `task_not_found`。
+      测试：`test/session-retention.test.ts`（19 例）+ `test/task-snapshot-cursors.test.ts`（11 例）。
+      **剩余** partialMessages）
 
 ## 6. 外部接口与文档
 

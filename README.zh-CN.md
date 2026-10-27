@@ -84,6 +84,11 @@ agent-bridge services revoke svc_9f1c2a
 agent-bridge approvals list            # 加 --all 连已撤销的一起列出
 agent-bridge approvals revoke ap_7c31f0d2a4b8   # 撤销后该指纹不再自动批准
 agent-bridge approvals purge           # 清理过期记录
+
+# 会话历史（1.0）：session_deleted(410) 的唯一产生点 —— close_session 只关闭、保留历史
+agent-bridge sessions list                        # 会话 + 事件区间 + 最后更新时间
+agent-bridge sessions purge --session=tk_9f1c2a   # 删除一个已终结的会话
+agent-bridge sessions purge --older-than=14       # 删除闲置 14 天以上的已终结会话
 ```
 
 > `agent-bridge daemon start <platformUrl>` / `stop` / `status` 提供轻量后台进程管理（detached + PID +
@@ -247,6 +252,31 @@ approval_ttl_ms = 604800000       # 7 天（夹 1 分钟 ~ 90 天）
 里既无路径、也无命令/URL）一律不自动批准、也不写入账本 —— 否则一条授权会静默覆盖该工具所有无名调用。
 查看与撤销：`agent-bridge approvals list` / `agent-bridge approvals revoke <approvalId>`
 （审计记 `approval_hit` / `approval_revoke`）。
+
+**事件历史按条数封顶，不按天数**，长会话不会把状态库撑爆：
+
+```toml
+event_retention_max_events = 5000   # 单会话事件上限（0 = 全留，上限 1000000）
+```
+
+裁剪是惰性的 —— 每写入第 100 条事件时把该会话裁回最新 `event_retention_max_events` 条。裁剪水位会持久化，
+所以 `eventSeq` 始终单调递增，被裁掉的号**不会重新发放**。只裁事件：turns / artifacts / interactions 是
+「任务发生过」的证据，一律保留。启动参数 `--event-retention-max-events=` 可临时覆盖。
+
+因此 `get_task` 有三种游标形态，语义各不相同：
+
+| 请求 | 返回 | 用途 |
+| --- | --- | --- |
+| 不给游标 | 最新 `limit` 条（尾部窗口） | 刷新页面后重建当前状态 |
+| `afterEventSeq` | 严格大于游标、升序 | 断线重连后补洞 |
+| `beforeEventSeq` | 严格小于游标的最新 `limit` 条，升序 | 往回翻历史 |
+
+`hasMoreBefore` 说明返回窗口之前还有没有内容（长会话的尾部窗口会是 `true`）。游标落在被裁剪的区间时，
+`get_task` 仍回 `found: true`，但附 `errorCode: "session_history_pruned"` 与 `prunedThrough`，
+含义是「更早的部分已回收，这里才是保留起点」，不是「任务到此为止」。同时给 `afterEventSeq` 与
+`beforeEventSeq` 会被明确拒绝（`protocol_incompatible`），不会静默挑一个。`close_session` 之后会话**仍可读**，
+只有被删除的才回 `session_deleted`（410），而删除只能由 `agent-bridge sessions purge` 触发：
+`task_not_found` 是「从没存在过」，`session_deleted` 是「放弃重试、别再发」。
 
 ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
 `trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。

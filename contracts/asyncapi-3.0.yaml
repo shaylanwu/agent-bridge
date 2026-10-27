@@ -263,6 +263,13 @@ channels:
                   createdAt: { type: string, format: date-time }
             oldestEventSeq: { type: integer }
             latestEventSeq: { type: integer }
+            hasMoreBefore:
+              type: boolean
+              description: 窗口起点之前还有内容（尾部窗口在长会话上为 true，回翻控制器据此继续往前取）。
+            prunedThrough:
+              type: integer
+              minimum: 0
+              description: 历史裁剪水位；未裁剪的会话不带此字段。请求游标小于它时 errorCode=session_history_pruned。
             eventWindow:
               type: object
               description: 事件窗口完整性；gaps 为空数组表示序号连续。
@@ -532,7 +539,9 @@ channels:
       get_task:
         name: get_task
         title: 补取任务历史
-        description: 按 afterEventSeq 返回有界窗口；终态后仍可调用，需 task:read scope。
+        description: >-
+          补取任务历史。不给游标回尾部窗口（最新 limit 条）；afterEventSeq 升序补洞；
+          beforeEventSeq 回翻（严格小于游标的最新 limit 条，输出仍升序）；两者互斥。终态后仍可调用，需 session:read。
         payload:
           type: object
           required: [type, taskId]
@@ -541,6 +550,10 @@ channels:
             taskId: { type: string }
             requestId: { type: string, description: 会原样带回 task_snapshot }
             afterEventSeq: { type: integer, minimum: 0 }
+            beforeEventSeq:
+              type: integer
+              minimum: 0
+              description: 与 afterEventSeq 互斥；同时出现回 protocol_incompatible。
             limit: { type: integer, minimum: 1, maximum: 1000 }
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64 }
@@ -840,3 +853,7 @@ components:
         - tenant_not_supported
         - permission_mode_unsupported
         - permission_policy_denied
+        - session_deleted
+        - session_history_pruned
+        - task_not_found
+        - artifact_not_found

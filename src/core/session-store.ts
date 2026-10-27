@@ -155,6 +155,10 @@ export interface SessionSnapshot {
   artifacts: ArtifactRecord[];
   oldestEventSeq?: number;
   latestEventSeq?: number;
+  /** 是否还有比本次窗口更旧的事件（回翻用；false = 已经到最旧） */
+  hasMoreBefore?: boolean;
+  /** 已被 retention 裁掉的最高序号（0/缺省 = 没有裁剪过） */
+  prunedThrough?: number;
 }
 
 interface SessionRow {
@@ -399,9 +403,20 @@ function toArtifact(row: ArtifactRow): ArtifactRecord {
 
 export class SessionStore {
   private readonly db: Database.Database;
+  /** 单会话事件保留上限（0 = 不裁剪） */
+  private readonly retentionMaxEvents: number;
   private closed = false;
 
-  constructor(dbPath: string) {
+  /**
+   * @param options.retentionMaxEvents 单会话事件保留上限（0/缺省 = 不裁剪）。
+   *   裁剪是**惰性**的：每写入 100 条检查一次，不做定时任务 —— 长会话不必等进程重启才瘦身，
+   *   也不会因为每条事件都跑一次 DELETE 把热路径拖慢。
+   */
+  constructor(
+    dbPath: string,
+    options: { retentionMaxEvents?: number } = {},
+  ) {
+    this.retentionMaxEvents = Math.max(0, Math.floor(options.retentionMaxEvents ?? 0));
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
     const opened = new Database(dbPath);
     this.db = opened;
@@ -528,6 +543,15 @@ export class SessionStore {
         storage_key TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, artifact_id),
+        FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS event_prunes (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        pruned_through INTEGER NOT NULL,
+        removed INTEGER NOT NULL,
+        pruned_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, session_id),
         FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
       );
       CREATE TABLE IF NOT EXISTS session_tombstones (
@@ -709,6 +733,120 @@ export class SessionStore {
     return row ? { closedAt: row.closed_at, reason: row.reason ?? undefined } : undefined;
   }
 
+  /**
+   * 真正删除一个会话及其全部内容（turns / events / messages / interactions / artifacts / transfers）。
+   *
+   * 这是 `session_deleted` 这个受控码的**唯一产生点**：`close_session` 只写 tombstone、保留历史，
+   * 所以「关了」和「没了」在数据层必须分开 —— 前者平台还能 read 快照，后者只能看到 410。
+   *
+   * 三条纪律：
+   *  1. tombstone **保留**（不随会话级联删），它记录「这个 ID 存在过、现在没了、永不复用」；
+   *  2. `running` 的会话拒删 —— 删掉正在跑的任务会让平台永远等不到终态；
+   *  3. `artifact_transfers` 没有外键，必须显式删，否则会留一批指向空会话的孤儿行。
+   */
+  deleteSession(
+    sessionId: string,
+    opts: { tenantId?: string; reason?: string } = {},
+  ): { deleted: boolean; events: number; turns: number; reason?: 'not_found' | 'session_running' } {
+    const tenantId = opts.tenantId ?? DEFAULT_TENANT;
+    const session = this.getSession(sessionId, tenantId);
+    if (!session) return { deleted: false, events: 0, turns: 0, reason: 'not_found' };
+    if (session.status === 'running') {
+      return { deleted: false, events: 0, turns: 0, reason: 'session_running' };
+    }
+    const tx = this.db.transaction(() => {
+      const count = (table: string): number =>
+        Number(
+          (
+            this.db
+              .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE tenant_id = ? AND session_id = ?`)
+              .get(tenantId, sessionId) as { n: number }
+          ).n,
+        );
+      const events = count('events');
+      const turns = count('turns');
+      this.db.prepare('DELETE FROM artifact_transfers WHERE tenant_id = ? AND session_id = ?').run(tenantId, sessionId);
+      // 其余子表靠 ON DELETE CASCADE 带走（连接上已开 foreign_keys = ON）
+      this.db.prepare('DELETE FROM sessions WHERE tenant_id = ? AND session_id = ?').run(tenantId, sessionId);
+      const at = now();
+      this.db
+        .prepare(
+          `INSERT INTO session_tombstones (tenant_id, session_id, closed_at, reason)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (tenant_id, session_id) DO UPDATE SET closed_at = excluded.closed_at, reason = excluded.reason`,
+        )
+        .run(tenantId, sessionId, at, opts.reason ?? 'deleted');
+      return { events, turns };
+    });
+    const counts = tx();
+    return { deleted: true, ...counts };
+  }
+
+  /**
+   * 该会话已被 retention 裁掉的最高序号（没有裁剪过 = 0）。
+   *
+   * 两种用途：
+   *  1. 分配新 eventSeq 时的**下界** —— 全被裁掉后 MAX(event_seq) 会退回 0，
+   *     不设下界就会从 1 重新发号，与已裁剪的历史撞号；
+   *  2. 判断平台请求的游标是否落在已裁剪区间，落了就回 `session_history_pruned`。
+   */
+  getPrunedThrough(sessionId: string, tenantId = DEFAULT_TENANT): number {
+    const row = this.db
+      .prepare('SELECT pruned_through FROM event_prunes WHERE tenant_id = ? AND session_id = ?')
+      .get(tenantId, sessionId) as { pruned_through: number } | undefined;
+    return row?.pruned_through ?? 0;
+  }
+
+  /**
+   * 按条数裁剪最旧的事件（retention 的最小可用形态：按数量而非时间，无需定时任务）。
+   *
+   * 只删事件，不删 session/turn/artifact —— 那些是「这个任务发生过」的证据。
+   * 裁剪水位写进 `event_prunes`，回翻时据此明确回 `session_history_pruned`，
+   * 而不是让平台把「窗口很旧」误读成「任务没有更早的历史」。
+   */
+  pruneEvents(
+    sessionId: string,
+    opts: { maxEvents: number; tenantId?: string } = { maxEvents: 0 },
+  ): { removed: number; prunedThrough: number } {
+    const tenantId = opts.tenantId ?? DEFAULT_TENANT;
+    const keep = Math.max(0, Math.floor(opts.maxEvents));
+    const floor = this.getPrunedThrough(sessionId, tenantId);
+    if (keep <= 0) return { removed: 0, prunedThrough: floor };
+    const count = Number(
+      (
+        this.db
+          .prepare('SELECT COUNT(*) AS n FROM events WHERE tenant_id = ? AND session_id = ?')
+          .get(tenantId, sessionId) as { n: number }
+      ).n,
+    );
+    if (count <= keep) return { removed: 0, prunedThrough: floor };
+    const cutoffRow = this.db
+      .prepare(
+        `SELECT event_seq FROM events WHERE tenant_id = ? AND session_id = ?
+          ORDER BY event_seq DESC LIMIT 1 OFFSET ?`,
+      )
+      .get(tenantId, sessionId, keep) as { event_seq: number } | undefined;
+    if (!cutoffRow) return { removed: 0, prunedThrough: floor };
+    const cutoff = Math.max(cutoffRow.event_seq, floor);
+    const tx = this.db.transaction(() => {
+      const res = this.db
+        .prepare('DELETE FROM events WHERE tenant_id = ? AND session_id = ? AND event_seq <= ?')
+        .run(tenantId, sessionId, cutoff);
+      this.db
+        .prepare(
+          `INSERT INTO event_prunes (tenant_id, session_id, pruned_through, removed, pruned_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (tenant_id, session_id) DO UPDATE SET
+             pruned_through = MAX(event_prunes.pruned_through, excluded.pruned_through),
+             removed = event_prunes.removed + excluded.removed,
+             pruned_at = excluded.pruned_at`,
+        )
+        .run(tenantId, sessionId, cutoff, res.changes, now());
+      return res.changes;
+    });
+    return { removed: tx(), prunedThrough: cutoff };
+  }
+
   createTurn(input: {
     sessionId: string;
     turnId?: string;
@@ -812,17 +950,18 @@ export class SessionStore {
     }
     if (!input.type.trim()) throw new SessionStoreError('invalid_input', 'event type 不能为空');
     const tx = this.db.transaction(() => {
-      const nextSeq =
-        input.eventSeq ??
-        Number(
-          (
-            this.db
-              .prepare(
-                'SELECT COALESCE(MAX(event_seq), 0) + 1 AS next FROM events WHERE tenant_id = ? AND session_id = ?',
-              )
-              .get(tenantId, input.sessionId) as { next: number }
-          ).next,
-        );
+      const maxSeq = Number(
+        (
+          this.db
+            .prepare(
+              'SELECT COALESCE(MAX(event_seq), 0) AS n FROM events WHERE tenant_id = ? AND session_id = ?',
+            )
+            .get(tenantId, input.sessionId) as { n: number }
+        ).n,
+      );
+      // 下界必须考虑已裁剪水位：事件被裁光后 MAX 会退回 0，不设下界就会从 1 重新发号撞上历史
+      const floor = this.getPrunedThrough(input.sessionId, tenantId);
+      const nextSeq = input.eventSeq ?? Math.max(maxSeq, floor) + 1;
       if (!Number.isInteger(nextSeq) || nextSeq <= 0) {
         throw new SessionStoreError('invalid_input', `eventSeq 非法：${String(nextSeq)}`);
       }
@@ -862,16 +1001,44 @@ export class SessionStore {
         .run(event.createdAt, tenantId, input.sessionId);
       return event;
     });
-    return tx();
+    const event = tx();
+    // 惰性 retention：每 100 条检查一次，避免每条事件都跑一次 DELETE
+    if (this.retentionMaxEvents > 0 && event.eventSeq % 100 === 0) {
+      try {
+        this.pruneEvents(input.sessionId, {
+          maxEvents: this.retentionMaxEvents,
+          tenantId,
+        });
+      } catch {
+        /* 裁剪失败不能影响写入：下个百条会再试 */
+      }
+    }
+    return event;
   }
 
   listEvents(
     sessionId: string,
-    opts: { afterEventSeq?: number; limit?: number; tenantId?: string } = {},
+    opts: {
+      afterEventSeq?: number;
+      beforeEventSeq?: number;
+      limit?: number;
+      tenantId?: string;
+    } = {},
   ): SessionEvent[] {
     const tenantId = opts.tenantId ?? DEFAULT_TENANT;
-    const after = Math.max(0, Math.floor(opts.afterEventSeq ?? 0));
     const limit = Math.min(1000, Math.max(1, Math.floor(opts.limit ?? 200)));
+    if (opts.beforeEventSeq !== undefined) {
+      // 回翻：先取 `< before` 里最新的 limit 条，再翻回升序 —— 平台按 eventSeq 顺序追加即可
+      const before = Math.max(0, Math.floor(opts.beforeEventSeq));
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM events WHERE tenant_id = ? AND session_id = ? AND event_seq < ?
+            ORDER BY event_seq DESC LIMIT ?`,
+        )
+        .all(tenantId, sessionId, before, limit) as EventRow[];
+      return rows.reverse().map(toEvent);
+    }
+    const after = Math.max(0, Math.floor(opts.afterEventSeq ?? 0));
     const rows = this.db
       .prepare(
         `SELECT * FROM events WHERE tenant_id = ? AND session_id = ? AND event_seq > ?
@@ -1393,20 +1560,41 @@ export class SessionStore {
 
   snapshot(
     sessionId: string,
-    opts: { afterEventSeq?: number; limit?: number; tenantId?: string } = {},
+    opts: {
+      afterEventSeq?: number;
+      beforeEventSeq?: number;
+      limit?: number;
+      tenantId?: string;
+    } = {},
   ): SessionSnapshot {
     const tenantId = opts.tenantId ?? DEFAULT_TENANT;
     const session = this.getSession(sessionId, tenantId);
     if (!session) throw new SessionStoreError('session_not_found', `会话不存在：${sessionId}`);
     const window = this.eventWindow(sessionId, tenantId);
+    // 无游标 = 「我要的是现在的样子」，取最新一页而不是最早一页：
+    // 长会话的头 200 条对平台毫无用处，反而会让它以为任务停在那里（latestEventSeq 才是真进度）。
+    // 想从头读就显式给 afterEventSeq: 0 —— 三种组合各司其职，不留模糊地带。
+    const events =
+      opts.afterEventSeq === undefined && opts.beforeEventSeq === undefined
+        ? this.listEvents(sessionId, {
+            beforeEventSeq: Number.MAX_SAFE_INTEGER,
+            limit: opts.limit,
+            tenantId,
+          })
+        : this.listEvents(sessionId, { ...opts, tenantId });
+    const first = events[0]?.eventSeq;
     return {
       session,
       turns: this.listTurns(sessionId, tenantId),
-      events: this.listEvents(sessionId, { ...opts, tenantId }),
+      events,
       interactions: this.listInteractions(sessionId, tenantId),
       artifacts: this.listArtifacts(sessionId, tenantId),
       oldestEventSeq: window.oldest,
       latestEventSeq: window.latest,
+      // 窗口最旧一条之前还有没有内容 —— 回翻控制器据此决定要不要继续往前取
+      hasMoreBefore:
+        first === undefined ? false : window.oldest !== undefined && first > window.oldest,
+      prunedThrough: this.getPrunedThrough(sessionId, tenantId),
     };
   }
 
