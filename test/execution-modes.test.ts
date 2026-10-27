@@ -49,8 +49,16 @@ describe('executionModes', () => {
       expect(acp).toBeDefined();
       // ACP 走原生 permission 交互，不给「跳过审批」的 full
       expect(acp?.permissionModes).toEqual(['default']);
-      expect(acp?.interactionKinds).toEqual(['permission', 'form']);
+      // 逐工具如实声明：缺省 permission+form，dsh 实测 automation-only 故为空
+      expect(acp?.interactionKinds).toEqual(def.acpInteractionKinds ?? ['permission', 'form']);
     }
+  });
+
+  it('dsh 的 ACP 声明为零交互种类（实测从不回问权限，声明了平台就会干等）', () => {
+    const def = AGENTS.find((agent) => agent.kind === 'ds-harness');
+    expect(def?.acp).toEqual({ command: 'dsh', args: ['--profile', 'acp'] });
+    const acp = executionModesFor(def!).find((mode) => mode.mode === 'acp-stdio');
+    expect(acp?.interactionKinds).toEqual([]);
   });
 
   it('CodeBuddy 未声明 external_sandbox 时不声明 full，声明后才声明', () => {

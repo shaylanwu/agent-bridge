@@ -17,7 +17,9 @@
 > 已接入 TaskSupervisor：`acp` 任务走 ACP，`session/load` 续接，permission 转
 > `task_interaction_request` 并把 `task_interaction_response.optionId` 回送 ACP；无 token 仍回落 headless。
 > 2026-10-26 实测 8 个原生 ACP：codebuddy / gemini / opencode / mimo / kimi / minimax / grok / trae；
-> 剩余 4 个（claude/qoder/codex/dsh）方案见 `research/non-acp-agents.md`：
+> **2026-10-27 追加第 9 个：dsh**（`dsh --profile acp`，探针实测 initialize 回 protocolVersion=1、
+> sessionCapabilities {close,list,resume}、session/prompt 回 end_turn；自动化通道不发权限请求）。
+> 剩余 3 个（claude/qoder/codex）方案见 `research/non-acp-agents.md`：
 > Codex app-server JSON-RPC 已接入（thread/resume、审批、turn/steer），Claude/Qoder 已接 `--resume`，
 > DSH headless 已接 `--session-id` resume；Claude/Qoder conversation 已接常驻 stream-json 进程
 > （Turn 间复用，不声明 same-turn steer）；仅剩 MCP Form/elicitation 未接。
@@ -113,7 +115,19 @@
       （2026-10-27：`knownStopReason()` 收敛受控值；只有 end_turn 才 success，其余 failed/agent_error 或
       cancelled，并置 `feedIncomplete`；未知 stopReason 不写进受限字段）
 - [ ] 5.4 ACP fs/terminal 等未评审 client 方法返回 UnsupportedOperation，不自动执行
-- [ ] 5.5 CodeBuddy ACP 与 DSH ACP 适配；只上报实际通过测试的 executionModes/interactionKinds
+- [x] 5.5 CodeBuddy ACP 与 DSH ACP 适配；只上报实际通过测试的 executionModes/interactionKinds
+      （2026-10-27 补齐 DSH ACP。**探针证据**（`.harness/work/probe-dsh-acp*.mjs`，dsh 0.2.1-rc.2）：
+      ① `dsh --profile acp` 在 stdio 上讲 ACP，initialize → protocolVersion=1、agentInfo=deepseek-harness-acp、
+         sessionCapabilities={close,list,resume}、authMethods=[]；
+      ② session/new → {sessionId, configOptions}；session/update 给 `agent_message_chunk` + `tool_call(_update)`
+         + `usage_update`；session/prompt → stopReason=end_turn；
+      ③ **工具调用期从不发 `session/request_permission`**（automation-only）→ 新增 `AgentDef.acpInteractionKinds`，
+         dsh 显式声明空数组，避免平台干等一个永远不来的确认；
+      ④ 续会话：标准 `session/load` 回 `-32601 Method not found`，自家 `session/resume` 可用
+         （会话已活跃时回 -32602 属正常）→ ACP 客户端改为 **先 load 后 resume** 依次尝试，
+         否则 dsh 会静默退化成全新会话（历史丢了还看不出来）；
+      ⑤ 用 bridge 自己的 `runAcpPrompt` 实跑：首轮 sessionId=ef35…/text=ok，带 nativeSessionId 续会话
+         拿到同一个 sessionId 且答出「42」，证明续的是同一个 session。
 - [ ] 5.6 full + ACP 必须显式实现会话权限配置，未实现时拒绝，不借用 headless full 参数冒充
 - [ ] 5.7 权限请求映射 toolCall/options/outcome；once 选项、取消、过滤 persistent、optionId 校验；
        超时/full 残余权限只有存在 reject_once 才可选择，否则 cancelled + interaction_timeout/interaction_denied

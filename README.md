@@ -211,7 +211,7 @@ verified full mapping, or CodeBuddy runs without `external_sandbox = true`, the 
 | `claude-code` | `--dangerously-skip-permissions` | headless | native `--resume` |
 | `codebuddy-cli` | `-y` (+ fixed `CODEBUDDY_IS_SANDBOX=1`, needs `external_sandbox = true`) | headless, ACP | native `--resume` |
 | `codex` | `--dangerously-bypass-approvals-and-sandbox` | headless | app-server thread |
-| `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless | native `--session-id` |
+| `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless, ACP | native `--session-id` / ACP `session/resume` |
 | `gemini` | `--yolo` | headless, ACP | ACP session |
 | `opencode` | `--auto` | headless, ACP | ACP session |
 | `mimo-code` | `--dangerously-skip-permissions` | headless, ACP | ACP session |
@@ -324,8 +324,11 @@ stay readable after `close_session`; only deleted ones answer `session_deleted` 
 `agent-bridge sessions purge` deletes: `task_not_found` means the id never existed, `session_deleted` means
 give up and stop retrying.
 
-ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and
-`trae-cli` declare native ACP and prefer it for tasks/conversations. `codex` uses the
+ACP: `codebuddy-cli`, `ds-harness`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`,
+`grok-cli`, and `trae-cli` declare native ACP and prefer it for tasks/conversations. `ds-harness` is
+automation-only on that channel: it announces `permission` nowhere (tools run without asking, so its
+`executionModes` declares an empty `interactionKinds`) and continues sessions through its own
+`session/resume` rather than the standard `session/load`. `codex` uses the
 `codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); Claude/Qoder
 conversations keep a resident `stream-json` process across turns; the rest stay headless.
 CodeBuddy prefers an explicit `CODEBUDDY_AUTH_TOKEN`; otherwise the bridge reads the plaintext

@@ -187,7 +187,7 @@ external_sandbox = false        # 仅 CodeBuddy 的 full 需要
 | `claude-code` | `--dangerously-skip-permissions` | headless | 原生 `--resume` |
 | `codebuddy-cli` | `-y`（+ 固定 `CODEBUDDY_IS_SANDBOX=1`，需 `external_sandbox = true`） | headless、ACP | 原生 `--resume` |
 | `codex` | `--dangerously-bypass-approvals-and-sandbox` | headless | app-server 线程 |
-| `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless | 原生 `--session-id` |
+| `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless、ACP | 原生 `--session-id` / ACP `session/resume` |
 | `gemini` | `--yolo` | headless、ACP | ACP 会话 |
 | `opencode` | `--auto` | headless、ACP | ACP 会话 |
 | `mimo-code` | `--dangerously-skip-permissions` | headless、ACP | ACP 会话 |
@@ -287,8 +287,11 @@ event_retention_max_events = 5000   # 单会话事件上限（0 = 全留，上�
 与 `task_step`；结构化地看「正在写的文本」只有快照里的 `partialMessages`。`delta` 请当作保留位，
 不要等它。
 
-ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
-`trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
+ACP：`codebuddy-cli`、`ds-harness`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、
+`grok-cli`、`trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
+`ds-harness` 在这条通道上是 **automation-only**（实测）：跑工具只发 `tool_call`、从不回问权限，所以它的
+`executionModes.interactionKinds` 声明为空数组；续会话靠自家的 `session/resume`，标准 `session/load`
+会回 `-32601 Method not found`（客户端先试 load 再退 resume）。
 `codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer、审批）；Claude/Qoder 的
 conversation 保持常驻 `stream-json` 进程（Turn 间复用）；其余工具保持 headless。
 CodeBuddy 优先用显式 `CODEBUDDY_AUTH_TOKEN`；未设置时从本机 CodeBuddyExtension 的明文

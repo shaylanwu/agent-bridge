@@ -11,7 +11,14 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import type { AgentCapability, AgentListItem, AgentStatus, ExecutionModeCapability, FeedKind } from '../protocol.js';
+import type {
+  AgentCapability,
+  AgentListItem,
+  AgentStatus,
+  ExecutionModeCapability,
+  FeedKind,
+  InteractionKind,
+} from '../protocol.js';
 import { fullModeAdmitted } from '../core/permission-policy.js';
 import { logoDataUri } from './agent-logos.js';
 import type { StepFormat } from './step-parsers.js';
@@ -41,6 +48,13 @@ export interface AgentDef {
   resumeArgs?: string[];
   /** 原生 ACP 启动方式；未声明表示该 CLI 没有已验证的 ACP 入口 */
   acp?: AcpAgentSpec;
+  /**
+   * 该工具的 ACP 会话到底会不会发交互请求（缺省 `['permission','form']`）。
+   *
+   * 必须能显式声明空数组：实测 `dsh` 的 ACP 是 automation-only —— 工具调用直接放行、
+   * **从不发 `session/request_permission`**。给它照拄声明 permission，平台就会一直等一个永远不会来的确认。
+   */
+  acpInteractionKinds?: InteractionKind[];
   credential: {
     /** 平台可代管 Key 的注入变量（有值才允许"绑定 Key"） */
     envKey?: string;
@@ -129,6 +143,13 @@ export const AGENTS: AgentDef[] = [
     fullArgs: ['--permission-mode', 'danger-full-access', '--approval-policy', 'never'],
     resumeArgs: ['--profile', 'headless', '--json', '--session-id', '{{sessionId}}', '{{prompt}}'],
     steps: 'dsh-json',
+    // 实测（0.2.1-rc.2）：`dsh --profile acp` 在 stdio 上讲 ACP，initialize 回 protocolVersion=1、
+    // sessionCapabilities {close,list,resume}；续会话靠自家的 `session/resume`，
+    // 标准 `session/load` 回 -32601 Method not found。
+    acp: { command: 'dsh', args: ['--profile', 'acp'] },
+    // automation-only：跑工具时只发 tool_call/tool_call_update，**从不回问权限**，也没有表单通道。
+    // 这是实测结论，不是保守估计 —— 声明了平台就会等。
+    acpInteractionKinds: [],
     credential: {
       envKey: 'DEEPSEEK_API_KEY',
       envs: ['DEEPSEEK_API_KEY'],
@@ -301,7 +322,8 @@ export function executionModesFor(def: AgentDef, externalSandbox = false): Execu
       mode: 'acp-stdio',
       // ACP 走原生 permission 交互，不走「跳过审批」的 full 参数
       permissionModes: ['default'],
-      interactionKinds: ['permission', 'form'],
+      // 逐工具如实声明：dsh 的 ACP 是 automation-only，实测不发权限/表单请求
+      interactionKinds: def.acpInteractionKinds ?? ['permission', 'form'],
       // ACP 的 agent_message_chunk → messages、tool_call → steps；artifacts 暂无 ACP 来源
       feedKinds: ['messages', 'steps'],
     });

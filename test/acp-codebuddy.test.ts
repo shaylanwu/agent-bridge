@@ -32,10 +32,11 @@ describe('CodeBuddy ACP adapter', () => {
     expect(codebuddyAcpArgs()).toEqual(['--serve', '--acp', '--port', '0']);
   });
 
-  it('能力矩阵：8 个工具声明原生 ACP', () => {
+  it('能力矩阵：9 个工具声明原生 ACP（dsh 的 acp profile 实测可用）', () => {
     const acpAgents = AGENTS.filter((agent) => agent.acp).map((agent) => agent.kind);
     expect(acpAgents).toEqual([
       'codebuddy-cli',
+      'ds-harness',
       'gemini',
       'opencode',
       'mimo-code',
@@ -44,6 +45,9 @@ describe('CodeBuddy ACP adapter', () => {
       'minimax-code',
       'trae-cli',
     ]);
+    // 9 个声明 ACP，但只有 8 个会回问权限：dsh 是 automation-only（实测从不发 session/request_permission）
+    const asking = AGENTS.filter((agent) => agent.acp && (agent.acpInteractionKinds ?? ['permission', 'form']).length > 0);
+    expect(asking).toHaveLength(8);
   });
 
   it('清理 WorkBuddy 继承的端口/会话变量，保留显式 auth token', () => {

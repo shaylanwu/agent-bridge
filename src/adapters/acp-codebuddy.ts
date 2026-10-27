@@ -371,16 +371,23 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
       await request('authenticate', { methodId: authMethod, _meta: { headless: true } });
     }
     if (opts.nativeSessionId) {
-      try {
-        const loaded = (await request('session/load', {
-          sessionId: opts.nativeSessionId,
-          cwd: resolve(opts.cwd),
-          mcpServers: [],
-        })) as { sessionId?: string } | null;
-        sessionId = loaded?.sessionId ?? opts.nativeSessionId;
-      } catch {
-        // load 不支持/会话已过期：退回新会话，调用方会继续用 replay 兜底语义。
-        sessionId = '';
+      // 续会话有两条路，且不是所有 agent 两条都认（实测）：
+      //  - ACP 标准 `session/load`（codebuddy/gemini/opencode/… 认）；
+      //  - `dsh` 自家 `session/resume`，标准 load 回 -32601 Method not found。
+      // 先试标准再试 resume：否则 dsh 会「静默退化成全新会话」——历史丢了却看不出来。
+      const attempts: Array<{ method: string; params: Record<string, unknown> }> = [
+        { method: 'session/load', params: { sessionId: opts.nativeSessionId, cwd: resolve(opts.cwd), mcpServers: [] } },
+        { method: 'session/resume', params: { sessionId: opts.nativeSessionId, cwd: resolve(opts.cwd), mcpServers: [] } },
+      ];
+      for (const attempt of attempts) {
+        try {
+          const resumed = (await request(attempt.method, attempt.params)) as { sessionId?: string } | null;
+          sessionId = resumed?.sessionId ?? opts.nativeSessionId;
+          break;
+        } catch {
+          // 这个方法不被支持（或会话已过期）：试下一条，最后退回新会话
+          sessionId = '';
+        }
       }
     }
     if (!sessionId) {
