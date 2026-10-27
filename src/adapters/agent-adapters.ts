@@ -11,7 +11,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import type { AgentCapability, AgentListItem, AgentStatus } from '../protocol.js';
+import type { AgentCapability, AgentListItem, AgentStatus, ExecutionModeCapability, FeedKind } from '../protocol.js';
+import { fullModeAdmitted } from '../core/permission-policy.js';
 import { logoDataUri } from './agent-logos.js';
 import type { StepFormat } from './step-parsers.js';
 import type { AcpAgentSpec } from './acp-codebuddy.js';
@@ -28,6 +29,12 @@ export interface AgentDef {
   capability: AgentCapability;
   /** 非交互任务参数模板，`{{prompt}}` 由 runner 替换 */
   taskArgs: string[];
+  /**
+   * full 权限模式的**追加**参数（1.0 Phase 2），接在 taskArgs 之后。
+   * 未声明 = 该工具没有已验证的 full 入口，请求 full 时在 spawn 前拒绝（不降级）。
+   * 只有 bridge 采样这套 argv，平台不能传自定义 args（受管参数模式）。
+   */
+  fullArgs?: string[];
   /** 步骤流格式：有值 = 该工具支持 task_step（taskArgs 必须产出对应 JSONL 事件流） */
   steps?: StepFormat;
   /** 原生 resume 参数模板（含 {{sessionId}}）；仅对 help 已确认的工具声明 */
@@ -43,8 +50,7 @@ export interface AgentDef {
   };
 }
 
-const home = (): string => homedir();
-const appData = (): string => process.env.APPDATA ?? join(home(), 'AppData', 'Roaming');
+const home = (): string => homedir();const appData = (): string => process.env.APPDATA ?? join(home(), 'AppData', 'Roaming');
 const localAppData = (): string => process.env.LOCALAPPDATA ?? join(home(), 'AppData', 'Local');
 
 const DSH_HOME = (): string => process.env.DSH_HOME ?? join(home(), '.dsh');
@@ -57,6 +63,8 @@ export const AGENTS: AgentDef[] = [
     capability: 'non_interactive',
     // 步骤流（B 批次）：stream-json 事件流喂 task_step；task_log 上行内容随之变为 JSONL
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
+    // full：跳过工具权限确认（非 OS 提权）
+    fullArgs: ['--dangerously-skip-permissions'],
     resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose', '--resume', '{{sessionId}}'],
     steps: 'claude-json',
     credential: {
@@ -76,6 +84,8 @@ export const AGENTS: AgentDef[] = [
     capability: 'non_interactive',
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose'],
     resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--verbose', '--resume', '{{sessionId}}'],
+    // full：-y 自动确认；仅当 external_sandbox=true 时才允许（env 注入由 supervisor 负责）
+    fullArgs: ['-y'],
     steps: 'claude-json',
     acp: {
       command: 'codebuddy',
@@ -96,6 +106,8 @@ export const AGENTS: AgentDef[] = [
     capability: 'non_interactive',
     // exec --json 已是 JSONL 事件流（item.started/item.completed）；stdin 由 spawn 关闭（stdio ignore）
     taskArgs: ['exec', '--json', '{{prompt}}'],
+    // full：同时绕过审批与 Codex 自身沙箱
+    fullArgs: ['--dangerously-bypass-approvals-and-sandbox'],
     steps: 'codex-json',
     credential: {
       envKey: 'OPENAI_API_KEY',
@@ -113,6 +125,8 @@ export const AGENTS: AgentDef[] = [
     // 官方文档：headless 加 --json 出 NDJSON 事件流（tool_call/tool_result 按 callId 配对）；
     // 需 dsh ≥ 0.2.x（0.1.5 实测 --json 是 unknown option）
     taskArgs: ['--profile', 'headless', '--json', '{{prompt}}'],
+    // full：两个官方 headless 参数；never 是「仍需审批即拒绝」，不是自动批准
+    fullArgs: ['--permission-mode', 'danger-full-access', '--approval-policy', 'never'],
     resumeArgs: ['--profile', 'headless', '--json', '--session-id', '{{sessionId}}', '{{prompt}}'],
     steps: 'dsh-json',
     credential: {
@@ -129,6 +143,8 @@ export const AGENTS: AgentDef[] = [
     capability: 'interactive_only',
     // 步骤流：官方文档确认 stream-json（init/message/tool_use/tool_result/result）
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
+    // full：--yolo（沙箱是另一维度，不在此声明）
+    fullArgs: ['--yolo'],
     steps: 'gemini-json',
     acp: { command: 'gemini', args: ['--acp'] },
     credential: {
@@ -145,6 +161,8 @@ export const AGENTS: AgentDef[] = [
     capability: 'interactive_only',
     // 修 bug（B 批次实测发现）：opencode 只认 `--format json`，原先写的 `--json` 是无效参数
     taskArgs: ['run', '--format', 'json', '{{prompt}}'],
+    // full：--auto（显式 deny 仍有效）
+    fullArgs: ['--auto'],
     steps: 'opencode-json',
     acp: { command: 'opencode', args: ['acp'] },
     credential: {
@@ -164,6 +182,8 @@ export const AGENTS: AgentDef[] = [
     capability: 'interactive_only',
     // opencode fork（官方 drive-mimo skill 确认事件同构）：run --format json 出 JSONL
     taskArgs: ['run', '--format', 'json', '{{prompt}}'],
+    // full：与 claude 同义（显式 deny 仍有效）
+    fullArgs: ['--dangerously-skip-permissions'],
     steps: 'opencode-json',
     acp: { command: 'mimo', args: ['acp'] },
     credential: { envs: ['MIMO_API_KEY'], files: [], loginCommand: 'mimo' },
@@ -178,6 +198,8 @@ export const AGENTS: AgentDef[] = [
     // 官方文档（docs.qoder.com/cli/run-in-scripts）：-p + --output-format stream-json；实测 claude 同构
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
     resumeArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json', '--resume', '{{sessionId}}'],
+    // full：Qoder 官方旁路语义
+    fullArgs: ['--dangerously-skip-permissions'],
     steps: 'claude-json',
     credential: { envs: [], files: [join(home(), '.qoder')], loginCommand: 'qodercli' },
   },
@@ -189,6 +211,8 @@ export const AGENTS: AgentDef[] = [
     // 修 bug（B 批次实测发现）：grok 没有 run 子命令（'run' 会被当成 prompt）；
     // 非交互是 --single，streaming-messages-json 输出与 claude 同构（实测 init/result 骨架）
     taskArgs: ['--single', '{{prompt}}', '--output-format', 'streaming-messages-json'],
+    // full：--always-approve（沙箱是另一维度）
+    fullArgs: ['--always-approve'],
     steps: 'claude-json',
     acp: { command: 'grok', args: ['agent', 'stdio'], authMethod: 'cached_token' },
     credential: {
@@ -205,6 +229,8 @@ export const AGENTS: AgentDef[] = [
     // 修 bug（B 批次实测发现）：kimi 没有 --headless（unknown option）；
     // 非交互是 -p，stream-json 为 OpenAI tool_calls 风格（已实测）
     taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
+    // full：**不追加** —— -p 已是 auto 权限，再加 --auto 会重复
+    fullArgs: [],
     steps: 'kimi-json',
     acp: { command: 'kimi', args: ['acp'] },
     credential: {
@@ -223,6 +249,8 @@ export const AGENTS: AgentDef[] = [
     // 官方 FAQ 确认 exec --output-format stream-json 出 NDJSON 事件流（0.6.13 实测：
     // item.started/completed + item.type=tool_call，toolCall{name,input}）
     taskArgs: ['exec', '--output-format', 'stream-json', '{{prompt}}'],
+    // full：exec 的 full policy
+    fullArgs: ['--permission', 'full'],
     steps: 'mcode-json',
     acp: { command: 'mcode', args: ['acp'] },
     credential: { envs: ['MINIMAX_API_KEY'], files: [], loginCommand: 'mcode' },
@@ -235,6 +263,8 @@ export const AGENTS: AgentDef[] = [
     // 修 bug（B 批次实测发现）：原 `run` 子命令不存在；实测 `exec --print --output-format stream-json`
     // 输出 claude 同构事件流（v0.211.1）
     taskArgs: ['exec', '--print', '--output-format', 'stream-json', '{{prompt}}'],
+    // full：--yolo（不夸大不同版本的沙箱语义）
+    fullArgs: ['--yolo'],
     steps: 'claude-json',
     acp: { command: 'traecli', args: ['acp'] },
     credential: { envs: [], files: [join(home(), '.trae')], loginCommand: 'traecli' },
@@ -243,6 +273,40 @@ export const AGENTS: AgentDef[] = [
 
 export function agentDefOf(kind: string): AgentDef | undefined {
   return AGENTS.find((a) => a.kind === kind);
+}
+
+/**
+ * 按执行模式如实描述能力（1.0 `AgentListItem.executionModes`）。
+ *
+ * 为什么不能只报一个 `capability`：同一工具在 headless 与 ACP 下能做的事不一样 ——
+ * headless 可能支持 full（危险参数），ACP 只走 default + 原生 permission 交互。
+ * 混着报会让平台请求出「跑到一半才失败」的组合，所以这里逐模式列，未验证的一律不列。
+ */
+export function executionModesFor(def: AgentDef, externalSandbox = false): ExecutionModeCapability[] {
+  // steps 只有声明了步骤解析器才真的产出 task_step；artifacts 是任务级双向通道，两种模式都有
+  const headlessFeed: FeedKind[] = ['messages', ...(def.steps !== undefined ? (['steps'] as FeedKind[]) : []), 'artifacts'];
+  const admitted = fullModeAdmitted({ kind: def.kind, fullArgs: def.fullArgs, externalSandbox });
+  const modes: ExecutionModeCapability[] = [
+    {
+      mode: 'headless',
+      // 未通过 full 准入（尤其 CodeBuddy 没声明 external_sandbox）就不声明 full，避免平台误判
+      permissionModes: admitted ? ['default', 'full'] : ['default'],
+      // headless 是一次性执行，没有回问通道
+      interactionKinds: [],
+      feedKinds: headlessFeed,
+    },
+  ];
+  if (def.acp) {
+    modes.push({
+      mode: 'acp-stdio',
+      // ACP 走原生 permission 交互，不走「跳过审批」的 full 参数
+      permissionModes: ['default'],
+      interactionKinds: ['permission', 'form'],
+      // ACP 的 agent_message_chunk → messages、tool_call → steps；artifacts 暂无 ACP 来源
+      feedKinds: ['messages', 'steps'],
+    });
+  }
+  return modes;
 }
 
 // ---------- 可执行文件解析 ----------
@@ -497,7 +561,7 @@ export function probeCredential(def: AgentDef): CredentialProbe {
 }
 
 /** 探测单个工具（不抛错：任何异常都降级成 not_installed / installedButBroken） */
-export async function probeAgent(def: AgentDef): Promise<AgentListItem> {
+export async function probeAgent(def: AgentDef, externalSandbox = false): Promise<AgentListItem> {
   const binPath = await resolveBinAsync([def.bin, ...(def.altBins ?? [])]);
   // 图标按 kind 直接映射 assets/agent-icons/<kind>.svg，不额外维护一张表
   const logo = logoDataUri(def.kind);
@@ -508,6 +572,7 @@ export async function probeAgent(def: AgentDef): Promise<AgentListItem> {
     capability: def.capability,
     // 步骤流能力如实标注：纯文本工具 false，平台的步骤面板对它降级为空状态
     steps: def.steps !== undefined,
+    executionModes: executionModesFor(def, externalSandbox),
     ...(logo ? { logo } : {}),
   };
   if (!binPath) {

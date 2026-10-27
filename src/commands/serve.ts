@@ -13,7 +13,7 @@
 import { hostname } from 'node:os';
 import { startBridge } from '../app/bootstrap.js';
 import type { SessionLog } from '../app/session-log.js';
-import { numFlag, numFlagMin, type Flags } from '../cli/flags.js';
+import { boolFlag, numFlag, numFlagMin, strFlag, type Flags } from '../cli/flags.js';
 import { hold } from '../cli/hold.js';
 import { panelLog, startPanel } from '../cli/panel.js';
 import { C, out } from '../cli/render.js';
@@ -22,6 +22,8 @@ import { defaultSupervisor } from '../core/task-supervisor.js';
 import {
   resolveControlPlane,
   resolveDiffMaxBytes,
+  resolveExternalSandbox,
+  resolvePermissionPolicy,
   resolveMaxQueued,
   resolveMaxTasks,
   stateDir,
@@ -116,6 +118,9 @@ async function runServe(flags: Flags): Promise<void> {
         maxQueued: resolveMaxQueued(config?.maxQueued, numFlagMin(flags, 'max-queue', 0)),
         diffMaxBytes: resolveDiffMaxBytes(config?.diffMaxBytes),
         captureDiffByDefault: config?.diffDefault === true,
+        // 控制面与 WS 共用同一套权限策略，不能被本地通道绕过
+        permissionPolicy: resolvePermissionPolicy(config?.permissionPolicy, strFlag(flags, 'permission-policy')),
+        externalSandbox: resolveExternalSandbox(config?.externalSandbox, boolFlag(flags, 'external-sandbox')),
       },
     },
   );

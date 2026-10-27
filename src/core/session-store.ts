@@ -9,13 +9,15 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import type { InteractionKind } from '../protocol.js';
 
 export type SessionMode = 'task' | 'conversation';
 export type SessionPhase = 'queued' | 'running' | 'waiting_interaction' | 'waiting_user' | 'settled';
 export type SessionTerminalStatus = 'success' | 'failed' | 'cancelled' | 'timeout';
 export type SessionStatus = 'running' | SessionTerminalStatus;
 export type TurnStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'timeout';
-export type InteractionKind = 'permission' | 'form' | 'auth-url';
+// 交互种类是 wire 语义（平台按它决定渲染），真源在 protocol；这里只做同值转出，避免两处漂移
+export type { InteractionKind };
 export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
 
 const SCHEMA_VERSION = 4;
@@ -934,6 +936,22 @@ export class SessionStore {
       )
       .get(tenantId, sessionId) as { oldest: number | null; latest: number | null };
     return { oldest: row.oldest ?? undefined, latest: row.latest ?? undefined };
+  }
+
+  /**
+   * 事件序号缺口（1.0 `eventWindow.gaps`）：retention 或写入失败造成的缺号必须**显式**告诉平台，
+   * 否则补洞方会以为「拿到连续窗口」而静默丢内容。空数组 = 完整。
+   */
+  eventGaps(sessionId: string, tenantId = DEFAULT_TENANT): Array<{ from: number; to: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT prev + 1 AS gap_from, event_seq - 1 AS gap_to FROM (
+           SELECT event_seq, LAG(event_seq) OVER (ORDER BY event_seq) AS prev
+             FROM events WHERE tenant_id = ? AND session_id = ?
+         ) WHERE prev IS NOT NULL AND event_seq > prev + 1`,
+      )
+      .all(tenantId, sessionId) as Array<{ gap_from: number; gap_to: number }>;
+    return rows.map((row) => ({ from: row.gap_from, to: row.gap_to }));
   }
 
   requestInteraction(input: {

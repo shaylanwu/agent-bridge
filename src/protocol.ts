@@ -31,12 +31,22 @@ export const PROTOCOL_CAPABILITIES = [
   'artifact-upload',
   'artifact-download',
   'interaction-url',
+  /** 支持 run_task.permissionMode（本机策略仍可拒绝；不代表一定能给 full） */
+  'permission-mode',
+  /** 支持 get_artifact 内联取回（超限回 too_large，走分块下载） */
+  'artifact-inline',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
 const MAX_META_LEN = 128;
 const MAX_PURPOSE_LEN = 64;
 const MAX_TOKEN_LEN = 256;
+
+/**
+ * get_artifact 的内联内容上限（1 MB）。超过就只回元数据 + `too_large`，
+ * 让平台改走 artifact_download 分块通道 —— 整块塞进 WS 帧会拖垮心跳。
+ */
+export const ARTIFACT_INLINE_MAX_BYTES = 1024 * 1024;
 
 /** 取字符串字段：类型不对或超长一律忽略（前向兼容，不因为新字段拒帧） */
 function strField(msg: Record<string, unknown>, key: string, max: number): string | undefined {
@@ -67,6 +77,11 @@ export interface AgentListItem {
   logo?: string;
   /** 是否支持步骤流（task_step）：纯文本输出的工具为 false，平台应隐藏其步骤面板而不是空转 */
   steps?: boolean;
+  /**
+   * 按执行模式列出的能力（1.0）。缺省表示只有 headless 且能力等于 legacy `capability`，
+   * 未验证的维度一律不声明；新平台以它为准，`capability` 仅为旧平台保留。
+   */
+  executionModes?: ExecutionModeCapability[];
 }
 
 export type ClientMessage =
@@ -81,6 +96,8 @@ export type ClientMessage =
       capabilities?: string[];
       /** 本次会话生效的调度额度：平台据此做有水位线的派发，而不是靠 device_busy 试错 */
       capacity?: { maxTasks: number; maxQueued: number };
+      /** 本次会话生效的执行侧策略（权限策略 / 交互开关与额度） */
+      execution?: ExecutionCapability;
     }
   | { type: 'agent_list'; agents: AgentListItem[]; scannedAt: string }
   | {
@@ -120,6 +137,26 @@ export type ClientMessage =
       turnId?: string;
       /** 持久事件序号：平台按它去重/补洞 */
       eventSeq?: number;
+      /**
+       * 本次任务实际采用并用于构造命令的权限模式（1.0）。
+       * 只表示 bridge 的选择，**不是** CLI 实际权限证明。
+       */
+      permissionMode?: PermissionMode;
+      /**
+       * `phase: 'waiting_interaction'` 时正在等待的交互请求 id；
+       * 回到 running 或进入终态时必须消失（平台据此收起等待态，而不是靠超时猜）。
+       */
+      interactionId?: string;
+      /**
+       * ACP `session/prompt` 的结算原因（1.0，仅 ACP 执行模式且拿到时回显）。
+       * 取消必须靠 `stopReason: 'cancelled'`，不得用 JSON-RPC error 冒充。
+       */
+      stopReason?: StopReason;
+      /**
+       * 本次任务的 canonical feed 是否**未完整收尾**（1.0）。
+       * 为 true 时平台必须展示「会话不完整」而不是把它当完整历史。
+       */
+      feedIncomplete?: boolean;
     }
   | {
       type: 'task_log';
@@ -178,6 +215,36 @@ export type ClientMessage =
       events?: { eventSeq: number; type: string; payload: unknown; createdAt: string }[];
       oldestEventSeq?: number;
       latestEventSeq?: number;
+      /**
+       * 事件窗口完整性（1.0）：`gaps` 是持久化事件序号的缺口区间（空数组 = 完整）。
+       * 平台补洞必须先按 gaps 判定缺失，而不是假设窗口连续。
+       */
+      eventWindow?: {
+        oldestEventSeq?: number;
+        latestEventSeq?: number;
+        gaps: Array<{ from: number; to: number }>;
+      };
+      errorCode?: string;
+    }
+  | {
+      /**
+       * 附件内联内容：响应 get_artifact。终态后仍可取（走持久元数据 + CAS，不重读工作区）。
+       * 超过 inline 上限时只回元数据并置 `contentUnavailableReason: 'too_large'`，平台应改走
+       * artifact_download 分块通道，而不是把整块内容塞进 WS 帧。
+       */
+      type: 'artifact_content';
+      taskId: string;
+      artifactId: string;
+      requestId?: string;
+      found: boolean;
+      name?: string;
+      mimeType?: string;
+      size?: number;
+      sha256?: string;
+      kind?: string;
+      /** base64 内容；仅在可内联时出现 */
+      data?: string;
+      contentUnavailableReason?: 'too_large' | 'not_readable';
       errorCode?: string;
     }
   | {
@@ -308,6 +375,57 @@ export type TaskStatus = 'running' | 'success' | 'failed' | 'cancelled' | 'timeo
 export type TaskPhase = 'queued' | 'running' | 'waiting_interaction' | 'waiting_user';
 
 /**
+ * ACP `session/prompt` 的结算原因（1.0）。映射口径见 design §7.3：
+ * `end_turn` 才可能 success，其余按 failed/agent_error 或 cancelled 结算，绝不因「收到 result」就算成功。
+ */
+export type StopReason =
+  | 'end_turn'
+  | 'max_tokens'
+  | 'max_turn_requests'
+  | 'refusal'
+  | 'cancelled';
+
+/**
+ * 单任务权限模式（1.0）。**只表示 bridge 选择并用于构造命令的策略**，
+ * 不是 CLI 实际权限的证明，也不是 OS 提权或环境沙箱。
+ */
+export type PermissionMode = 'default' | 'full';
+
+/**
+ * 执行模式（1.0）：同一工具在不同通道下的能力**并不相同**。
+ * 典型是 headless 支持 full、ACP 只支持 default —— 混为一谈会让平台请求出跑不起来的组合。
+ */
+export type ExecutionModeName = 'headless' | 'acp-stdio';
+
+/** 交互种类：只列该模式下**已实现且通过测试**的种类，空数组/缺省 = 不支持交互 */
+export type InteractionKind = 'permission' | 'form' | 'auth-url';
+
+/** canonical feed 维度：未验证的维度不得声明（避免平台把 task_log 当稳定 UI 协议） */
+export type FeedKind = 'messages' | 'steps' | 'artifacts';
+
+export interface ExecutionModeCapability {
+  mode: ExecutionModeName;
+  /** 该模式下可用的权限模式集合（不含 full = 请求 full 时必须在 spawn 前拒绝） */
+  permissionModes: PermissionMode[];
+  interactionKinds: InteractionKind[];
+  feedKinds: FeedKind[];
+}
+
+/**
+ * hello.execution：本机本次会话生效的执行侧策略（1.0）。
+ * 如实上报而不是让平台猜 —— 平台据此决定「能不能请求 full / 能不能等交互」。
+ */
+export interface ExecutionCapability {
+  permissionPolicy: 'default' | 'allow-full' | 'full';
+  /** 是否声明 CodeBuddy 的 full 运行处于外部沙箱内（只影响 CodeBuddy 准入） */
+  externalSandbox: boolean;
+  /** 本机是否开放交互；false 时平台不得期待任何 task_interaction_request */
+  interactionEnabled: boolean;
+  interactionTimeoutMs: number;
+  maxInteractionsPerTask: number;
+}
+
+/**
  * 服务身份（P0-8）：任何第三方系统/后端服务都可以带一个 scoped service token 调进来。
  * `requestedBy` 是调用方标识（如 `svc:repair-orchestrator`），bridge 会回显到终态供平台审计。
  * 三个字段全部可选 —— 不带就完全等同 v1 行为（除本地显式开启 require_service_token）。
@@ -335,6 +453,11 @@ export interface RunTaskCommand extends ServiceIdentity {
   captureDiff?: boolean;
   /** 1.0：缺省 task（一次性）；conversation 回合结束进入 waiting_user */
   sessionMode?: 'task' | 'conversation';
+  /**
+   * 1.0：请求的权限模式（��省 = 由本机 permission_policy 决定）。
+   * 是否真能按 full 执行还取决于本机策略与工具 full 映射，不满足时任务被拒绝而非降级。
+   */
+  permissionMode?: PermissionMode;
 }
 
 export interface MessagePart {
@@ -447,6 +570,14 @@ export interface GetTaskCommand extends ServiceIdentity {
   limit?: number;
 }
 
+export interface GetArtifactCommand extends ServiceIdentity {
+  type: 'get_artifact';
+  taskId: string;
+  artifactId: string;
+  /** 平台请求关联 id，原样回在 artifact_content */
+  requestId?: string;
+}
+
 export type ServerMessage =
   | RunTaskCommand
   | CancelTaskCommand
@@ -458,6 +589,7 @@ export type ServerMessage =
   | SendMessageCommand
   | InteractionResponseCommand
   | GetInteractionUrlCommand
+  | GetArtifactCommand
   | ArtifactUploadStartCommand
   | ArtifactUploadChunkCommand
   | ArtifactUploadCompleteCommand
@@ -495,6 +627,13 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       timeoutMs: typeof msg['timeoutMs'] === 'number' ? msg['timeoutMs'] : undefined,
       allowInteractive: msg['allowInteractive'] === true,
       sessionMode: msg['sessionMode'] === 'conversation' ? 'conversation' : 'task',
+      // 1.0：只认这两个值，其余（含非法串）一律忽略 —— 前向兼容，不因新字段拒帧
+      permissionMode:
+        msg['permissionMode'] === 'full'
+          ? 'full'
+          : msg['permissionMode'] === 'default'
+            ? 'default'
+            : undefined,
       // P0-6：只有显式 true 才捕获 diff（本地 diff_default 可在 cli 层兜底）
       captureDiff: msg['captureDiff'] === true,
       // P0-8：服务身份三件套，形状不对就忽略（不因为新字段拒帧）
@@ -731,6 +870,22 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       requestId: strField(msg, 'requestId', MAX_META_LEN),
       afterEventSeq: after,
       limit,
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
+  }
+  if (type === 'get_artifact') {
+    for (const key of ['taskId', 'artifactId'] as const) {
+      if (typeof msg[key] !== 'string' || !msg[key]) {
+        throw new ProtocolError(`get_artifact 缺少 ${key}`);
+      }
+    }
+    return {
+      type: 'get_artifact',
+      taskId: String(msg['taskId']),
+      artifactId: String(msg['artifactId']),
+      requestId: strField(msg, 'requestId', MAX_META_LEN),
       requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
       purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
       serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),

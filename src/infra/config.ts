@@ -12,6 +12,15 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { assertDeviceId } from '../core/device-identity.js';
 import { writeAtomicFile } from './atomic-file.js';
 
+/**
+ * 本机权限策略（1.0）。
+ *
+ * ⚠️ 这是 **argv 确定性**策略，不是 OS 提权、配置隔离或环境沙箱 —— 它只决定 bridge 用哪套
+ * 参数构造命令，不承诺 CLI 插件/配置文件/继承环境造成的等效自动审批能力被阻断。
+ */
+export const PERMISSION_POLICIES = ['default', 'allow-full', 'full'] as const;
+export type PermissionPolicy = (typeof PERMISSION_POLICIES)[number];
+
 export interface BridgeConfig {
   platformUrl: string;
   deviceId: string;
@@ -29,6 +38,28 @@ export interface BridgeConfig {
   diffDefault?: boolean;
   /** 强制要求有效的服务令牌才执行任务（缺省 false = 兼容无令牌的老平台） */
   requireServiceToken?: boolean;
+  /**
+   * 本机权限策略（1.0，缺省 default；见 resolvePermissionPolicy）：
+   * - `default`：只按适配器模板执行，平台请求 full 一律拒绝
+   * - `allow-full`：本机允许，但只有平台显式请求 full 才用（缺省任务仍走 default）
+   * - `full`：本机默认就走 full，平台请求 default 时仍可降级
+   * allow-full / full 同时启用受管参数模式：平台只能发空 args。
+   */
+  permissionPolicy?: PermissionPolicy;
+  /**
+   * 声明本机 CodeBuddy 的 full 运行处于真实外部沙箱内（缺省 false）。
+   * 只对 CodeBuddy 生效：为 false 时其 full 请求被拒绝，不会偷偷降级。
+   */
+  externalSandbox?: boolean;
+  /**
+   * 是否向上游开放交互（1.0，缺省 false）。关闭时不会发出任何 task_interaction_request，
+   * 适配器的权限/form 请求直接按「本机不支持交互」处理，而不是挂着等一个不会来的回答。
+   */
+  interactionEnabled?: boolean;
+  /** 单次交互等待上限（毫秒，缺省 900000 = 15 分钟） */
+  interactionTimeoutMs?: number;
+  /** 单任务交互次数上限（缺省 16） */
+  maxInteractionsPerTask?: number;
   /** waiting_user 会话空闲多久自动关闭（毫秒，缺省 0 = 不自动关闭） */
   sessionIdleMs?: number;
   /** 控制面 principal JWT（可选；缺省不启用） */
@@ -91,10 +122,6 @@ export function resolveMaxTasks(fromConfig?: number, override?: number): number 
 }
 
 /**
- * 队列上限：默认 60，夹在 0~1024（0 = 不允许排队，超限直接失败）。
- * 优先级：启动参数 `--max-queue` > `AGENT_BRIDGE_MAX_QUEUE` > config.toml 的 `max_queue` > 默认。
- */
-/**
  * waiting_user 空闲关闭：默认 0（不自动关闭，保持旧行为）。
  * 环境变量 `AGENT_BRIDGE_SESSION_IDLE_MS` > config.toml `session_idle_ms`。
  * 上限 24h，防止手滑写成 `99999999999` 把会话永久占住。
@@ -107,6 +134,10 @@ export function resolveSessionIdleMs(fromConfig?: number): number {
   return Math.min(24 * 60 * 60 * 1000, Math.floor(chosen as number));
 }
 
+/**
+ * 队列上限：默认 60，夹在 0~1024（0 = 不允许排队，超限直接失败）。
+ * 优先级：启动参数 `--max-queue` > `AGENT_BRIDGE_MAX_QUEUE` > config.toml 的 `max_queue` > 默认。
+ */
 export const DEFAULT_MAX_QUEUED = 60;
 const MAX_QUEUED_CEILING = 1024;
 
@@ -121,6 +152,61 @@ export function resolveMaxQueued(fromConfig?: number, override?: number): number
         : fromConfig;
   if (chosen === undefined || !Number.isFinite(chosen) || chosen < 0) return DEFAULT_MAX_QUEUED;
   return Math.min(MAX_QUEUED_CEILING, Math.floor(chosen));
+}
+
+export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = 'default';
+
+/**
+ * 权限策略解析：启动参数 `--permission-policy` > config.toml 的 `permission_policy` > 默认 `default`。
+ *
+ * ⚠️ 非法值**回落到 default**（失败关闭）。绝不因为写错一个字符串就静默放开 full。
+ */
+export function resolvePermissionPolicy(fromConfig?: string, override?: string): PermissionPolicy {
+  const pick = override ?? fromConfig;
+  return (PERMISSION_POLICIES as readonly string[]).includes(pick ?? '')
+    ? (pick as PermissionPolicy)
+    : DEFAULT_PERMISSION_POLICY;
+}
+
+/**
+ * 外部沙箱声明：只由本机配置/启动参数开启（`--external-sandbox`），平台无权设置。
+ * 仅影响 CodeBuddy 的 full 准入。
+ */
+export function resolveExternalSandbox(fromConfig?: boolean, override?: boolean): boolean {
+  return override === true || fromConfig === true;
+}
+
+/**
+ * 交互开关（1.0）：缺省 **关闭** —— 关闭时不向上游发任何 task_interaction_request，
+ * 平台不该等一个永远不会来的问题。开启才允许 permission/form 往返。
+ */
+export function resolveInteractionEnabled(fromConfig?: boolean, override?: boolean): boolean {
+  return override === true || fromConfig === true;
+}
+
+/** 单次交互等待上限：默认 15 分钟，夹 10 秒 ~ 2 小时（比任务总超时短才有意义） */
+export const DEFAULT_INTERACTION_TIMEOUT_MS = 15 * 60 * 1000;
+const INTERACTION_TIMEOUT_FLOOR = 10_000;
+const INTERACTION_TIMEOUT_CEILING = 2 * 60 * 60 * 1000;
+
+export function resolveInteractionTimeoutMs(fromConfig?: number, override?: number): number {
+  const raw = process.env['AGENT_BRIDGE_INTERACTION_TIMEOUT_MS'];
+  const env = raw === undefined || raw.trim() === '' ? undefined : Number(raw);
+  const pick = [override, env, fromConfig].find((v) => typeof v === 'number' && Number.isFinite(v));
+  if (pick === undefined) return DEFAULT_INTERACTION_TIMEOUT_MS;
+  return Math.min(INTERACTION_TIMEOUT_CEILING, Math.max(INTERACTION_TIMEOUT_FLOOR, Math.floor(pick as number)));
+}
+
+/** 单任务交互次数上限：默认 16，夹 1~256（防上游刷屏把平台打爆） */
+export const DEFAULT_MAX_INTERACTIONS_PER_TASK = 16;
+const MAX_INTERACTIONS_CEILING = 256;
+
+export function resolveMaxInteractionsPerTask(fromConfig?: number, override?: number): number {
+  const raw = process.env['AGENT_BRIDGE_MAX_INTERACTIONS_PER_TASK'];
+  const env = raw === undefined || raw.trim() === '' ? undefined : Number(raw);
+  const pick = [override, env, fromConfig].find((v) => typeof v === 'number' && Number.isFinite(v));
+  if (pick === undefined) return DEFAULT_MAX_INTERACTIONS_PER_TASK;
+  return Math.min(MAX_INTERACTIONS_CEILING, Math.max(1, Math.floor(pick as number)));
 }
 
 /** diff 上限：默认 256 KB，夹在 1 KB ~ 8 MB（人工审核看不了几 MB，也别让报文失控） */
@@ -262,6 +348,11 @@ function serializeConfig(cfg: BridgeConfig): string {
   if (cfg.diffDefault !== undefined) out['diff_default'] = cfg.diffDefault;
   if (cfg.requireServiceToken !== undefined) out['require_service_token'] = cfg.requireServiceToken;
   if (cfg.sessionIdleMs !== undefined) out['session_idle_ms'] = cfg.sessionIdleMs;
+  if (cfg.permissionPolicy !== undefined) out['permission_policy'] = cfg.permissionPolicy;
+  if (cfg.externalSandbox !== undefined) out['external_sandbox'] = cfg.externalSandbox;
+  if (cfg.interactionEnabled !== undefined) out['interaction_enabled'] = cfg.interactionEnabled;
+  if (cfg.interactionTimeoutMs !== undefined) out['interaction_timeout_ms'] = cfg.interactionTimeoutMs;
+  if (cfg.maxInteractionsPerTask !== undefined) out['max_interactions_per_task'] = cfg.maxInteractionsPerTask;
   if (cfg.mcp !== undefined) {
     const servers: Record<string, unknown> = {};
     for (const [name, server] of Object.entries(cfg.mcp.servers)) {
@@ -357,6 +448,33 @@ export function loadConfig(): BridgeConfig | null {
     'require_service_token',
     file,
   );
+  // 权限策略：非法枚举值直接报错，而不是悄悄回落（配置写错应当立刻可见）
+  const policyRaw = optionalString(raw, 'permission_policy', file);
+  if (policyRaw !== undefined && !(PERMISSION_POLICIES as readonly string[]).includes(policyRaw)) {
+    throw invalidConfig(
+      file,
+      `permission_policy 必须是 ${PERMISSION_POLICIES.join(' | ')}，实际为 ${policyRaw}`,
+    );
+  }
+  const permissionPolicy = policyRaw as PermissionPolicy | undefined;
+  const externalSandbox = optionalBoolean(raw['external_sandbox'] ?? raw['externalSandbox'], 'external_sandbox', file);
+  const interactionEnabled = optionalBoolean(
+    raw['interaction_enabled'] ?? raw['interactionEnabled'],
+    'interaction_enabled',
+    file,
+  );
+  const interactionTimeoutMs = optionalNumber(
+    raw['interaction_timeout_ms'] ?? raw['interactionTimeoutMs'],
+    'interaction_timeout_ms',
+    file,
+    1,
+  );
+  const maxInteractionsPerTask = optionalNumber(
+    raw['max_interactions_per_task'] ?? raw['maxInteractionsPerTask'],
+    'max_interactions_per_task',
+    file,
+    1,
+  );
   const label = optionalString(raw, 'label', file);
 
   const cpValue = raw['control_plane'];
@@ -445,6 +563,11 @@ export function loadConfig(): BridgeConfig | null {
     ...(diffDefault !== undefined ? { diffDefault } : {}),
     ...(requireServiceToken !== undefined ? { requireServiceToken } : {}),
     ...(sessionIdleMs !== undefined ? { sessionIdleMs } : {}),
+    ...(permissionPolicy !== undefined ? { permissionPolicy } : {}),
+    ...(externalSandbox !== undefined ? { externalSandbox } : {}),
+    ...(interactionEnabled !== undefined ? { interactionEnabled } : {}),
+    ...(interactionTimeoutMs !== undefined ? { interactionTimeoutMs } : {}),
+    ...(maxInteractionsPerTask !== undefined ? { maxInteractionsPerTask } : {}),
     ...(mcp !== undefined ? { mcp } : {}),
     ...(jwt !== undefined ? { jwt } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),

@@ -15,6 +15,8 @@ Bind this machine to a platform and stay connected.
 ```bash
 agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-browser] [--label=name]
     [--max-tasks=30] [--max-queue=60]
+    [--permission-policy=default|allow-full|full] [--external-sandbox]
+    [--interaction-enabled] [--interaction-timeout-ms=900000] [--max-interactions-per-task=16]
 ```
 
 | Flag | Meaning |
@@ -25,6 +27,11 @@ agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-brow
 | `--label` | A human label for the device. |
 | `--max-tasks` | Concurrency cap for this session (default 30, clamped 1–128). |
 | `--max-queue` | Queue cap for this session (default 60, clamped 0–1024; 0 = no queueing). |
+| `--permission-policy` | Local permission policy for this session: `allow-full` lets the platform ask for full per task; `full` also promotes tasks that omit the field. Under `allow-full` / `full` the platform may only send empty `args`. |
+| `--external-sandbox` | Declares that CodeBuddy's full mode runs inside a real external sandbox (only affects CodeBuddy's full admission). |
+| `--interaction-enabled` | Allows permission/form interactions for this session (off by default; while off no interaction request is sent). |
+| `--interaction-timeout-ms` | Per-wait cap (default 900000, clamped 10s–2h; a shorter adapter `expiresAt` wins). |
+| `--max-interactions-per-task` | Per-task interaction budget (default 16, clamped 1–256); extra requests are dropped. |
 
 Precedence: startup flags > env (`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE`) > config.toml > defaults.
 
@@ -38,6 +45,8 @@ Same main flow as `connect`, plus the **optional** loopback control plane.
 
 ```bash
 agent-bridge serve <platformUrl> [--port=8787] [--max-tasks=30] [--max-queue=60]
+    [--permission-policy=default|allow-full|full] [--external-sandbox]
+    [--interaction-enabled] [--interaction-timeout-ms=900000] [--max-interactions-per-task=16]
 ```
 
 - `connect` starts the local Web panel on `127.0.0.1:8787` by default and falls forward if the port is taken.

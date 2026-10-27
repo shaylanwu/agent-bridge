@@ -2,30 +2,35 @@
  * 扫描调度：并发探测 12 个工具 + 30s TTL 缓存 + 逐项回调（实时回传）
  *
  * 为什么要并发：单个工具一次 `--version` 子进程（Windows 上还要过 cmd 垫片），串行实测 12.8s（空载）～
- * 25.7s（机器繁忙），期间事件循环被占住、WS 心跳与入站指令全被推迟。改为并发上限 4 后落到秒级。
+ * 25.7s（机器繁忙），期间事件循环被占住、WS 心跳与入站指令全被推迟。改为并发探测（上限见
+ * CONCURRENCY）后落到秒级。
  *
- * 为什么要 onItem：平台侧是卡片式展示，一次性丢 11 条会「一直空着 → 突然全亮」。逐项回调让平台
+ * 为什么要 onItem：平台侧是卡片式展示，一次性丢 12 条会「一直空着 → 突然全亮」。逐项回调让平台
  * 每完成一个就推一条 `scan_progress`（见 cli.ts），终态再发全量 `agent_list` / `scan_result`。
  */
 
-import { AGENTS, probeAgent } from '../adapters/agent-adapters.js';
+import { AGENTS, executionModesFor, probeAgent } from '../adapters/agent-adapters.js';
 import type { AgentListItem } from '../protocol.js';
 
 const TTL_MS = 30_000;
-/** 并发上限：12 个子进程全开会在低配机器上抢 CPU，4 个是实测的平衡点 */
+/** 并发上限：12 个子进程全开会在低配机器上抢 CPU，6 个是实测的平衡点 */
 const CONCURRENCY = 6;
 
-let cache: { at: number; items: AgentListItem[] } | null = null;
+let cache: { at: number; items: AgentListItem[]; sandbox: boolean } | null = null;
 
 export interface ScanOptions {
   /** 绕过缓存（平台点「立即扫描」/ CLI `status --fresh`） */
   fresh?: boolean;
   /** 每完成一个适配器回调一次（含未安装项），用于实时回传 */
   onItem?: (item: AgentListItem) => void;
+  /** 本机是否声明 CodeBuddy full 运行在外部沙箱内（影响它的 executionModes 与 full 准入） */
+  externalSandbox?: boolean;
 }
 
 export async function scanAgents(opts: ScanOptions = {}): Promise<AgentListItem[]> {
-  if (!opts.fresh && cache && Date.now() - cache.at < TTL_MS) {
+  const sandbox = opts.externalSandbox === true;
+  // 缓存必须按 sandbox 区分：否则先以 false 扫过，声明 external_sandbox 后仍报「无 full」
+  if (!opts.fresh && cache && cache.sandbox === sandbox && Date.now() - cache.at < TTL_MS) {
     // 命中缓存：不再探测，但仍逐项回调，保证调用方拿到的进度序列是完整的
     if (opts.onItem) for (const item of cache.items) opts.onItem(item);
     return cache.items;
@@ -41,7 +46,7 @@ export async function scanAgents(opts: ScanOptions = {}): Promise<AgentListItem[
       if (!def) return;
       let item: AgentListItem;
       try {
-        item = await probeAgent(def);
+        item = await probeAgent(def, sandbox);
       } catch {
         // 一个工具探测炸了不能拖垮整次扫描
         item = {
@@ -50,6 +55,7 @@ export async function scanAgents(opts: ScanOptions = {}): Promise<AgentListItem[
           status: 'not_installed',
           capability: def.capability,
           steps: def.steps !== undefined,
+          executionModes: executionModesFor(def, sandbox),
         };
       }
       items[index] = item;
@@ -58,7 +64,7 @@ export async function scanAgents(opts: ScanOptions = {}): Promise<AgentListItem[
   };
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, AGENTS.length) }, worker));
-  cache = { at: Date.now(), items };
+  cache = { at: Date.now(), items, sandbox };
   return items;
 }
 

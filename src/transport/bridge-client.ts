@@ -8,7 +8,13 @@
 import { WebSocket } from 'ws';
 import { Outbox } from './outbox.js';
 import { assertDeviceId } from '../core/device-identity.js';
-import { PROTOCOL_CAPABILITIES, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from '../protocol.js';
+import {
+  PROTOCOL_CAPABILITIES,
+  PROTOCOL_VERSION,
+  type ClientMessage,
+  type ExecutionCapability,
+  type ServerMessage,
+} from '../protocol.js';
 
 export interface BridgeClientOptions {
   platformUrl: string;
@@ -21,6 +27,8 @@ export interface BridgeClientOptions {
   hostname: string;
   /** 本次会话生效的调度额度（随 hello 上报；平台据此做有水位线的派发） */
   capacity?: { maxTasks: number; maxQueued: number };
+  /** 本次会话生效的执行侧策略（权限策略 / 交互开关与额度），随 hello 上报 */
+  execution?: ExecutionCapability;
   onMessage: (msg: ServerMessage) => void;
   onOpen?: () => void;
   onClose?: (reason: string) => void;
@@ -99,6 +107,8 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
         capabilities: [...PROTOCOL_CAPABILITIES],
         // 容量水位（A2）：握手即知上限，不必等 device_busy 试错
         ...(opts.capacity ? { capacity: opts.capacity } : {}),
+        // 执行侧策略：如实报告能否请求 full / 能否期待交互，避免平台按默认值瞎猜
+        ...(opts.execution ? { execution: opts.execution } : {}),
       });
       flush();
       opts.onOpen?.();

@@ -15,6 +15,8 @@ sidebar:
 ```bash
 agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-browser] [--label=name]
     [--max-tasks=30] [--max-queue=60]
+    [--permission-policy=default|allow-full|full] [--external-sandbox]
+    [--interaction-enabled] [--interaction-timeout-ms=900000] [--max-interactions-per-task=16]
 ```
 
 | 参数 | 含义 |
@@ -25,6 +27,11 @@ agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-brow
 | `--label` | 给设备一个人类可读的名字。 |
 | `--max-tasks` | 本次会话的并发上限（默认 30，夹 1–128）。 |
 | `--max-queue` | 本次会话的排队上限（默认 60，夹 0–1024；0 = 不排队）。 |
+| `--permission-policy` | 本机权限策略，覆盖本会话的 `permission_policy`：`allow-full` 才允许平台按任务申请 full，`full` 让缺省任务也走 full。`allow-full` / `full` 下平台只能发空 `args`。 |
+| `--external-sandbox` | 声明本机 CodeBuddy 的 full 运行处于外部沙箱内（仅影响 CodeBuddy 的 full 准入）。 |
+| `--interaction-enabled` | 本会话开放权限/表单交互（默认关闭；关闭时不会向平台发任何交互请求）。 |
+| `--interaction-timeout-ms` | 单次交互等待上限（默认 900000，夹 10 秒 ~ 2 小时；适配器更短的 `expiresAt` 优先）。 |
+| `--max-interactions-per-task` | 单任务交互次数上限（默认 16，夹 1 ~ 256）；超出不再转发。 |
 
 优先级：启动参数 > 环境变量（`AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE`）> config.toml > 默认值。
 
@@ -37,6 +44,8 @@ agent-bridge connect <platformUrl> [--token=xxx] [--device-id=bd_xxx] [--no-brow
 
 ```bash
 agent-bridge serve <platformUrl> [--port=8787] [--max-tasks=30] [--max-queue=60]
+    [--permission-policy=default|allow-full|full] [--external-sandbox]
+    [--interaction-enabled] [--interaction-timeout-ms=900000] [--max-interactions-per-task=16]
 ```
 
 - `connect` 默认在 `127.0.0.1:8787` 启动本机 Web 面板，端口占用自动顺延；

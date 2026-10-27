@@ -28,6 +28,7 @@ Sent immediately after the WebSocket opens. The platform must implement the hand
 | `hostname` | `string` | ✓ |  |
 | `capabilities` | array&lt;string&gt; |  |  |
 | `capacity` | `object` |  |  |
+| `execution` | `object` |  |  |
 
 **Example**
 
@@ -214,6 +215,10 @@ State transitions, and the only message that carries terminal results: exit code
 | `queuePosition` | `integer` |  |  |
 | `turnId` | `string` |  |  |
 | `eventSeq` | `integer` |  |  |
+| `permissionMode` | `default` \| `full` |  |  |
+| `interactionId` | `string` |  |  |
+| `stopReason` | `end_turn` \| `max_tokens` \| `max_turn_requests` \| `refusal` \| `cancelled` |  |  |
+| `feedIncomplete` | `boolean` |  |  |
 | `diff` | `string` |  |  |
 | `changedFiles` | array&lt;string&gt; |  |  |
 | `diffTruncated` | `boolean` |  |  |
@@ -231,6 +236,9 @@ State transitions, and the only message that carries terminal results: exit code
   "errorCode": "string",
   "phase": "queued",
   "turnId": "string",
+  "permissionMode": "default",
+  "interactionId": "string",
+  "stopReason": "end_turn",
   "diff": "string",
   "result": "string",
   "requestedBy": "string"
@@ -357,6 +365,7 @@ State transitions, and the only message that carries terminal results: exit code
 | `events` | array&lt;object&gt; |  |  |
 | `oldestEventSeq` | `integer` |  |  |
 | `latestEventSeq` | `integer` |  |  |
+| `eventWindow` | `object` |  |  |
 | `errorCode` | `string` |  |  |
 
 **Example**
@@ -367,6 +376,49 @@ State transitions, and the only message that carries terminal results: exit code
   "taskId": "string",
   "requestId": "string",
   "found": true,
+  "errorCode": "string"
+}
+```
+
+
+<a id="msg-artifact_content"></a>
+
+### artifact_content — 附件内联内容
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_content` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `requestId` | `string` |  |  |
+| `found` | `boolean` | ✓ |  |
+| `name` | `string` |  |  |
+| `mimeType` | `string` |  |  |
+| `size` | `integer` |  |  |
+| `sha256` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `data` | `string` |  |  |
+| `contentUnavailableReason` | `too_large` \| `not_readable` |  |  |
+| `errorCode` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_content",
+  "taskId": "string",
+  "artifactId": "string",
+  "requestId": "string",
+  "found": true,
+  "name": "string",
+  "mimeType": "string",
+  "sha256": "string",
+  "kind": "string",
+  "data": "string",
+  "contentUnavailableReason": "too_large",
   "errorCode": "string"
 }
 ```
@@ -788,6 +840,7 @@ Platform → bridge. Creates and runs one agent task. Accepts the optional servi
 | `allowInteractive` | `boolean` |  |  |
 | `captureDiff` | `boolean` |  |  |
 | `sessionMode` | `task` \| `conversation` |  |  |
+| `permissionMode` | `default` \| `full` |  |  |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
 | `serviceToken` | `string` |  |  |
@@ -805,6 +858,7 @@ Platform → bridge. Creates and runs one agent task. Accepts the optional servi
   ],
   "prompt": "string",
   "sessionMode": "task",
+  "permissionMode": "default",
   "requestedBy": "string",
   "purpose": "repair",
   "serviceToken": "string"
@@ -866,6 +920,38 @@ Platform → bridge. Requests cancellation of a running task.
 {
   "type": "get_task",
   "taskId": "string",
+  "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-get_artifact"></a>
+
+### get_artifact — 补取附件内容
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `get_artifact` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `requestId` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "get_artifact",
+  "taskId": "string",
+  "artifactId": "string",
   "requestId": "string",
   "requestedBy": "string",
   "purpose": "string",

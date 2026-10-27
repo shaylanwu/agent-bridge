@@ -29,7 +29,8 @@ export function authorizeService(
     | 'cancel_task'
     | 'get_task'
     | 'task_interaction_response'
-    | 'get_interaction_url',
+    | 'get_interaction_url'
+    | 'get_artifact',
   taskId: string,
   scope: ServiceScope,
   requireToken: boolean,

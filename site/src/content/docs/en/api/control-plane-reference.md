@@ -597,6 +597,7 @@ event 类型：snapshot / event / wire / heartbeat / done。 afterEventSeq 之�
 | `args` | array&lt;string&gt; |  |  |
 | `timeoutMs` | `integer` |  |  |
 | `captureDiff` | `boolean` |  |  |
+| `permissionMode` | `default` \| `full` |  | 请求的权限模式。本机 `permission_policy` 同样适用（受管参数模式不会被本地通道绕过）： 不满足时返回 `permission_policy_denied` / `permission_mode_unsupported`，不会降级执行。 |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
 
@@ -608,6 +609,7 @@ event 类型：snapshot / event / wire / heartbeat / done。 afterEventSeq 之�
   "agentType": "string",
   "cwd": "string",
   "prompt": "string",
+  "permissionMode": "default",
   "requestedBy": "string",
   "purpose": "string"
 }

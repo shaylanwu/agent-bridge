@@ -171,6 +171,45 @@ never sit in the queue for hours and then run for ten more minutes. Precedence: 
 `--max-tasks` / `--max-queue` (both `connect` and `serve`) > `AGENT_BRIDGE_MAX_TASKS` /
 `AGENT_BRIDGE_MAX_QUEUE` > the config file > defaults.
 
+**Permission mode** (`permissionMode`): the platform may ask for `default` or `full` per task — **whether it gets
+it is a local decision**:
+
+```toml
+permission_policy = "default"   # default | allow-full | full
+external_sandbox = false        # only CodeBuddy's full mode requires this
+```
+
+| permission_policy | omitted | requests default | requests full |
+| --- | --- | --- | --- |
+| `default` (default) | default | default | **denied** (`permission_policy_denied`) |
+| `allow-full` | default | default | full when eligible |
+| `full` | full | default | full when eligible |
+
+`allow-full` / `full` also switch on **managed-argument mode**: the platform may only send empty `args`, and argv
+comes entirely from the adapter template (non-empty args are denied outright). `full` only picks a different
+argument set — it is **not** proof of OS privilege escalation, config isolation, or a sandbox. When a tool has no
+verified full mapping, or CodeBuddy runs without `external_sandbox = true`, the request is rejected with
+`permission_mode_unsupported` rather than silently downgraded to `default`. Startup flags
+`--permission-policy=` / `--external-sandbox` override the config file for one session.
+
+**Interactions (permission prompts / forms / auth URLs) are off by default.** While off, the bridge never
+sends a `task_interaction_request`; upstream sees no answer and settles the request as declined/cancelled —
+which beats making the platform wait for a question that will never arrive:
+
+```toml
+interaction_enabled = false      # true to allow interaction round-trips
+interaction_timeout_ms = 900000  # per-wait cap (15 min default, clamped 10s–2h)
+max_interactions_per_task = 16   # per-task interaction budget (16 default, clamped 1–256)
+```
+
+An adapter-supplied `expiresAt` is capped by `interaction_timeout_ms` (the tighter value wins); requests
+beyond the budget are dropped and logged rather than forwarded. Flags `--interaction-enabled` /
+`--interaction-timeout-ms=` / `--max-interactions-per-task=` override for one session.
+
+`hello.execution` reports the effective local policy (`permissionPolicy`, `externalSandbox`,
+`interactionEnabled`, `interactionTimeoutMs`, `maxInteractionsPerTask`) so the platform can decide whether
+to ask for full and whether to expect interactions at all.
+
 ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and
 `trae-cli` declare native ACP and prefer it for tasks/conversations. `codex` uses the
 `codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); Claude/Qoder
@@ -290,8 +329,8 @@ Protocol (JSON over one connection):
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `interaction_url`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `artifact_download_ready`, `artifact_download_chunk`, `artifact_download_result`, `capacity_update`, `pong` |
-| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `get_interaction_url`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `artifact_download_start`, `artifact_download_chunk_ack`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `artifact_content`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `interaction_url`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `artifact_download_ready`, `artifact_download_chunk`, `artifact_download_result`, `capacity_update`, `pong` |
+| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `get_interaction_url`, `get_artifact`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `artifact_download_start`, `artifact_download_chunk_ack`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
 
 ### Capability negotiation (`hello.capabilities`)
 
@@ -315,6 +354,8 @@ should degrade on this list rather than guessing from a CLI version:
 | `artifact-upload` | Inbound chunked upload with SHA-256, CAS and task_artifact |
 | `artifact-download` | Chunked download from CAS (ready/chunk/ack/result) |
 | `interaction-url` | `get_interaction_url`; URLs kept in process memory with a short TTL |
+| `permission-mode` | `run_task.permissionMode` is understood (local `permission_policy` can still deny it) |
+| `artifact-inline` | `get_artifact` can inline artifact content (over 1 MB returns `too_large`; use chunked download) |
 
 ### Step stream (`task_step`)
 

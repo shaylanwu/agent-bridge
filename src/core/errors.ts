@@ -27,6 +27,9 @@ export const BRIDGE_ERROR_CODES = [
   'token_expired', // 令牌过期或已吊销
   'insufficient_scope', // 令牌有效但 scope 不足
   'tenant_not_supported', // 带了租户声明，但当前控制面尚未按租户分区读取
+  // —— 权限策略（1.0 Phase 2）——
+  'permission_mode_unsupported', // 本机/该工具不满足 full 运行条件（无映射、缺 external_sandbox）
+  'permission_policy_denied', // 本机策略不允许该权限组合（default 策略下请求 full、受管参数模式带自定义 args）
 ] as const;
 
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
@@ -71,6 +74,8 @@ export const ERROR_HTTP_STATUS: Record<BridgeErrorCode, number> = {
   token_expired: 401,
   insufficient_scope: 403,
   tenant_not_supported: 403,
+  permission_mode_unsupported: 400,
+  permission_policy_denied: 403,
 };
 
 /** RFC 9457 `application/problem+json` 对象 */

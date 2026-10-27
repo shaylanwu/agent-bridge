@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { createReadStream, readFileSync, statSync } from 'node:fs';
 import { extname, resolve as resolvePath, sep } from 'node:path';
 import { Emitter, type Upstream } from '../core/emitter.js';
+import type { PermissionPolicyName } from '../core/permission-policy.js';
 import { hasAnsi } from '../core/ansi.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
 import type { SessionLog } from '../app/session-log.js';
@@ -72,6 +73,10 @@ export interface ControlPlaneDeps {
     maxQueued: number;
     diffMaxBytes: number;
     captureDiffByDefault: boolean;
+    /** 本机权限策略（1.0）：控制面与 WS **共用同一套**策略，不能被本地通道绕过 */
+    permissionPolicy?: PermissionPolicyName;
+    /** 本机是否声明 CodeBuddy full 运行在外部沙箱内 */
+    externalSandbox?: boolean;
   };
   /** 令牌校验器（默认 `infra/service-token`；注入以便单测） */
   verify?: (token: string | undefined, scope: ServiceScope) => VerifyResult;
@@ -450,6 +455,10 @@ export async function startControlPlane(
         maxQueued: deps.defaults.maxQueued,
         captureDiff,
         diffMaxBytes: deps.defaults.diffMaxBytes,
+        // 权限：平台/本地调用方可以请求，但本机策略同样适用（受管参数模式不会被本地通道绕过）
+        permissionMode: body['permissionMode'] === 'full' ? 'full' : body['permissionMode'] === 'default' ? 'default' : undefined,
+        permissionPolicy: deps.defaults.permissionPolicy,
+        externalSandbox: deps.defaults.externalSandbox,
       },
       {
         onLog: (_stream, data) =>
@@ -492,6 +501,10 @@ export async function startControlPlane(
             changedFiles: info?.changedFiles,
             diffTruncated: info?.diffTruncated,
             requestedBy: record.requestedBy,
+            // 与 WS 通道同口径回显：控制面创建的任务也要能看出按哪个权限模式跑的
+            permissionMode: info?.permissionMode,
+            stopReason: info?.stopReason,
+            feedIncomplete: info?.feedIncomplete,
           });
         },
       },

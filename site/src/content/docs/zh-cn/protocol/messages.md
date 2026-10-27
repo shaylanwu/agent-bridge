@@ -26,8 +26,9 @@ WebSocket 建立后立即发送。平台必须先完成握手（协议版本、�
 | `cliVersion` | `string` | ✓ |  |
 | `platform` | `string` | ✓ |  |
 | `hostname` | `string` | ✓ |  |
-| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url。 |
+| `capabilities` | array&lt;string&gt; |  | 可选能力清单，平台据此降级。当前取值：diff / service-token / queue / scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url / permission-mode / artifact-inline。 |
 | `capacity` | `object` |  | 本次会话生效的调度额度（平台据此做有水位线的派发，而非靠 device_busy 试错） |
+| `execution` | `object` |  | 本次会话生效的执行侧策略。平台据此决定「能不能请求 full」与「要不要等交互」， 不要按缺省值瞎猜：interactionEnabled=false 时不会出现任何 task_interaction_request。 |
 
 **示例**
 
@@ -214,6 +215,10 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
 | `queuePosition` | `integer` |  |  |
 | `turnId` | `string` |  |  |
 | `eventSeq` | `integer` |  |  |
+| `permissionMode` | `default` \| `full` |  | 本次任务实际采用并用于构造命令的权限模式。只表示 bridge 的选择， **不是** CLI 实际权限的证明，也不是 OS 提权或环境沙箱。 |
+| `interactionId` | `string` |  | phase=waiting_interaction 时正在等待的 requestId；回到 running 或进入终态时该字段消失 （平台据「有无该字段」收起等待态，而不是靠超时猜）。 |
+| `stopReason` | `end_turn` \| `max_tokens` \| `max_turn_requests` \| `refusal` \| `cancelled` |  | ACP 回合结算原因；只有 end_turn 才可能 success，取消必须靠 cancelled。 |
+| `feedIncomplete` | `boolean` |  | canonical feed 未完整收尾；为 true 时平台必须展示「会话不完整」。 |
 | `diff` | `string` |  | unified diff，仅当 `run_task.captureDiff` 为 true 时出现 |
 | `changedFiles` | array&lt;string&gt; |  | 仓库相对路径，上限 500 条 |
 | `diffTruncated` | `boolean` |  |  |
@@ -231,6 +236,9 @@ stdout / stderr 分片（每片 ≤ 4096 字节，且不切断多字节字符）
   "errorCode": "string",
   "phase": "queued",
   "turnId": "string",
+  "permissionMode": "default",
+  "interactionId": "string",
+  "stopReason": "end_turn",
   "diff": "string",
   "result": "string",
   "requestedBy": "string"
@@ -365,6 +373,7 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 | `events` | array&lt;object&gt; |  |  |
 | `oldestEventSeq` | `integer` |  |  |
 | `latestEventSeq` | `integer` |  |  |
+| `eventWindow` | `object` |  | 事件窗口完整性；gaps 为空数组表示序号连续。 |
 | `errorCode` | `string` |  |  |
 
 **示例**
@@ -375,6 +384,51 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
   "taskId": "string",
   "requestId": "string",
   "found": true,
+  "errorCode": "string"
+}
+```
+
+
+<a id="msg-artifact_content"></a>
+
+### artifact_content — 附件内联内容
+
+响应 get_artifact。超过内联上限（1 MB）只回元数据并置 contentUnavailableReason=too_large， 平台应改走 artifact_download 分块通道。终态后仍可取，且不会重读工作区。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_content` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `requestId` | `string` |  |  |
+| `found` | `boolean` | ✓ |  |
+| `name` | `string` |  |  |
+| `mimeType` | `string` |  |  |
+| `size` | `integer` |  |  |
+| `sha256` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `data` | `string` |  | base64 内容；仅可内联时出现 |
+| `contentUnavailableReason` | `too_large` \| `not_readable` |  |  |
+| `errorCode` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_content",
+  "taskId": "string",
+  "artifactId": "string",
+  "requestId": "string",
+  "found": true,
+  "name": "string",
+  "mimeType": "string",
+  "sha256": "string",
+  "kind": "string",
+  "data": "string",
+  "contentUnavailableReason": "too_large",
   "errorCode": "string"
 }
 ```
@@ -804,6 +858,7 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
 | `allowInteractive` | `boolean` |  |  |
 | `captureDiff` | `boolean` |  | 终态回传 unified diff（P0-6） |
 | `sessionMode` | `task` \| `conversation` |  | 缺省 task；conversation 回合间保持 waiting_user |
+| `permissionMode` | `default` \| `full` |  | 请求的权限模式（缺省 = 由本机 permission_policy 决定）。能否按 full 执行取决于 本机策略与该工具的 full 映射：不满足时任务被拒绝（permission_policy_denied / permission_mode_unsupported），**不会**静默降级为 default。 |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
 | `serviceToken` | `string` |  | scoped 服务令牌 `abs_<kid>_<secret>`；一旦携带必须校验通过 |
@@ -821,6 +876,7 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   ],
   "prompt": "string",
   "sessionMode": "task",
+  "permissionMode": "default",
   "requestedBy": "string",
   "purpose": "repair",
   "serviceToken": "string"
@@ -884,6 +940,40 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
 {
   "type": "get_task",
   "taskId": "string",
+  "requestId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-get_artifact"></a>
+
+### get_artifact — 补取附件内容
+
+按 artifactId 取回已落盘内容，需 task:read scope，且 artifact 必须属于该 taskId。 超过 1 MB 只回元数据（contentUnavailableReason=too_large），未知/已淘汰回 artifact_not_found。
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `get_artifact` | ✓ |  |
+| `taskId` | `string` | ✓ |  |
+| `artifactId` | `string` | ✓ |  |
+| `requestId` | `string` |  | 会原样带回 artifact_content |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "get_artifact",
+  "taskId": "string",
+  "artifactId": "string",
   "requestId": "string",
   "requestedBy": "string",
   "purpose": "string",

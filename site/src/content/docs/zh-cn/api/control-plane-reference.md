@@ -599,6 +599,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `args` | array&lt;string&gt; |  |  |
 | `timeoutMs` | `integer` |  |  |
 | `captureDiff` | `boolean` |  |  |
+| `permissionMode` | `default` \| `full` |  |  |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
 
@@ -610,6 +611,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
   "agentType": "string",
   "cwd": "string",
   "prompt": "string",
+  "permissionMode": "default",
   "requestedBy": "string",
   "purpose": "string"
 }

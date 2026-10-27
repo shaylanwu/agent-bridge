@@ -30,6 +30,9 @@ export interface AuditEntry {
   scopes?: string[];
   /** 人类可读原因（拒绝时给出；不含敏感内容） */
   reason?: string;
+  /** 权限判定（1.0）：本机策略名与实际采用的模式；绝不写 argv 或环境值 */
+  policy?: string;
+  permissionMode?: string;
 }
 
 export function auditPath(): string {
@@ -59,6 +62,8 @@ export function writeAudit(entry: AuditEntry): void {
       serviceId: clip(entry.serviceId),
       scopes: entry.scopes?.slice(0, 16),
       reason: clip(entry.reason),
+      policy: clip(entry.policy),
+      permissionMode: clip(entry.permissionMode),
     });
     const file = auditPath();
     appendFileSync(file, `${line}\n`, { encoding: 'utf8', mode: 0o600 });

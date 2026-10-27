@@ -53,7 +53,7 @@ channels:
               type: array
               description: |
                 可选能力清单，平台据此降级。当前取值：diff / service-token / queue /
-                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url。
+                scan-progress / cloud-events / capacity / task-step / task-message / task-snapshot / session-control / session-multi-turn / task-interaction / artifact-upload / artifact-download / interaction-url / permission-mode / artifact-inline。
               items: { type: string }
             capacity:
               type: object
@@ -61,6 +61,17 @@ channels:
               properties:
                 maxTasks: { type: integer }
                 maxQueued: { type: integer }
+            execution:
+              type: object
+              description: |
+                本次会话生效的执行侧策略。平台据此决定「能不能请求 full」与「要不要等交互」，
+                不要按缺省值瞎猜：interactionEnabled=false 时不会出现任何 task_interaction_request。
+              properties:
+                permissionPolicy: { type: string, enum: [default, allow-full, full] }
+                externalSandbox: { type: boolean }
+                interactionEnabled: { type: boolean }
+                interactionTimeoutMs: { type: integer }
+                maxInteractionsPerTask: { type: integer }
       agent_list:
         name: agent_list
         title: 本机工具清单（首连终态）
@@ -134,6 +145,24 @@ channels:
             queuePosition: { type: integer, minimum: 1 }
             turnId: { type: string }
             eventSeq: { type: integer, minimum: 1 }
+            permissionMode:
+              type: string
+              enum: [default, full]
+              description: |
+                本次任务实际采用并用于构造命令的权限模式。只表示 bridge 的选择，
+                **不是** CLI 实际权限的证明，也不是 OS 提权或环境沙箱。
+            interactionId:
+              type: string
+              description: |
+                phase=waiting_interaction 时正在等待的 requestId；回到 running 或进入终态时该字段消失
+                （平台据「有无该字段」收起等待态，而不是靠超时猜）。
+            stopReason:
+              type: string
+              enum: [end_turn, max_tokens, max_turn_requests, refusal, cancelled]
+              description: ACP 回合结算原因；只有 end_turn 才可能 success，取消必须靠 cancelled。
+            feedIncomplete:
+              type: boolean
+              description: canonical feed 未完整收尾；为 true 时平台必须展示「会话不完整」。
             diff:
               type: string
               description: unified diff，仅当 `run_task.captureDiff` 为 true 时出现
@@ -229,6 +258,43 @@ channels:
                   createdAt: { type: string, format: date-time }
             oldestEventSeq: { type: integer }
             latestEventSeq: { type: integer }
+            eventWindow:
+              type: object
+              description: 事件窗口完整性；gaps 为空数组表示序号连续。
+              properties:
+                oldestEventSeq: { type: integer }
+                latestEventSeq: { type: integer }
+                gaps:
+                  type: array
+                  items:
+                    type: object
+                    required: [from, to]
+                    properties:
+                      from: { type: integer }
+                      to: { type: integer }
+            errorCode: { type: string }
+      artifact_content:
+        name: artifact_content
+        title: 附件内联内容
+        description: >-
+          响应 get_artifact。超过内联上限（1 MB）只回元数据并置 contentUnavailableReason=too_large，
+          平台应改走 artifact_download 分块通道。终态后仍可取，且不会重读工作区。
+        payload:
+          type: object
+          required: [type, taskId, artifactId, found]
+          properties:
+            type: { type: string, const: artifact_content }
+            taskId: { type: string }
+            artifactId: { type: string }
+            requestId: { type: string }
+            found: { type: boolean }
+            name: { type: string }
+            mimeType: { type: string }
+            size: { type: integer }
+            sha256: { type: string }
+            kind: { type: string }
+            data: { type: string, description: base64 内容；仅可内联时出现 }
+            contentUnavailableReason: { type: string, enum: [too_large, not_readable] }
             errorCode: { type: string }
       task_artifact:
         name: task_artifact
@@ -432,6 +498,13 @@ channels:
             allowInteractive: { type: boolean }
             captureDiff: { type: boolean, description: 终态回传 unified diff（P0-6） }
             sessionMode: { type: string, enum: [task, conversation], description: '缺省 task；conversation 回合间保持 waiting_user' }
+            permissionMode:
+              type: string
+              enum: [default, full]
+              description: |
+                请求的权限模式（缺省 = 由本机 permission_policy 决定）。能否按 full 执行取决于
+                本机策略与该工具的 full 映射：不满足时任务被拒绝（permission_policy_denied /
+                permission_mode_unsupported），**不会**静默降级为 default。
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64, examples: [repair, test, free] }
             serviceToken:
@@ -464,6 +537,23 @@ channels:
             requestId: { type: string, description: 会原样带回 task_snapshot }
             afterEventSeq: { type: integer, minimum: 0 }
             limit: { type: integer, minimum: 1, maximum: 1000 }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
+      get_artifact:
+        name: get_artifact
+        title: 补取附件内容
+        description: >-
+          按 artifactId 取回已落盘内容，需 task:read scope，且 artifact 必须属于该 taskId。
+          超过 1 MB 只回元数据（contentUnavailableReason=too_large），未知/已淘汰回 artifact_not_found。
+        payload:
+          type: object
+          required: [type, taskId, artifactId]
+          properties:
+            type: { type: string, const: get_artifact }
+            taskId: { type: string }
+            artifactId: { type: string }
+            requestId: { type: string, description: 会原样带回 artifact_content }
             requestedBy: { type: string, maxLength: 128 }
             purpose: { type: string, maxLength: 64 }
             serviceToken: { type: string, maxLength: 256 }
@@ -651,6 +741,7 @@ operations:
       - $ref: '#/channels/upstream/messages/task_message'
       - $ref: '#/channels/upstream/messages/task_artifact'
       - $ref: '#/channels/upstream/messages/task_snapshot'
+      - $ref: '#/channels/upstream/messages/artifact_content'
       - $ref: '#/channels/upstream/messages/session_ack'
       - $ref: '#/channels/upstream/messages/message_ack'
       - $ref: '#/channels/upstream/messages/task_interaction_request'
@@ -681,6 +772,7 @@ operations:
       - $ref: '#/channels/downstream/messages/close_session'
       - $ref: '#/channels/downstream/messages/cancel_turn'
       - $ref: '#/channels/downstream/messages/get_task'
+      - $ref: '#/channels/downstream/messages/get_artifact'
       - $ref: '#/channels/downstream/messages/scan'
       - $ref: '#/channels/downstream/messages/ping'
 components:
@@ -701,6 +793,26 @@ components:
           type: boolean
           description: 是否支持 task_step 步骤流；false 的工具平台应隐藏步骤面板而不是空转
         logo: { type: string, description: 'data:image/svg+xml;base64,… 24×24 单色；按 kind 缓存' }
+        executionModes:
+          type: array
+          description: |
+            按执行模式列出的能力（缺省 = 只有 headless 且等于 legacy capability）。
+            新平台以它为准：某模式的 permissionModes 不含 full，就别请求 full（bridge 会在 spawn 前拒绝）；
+            interactionKinds 为空表示该模式不能回问。
+          items:
+            type: object
+            required: [mode, permissionModes, interactionKinds, feedKinds]
+            properties:
+              mode: { type: string, enum: [headless, acp-stdio] }
+              permissionModes:
+                type: array
+                items: { type: string, enum: [default, full] }
+              interactionKinds:
+                type: array
+                items: { type: string, enum: [permission, form, auth-url] }
+              feedKinds:
+                type: array
+                items: { type: string, enum: [messages, steps, artifacts] }
     ErrorCode:
       type: string
       description: 受控错误码（与 src/core/errors.ts 的 BRIDGE_ERROR_CODES 同源）
@@ -721,3 +833,5 @@ components:
         - token_expired
         - insufficient_scope
         - tenant_not_supported
+        - permission_mode_unsupported
+        - permission_policy_denied

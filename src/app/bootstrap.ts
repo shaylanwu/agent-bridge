@@ -25,8 +25,13 @@ import {
   configPath,
   loadConfig,
   resolveDiffMaxBytes,
+  resolveExternalSandbox,
+  resolveInteractionEnabled,
+  resolveInteractionTimeoutMs,
+  resolveMaxInteractionsPerTask,
   resolveMaxQueued,
   resolveMaxTasks,
+  resolvePermissionPolicy,
   resolveSessionIdleMs,
   saveConfig,
   stateDbPath,
@@ -136,6 +141,13 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
   // 启动参数优先级最高：--max-tasks / --max-queue > 环境变量 > config.toml > 默认（30 / 60）
   const maxTasksOverride = numFlagMin(flags, 'max-tasks', 1);
   const maxQueueOverride = numFlagMin(flags, 'max-queue', 0);
+  // 权限策略：非法值由 resolvePermissionPolicy 回落到 default（失败关闭）
+  const permissionPolicyOverride = strFlag(flags, 'permission-policy');
+  const externalSandboxOverride = boolFlag(flags, 'external-sandbox') || undefined;
+  // 交互开关与额度：缺省全关（不发交互请求），显式 --interaction-enabled 才开
+  const interactionEnabledOverride = boolFlag(flags, 'interaction-enabled') || undefined;
+  const interactionTimeoutOverride = numFlagMin(flags, 'interaction-timeout-ms', 1000);
+  const maxInteractionsOverride = numFlagMin(flags, 'max-interactions-per-task', 1);
 
   const store = new SessionStore(stateDbPath());
   const recovered = store.recoverInterrupted();
@@ -185,6 +197,14 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
       diffMaxBytes: resolveDiffMaxBytes(saved.diffMaxBytes),
       captureDiffByDefault: saved.diffDefault === true,
       requireServiceToken: saved.requireServiceToken === true,
+      permissionPolicy: resolvePermissionPolicy(saved.permissionPolicy, permissionPolicyOverride),
+      externalSandbox: resolveExternalSandbox(saved.externalSandbox, externalSandboxOverride),
+      interactionEnabled: resolveInteractionEnabled(saved.interactionEnabled, interactionEnabledOverride),
+      interactionTimeoutMs: resolveInteractionTimeoutMs(saved.interactionTimeoutMs, interactionTimeoutOverride),
+      maxInteractionsPerTask: resolveMaxInteractionsPerTask(
+        saved.maxInteractionsPerTask,
+        maxInteractionsOverride,
+      ),
       sessionIdleMs: resolveSessionIdleMs(saved.sessionIdleMs),
       registry: new TaskRegistry(),
       store,

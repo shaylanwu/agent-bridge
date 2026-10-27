@@ -149,6 +149,40 @@ max_queue = 60   # 0 表示完全不排队
 生效优先级：启动参数 `--max-tasks` / `--max-queue`（connect 与 serve 都支持）>
 环境变量 `AGENT_BRIDGE_MAX_TASKS` / `AGENT_BRIDGE_MAX_QUEUE` > 配置文件 > 默认值。
 
+**权限模式**（`permissionMode`）：平台可以在 `run_task` 里请求 `default` 或 `full`，**能不能给由本机决定**：
+
+```toml
+permission_policy = "default"   # default | allow-full | full
+external_sandbox = false        # 仅 CodeBuddy 的 full 需要
+```
+
+| permission_policy | 平台不写 | 请求 default | 请求 full |
+| --- | --- | --- | --- |
+| `default`（默认） | default | default | **拒绝**（`permission_policy_denied`） |
+| `allow-full` | default | default | 满足条件则 full |
+| `full` | full | default | 满足条件则 full |
+
+`allow-full` / `full` 同时进入**受管参数模式**：平台只能发空 `args`，argv 完全由适配器模板决定
+（发了非空 args 直接 `permission_policy_denied`，不因参数看似普通而放行）。full 只是换一套参数，
+**不是** OS 提权、配置隔离或环境沙箱的证明；工具缺 full 映射、或 CodeBuddy 未声明 `external_sandbox = true` 时，
+请求会被 `permission_mode_unsupported` 拒绝，**不会**偷偷降级成 default 继续跑。
+启动参数 `--permission-policy=` / `--external-sandbox` 可临时覆盖配置。
+
+**交互（权限确认 / 表单 / 授权 URL）默认关闭**：关着时 bridge 不会向平台发任何
+`task_interaction_request`，上游拿不到回答会自行按拒绝或取消处理 —— 这比让平台干等一个永远不会来的问题要好：
+
+```toml
+interaction_enabled = false      # true 才开放交互往返
+interaction_timeout_ms = 900000  # 单次等待上限（默认 15 分钟，夹 10 秒 ~ 2 小时）
+max_interactions_per_task = 16   # 单任务交互次数上限（默认 16，夹 1 ~ 256）
+```
+
+适配器自带的 `expiresAt` 与 `interaction_timeout_ms` 取**较小值**；超过次数上限的请求直接不转发并记日志。
+启动参数 `--interaction-enabled` / `--interaction-timeout-ms=` / `--max-interactions-per-task=` 可临时覆盖。
+
+`hello.execution` 会把本机实际策略（`permissionPolicy` / `externalSandbox` / `interactionEnabled` /
+`interactionTimeoutMs` / `maxInteractionsPerTask`）如实上报，平台据此决定能不能请求 full、要不要等交互。
+
 ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
 `trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
 `codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer、审批）；Claude/Qoder 的
@@ -264,8 +298,8 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`、`session_ack`、`message_ack`、`task_interaction_request`、`task_interaction_result`、`interaction_url`、`artifact_upload_ready`、`artifact_upload_chunk_ack`、`artifact_upload_result`、`artifact_download_ready`、`artifact_download_chunk`、`artifact_download_result`、`capacity_update`、`pong` |
-| 平台 → bridge | `run_task`、`send_message`、`task_interaction_response`、`get_interaction_url`、`artifact_upload_start`、`artifact_upload_chunk`、`artifact_upload_complete`、`artifact_download_start`、`artifact_download_chunk_ack`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
+| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`、`artifact_content`、`session_ack`、`message_ack`、`task_interaction_request`、`task_interaction_result`、`interaction_url`、`artifact_upload_ready`、`artifact_upload_chunk_ack`、`artifact_upload_result`、`artifact_download_ready`、`artifact_download_chunk`、`artifact_download_result`、`capacity_update`、`pong` |
+| 平台 → bridge | `run_task`、`send_message`、`task_interaction_response`、`get_interaction_url`、`get_artifact`、`artifact_upload_start`、`artifact_upload_chunk`、`artifact_upload_complete`、`artifact_download_start`、`artifact_download_chunk_ack`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
 
 ### 能力协商（hello.capabilities）
 
@@ -288,6 +322,8 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 | `artifact-upload` | 支持入站附件分块上传、SHA-256、CAS 与 task_artifact |
 | `artifact-download` | 支持从 CAS 分块下载附件（ready/chunk/ack/result） |
 | `interaction-url` | 支持 `get_interaction_url`，URL 仅进程内短期保存 |
+| `permission-mode` | 支持 `run_task.permissionMode`（本机 `permission_policy` 仍可否决，不代表一定能给 full） |
+| `artifact-inline` | 支持 `get_artifact` 内联取回附件内容（超过 1 MB 回 `too_large`，改走分块下载） |
 
 ### 步骤流（task_step）
 

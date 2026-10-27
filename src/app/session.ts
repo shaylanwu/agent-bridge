@@ -10,6 +10,7 @@
 import { Emitter } from '../core/emitter.js';
 import { scanAgents } from '../core/scan.js';
 import { defaultSupervisor } from '../core/task-supervisor.js';
+import type { PermissionPolicyName } from '../core/permission-policy.js';
 import type { TaskRegistry } from './task-registry.js';
 import { assertServerMessage, ProtocolError, type ClientMessage } from '../protocol.js';
 import type { TaskHandle } from '../runner.js';
@@ -19,6 +20,7 @@ import {
   dispatchCancelTask,
   dispatchCancelTurn,
   dispatchCloseSession,
+  dispatchGetArtifact,
   dispatchGetTask,
   dispatchInteractionResponse,
   dispatchRunTask,
@@ -28,6 +30,7 @@ import { authorizeService } from './service-gate.js';
 import type { SessionStore } from '../core/session-store.js';
 import { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { InteractionUrlVault } from '../core/interaction-url.js';
+import { DEFAULT_INTERACTION_TIMEOUT_MS, DEFAULT_MAX_INTERACTIONS_PER_TASK } from '../infra/config.js';
 
 export interface SessionOptions {
   platformUrl: string;
@@ -45,6 +48,16 @@ export interface SessionOptions {
   /** 平台未指定 captureDiff 时的本地默认（config.toml 的 diff_default） */
   captureDiffByDefault: boolean;
   requireServiceToken: boolean;
+  /** 本机权限策略（1.0；缺省 default） */
+  permissionPolicy?: PermissionPolicyName;
+  /** 本机是否声明 CodeBuddy full 运行在外部沙箱内 */
+  externalSandbox?: boolean;
+  /** 是否开放交互（1.0，缺省 false） */
+  interactionEnabled?: boolean;
+  /** 单次交互等待上限（毫秒） */
+  interactionTimeoutMs?: number;
+  /** 单任务交互次数上限 */
+  maxInteractionsPerTask?: number;
   /** waiting_user 空闲关闭（0 = 关闭） */
   sessionIdleMs: number;
   /** 任务注册表（面板/台账共用视图；由 bootstrap 创建） */
@@ -120,11 +133,21 @@ export function createSession(opts: SessionOptions): BridgeSession {
     cliVersion: opts.cliVersion,
     hostname: opts.hostname,
     capacity: { maxTasks: opts.maxConcurrent, maxQueued: opts.maxQueued },
+    // 执行侧策略如实上报：平台据此决定能不能请求 full、要不要等交互
+    execution: {
+      permissionPolicy: opts.permissionPolicy ?? 'default',
+      externalSandbox: opts.externalSandbox === true,
+      interactionEnabled: opts.interactionEnabled === true,
+      interactionTimeoutMs: opts.interactionTimeoutMs ?? DEFAULT_INTERACTION_TIMEOUT_MS,
+      maxInteractionsPerTask: opts.maxInteractionsPerTask ?? DEFAULT_MAX_INTERACTIONS_PER_TASK,
+    },
     log: (line) => opts.log('info', line),
     onOpen: async () => {
       // 流式上报：每完成一个工具就推一条 scan_progress，平台可以边收边亮卡片
       const items = await scanAgents({
         fresh: true,
+        // sandbox 影响 CodeBuddy 的 executionModes：不传会让平台以为它也不能 full
+        externalSandbox: opts.externalSandbox === true,
         onItem: (item) =>
           emitter?.emit({ type: 'scan_progress', items: [item], scannedAt: now(), done: false }),
       });
@@ -155,6 +178,12 @@ export function createSession(opts: SessionOptions): BridgeSession {
         diffMaxBytes: opts.diffMaxBytes,
         captureDiffByDefault: opts.captureDiffByDefault,
         requireServiceToken: opts.requireServiceToken,
+        permissionPolicy: opts.permissionPolicy,
+        externalSandbox: opts.externalSandbox,
+        interactionEnabled: opts.interactionEnabled === true,
+        interactionTimeoutMs: opts.interactionTimeoutMs,
+        maxInteractionsPerTask: opts.maxInteractionsPerTask,
+        artifactRootDir: opts.artifactRootDir,
         store: opts.store,
         log: opts.log,
         residentSessions: new Map(),
@@ -168,6 +197,10 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (msg.type === 'get_task') {
         dispatchGetTask(msg, dispatchOpts);
+        return;
+      }
+      if (msg.type === 'get_artifact') {
+        dispatchGetArtifact(msg, dispatchOpts);
         return;
       }
       if (msg.type === 'close_session') {
@@ -331,6 +364,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
         const requestId = msg.requestId;
         void scanAgents({
           fresh: true,
+          externalSandbox: opts.externalSandbox === true,
           onItem: (item) =>
             emitter?.emit({
               type: 'scan_progress',

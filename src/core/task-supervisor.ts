@@ -31,10 +31,11 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
 import { agentDefOf, resolveBin } from '../adapters/agent-adapters.js';
 import { captureWorktreeDiff, type DiffCapture } from '../infra/git.js';
-import { chunkLog, type TaskStatus } from '../protocol.js';
+import { chunkLog, type PermissionMode, type StopReason, type TaskStatus } from '../protocol.js';
 import { buildWinCommandLine, isWinShim } from '../adapters/win-exec.js';
 import { createStepParser, type ParsedStep, type PlanItem, type StepFormat } from '../adapters/step-parsers.js';
 import { BridgeError, type BridgeErrorCode } from './errors.js';
+import { decidePermissionMode, permissionEnvFor, type PermissionPolicyName } from './permission-policy.js';
 
 export interface RunTaskRequest {
   taskId: string;
@@ -64,6 +65,12 @@ export interface RunTaskRequest {
   acpSpec?: AcpAgentSpec;
   /** ACP 续接已有 native session */
   nativeSessionId?: string;
+  /** 请求的权限模式（1.0）；缺省由本机 permission_policy 决定 */
+  permissionMode?: PermissionMode;
+  /** 本机权限策略（缺省 default） */
+  permissionPolicy?: PermissionPolicyName;
+  /** 本机是否声明运行在外部沙箱内（CodeBuddy full 必需） */
+  externalSandbox?: boolean;
 }
 
 /** 终态附加信息。diff 三个字段只在 captureDiff 开启时出现 */
@@ -81,6 +88,14 @@ export interface TaskFinishInfo {
   phase?: 'queued' | 'running';
   /** 队列位次（从 1 开始） */
   queuePosition?: number;
+  /** 本次任务实际采用的权限模式（bridge 的选择，不是 CLI 权限证明） */
+  permissionMode?: PermissionMode;
+  /** 等待交互时的当前 requestId；回到 running / 终态时必须为空 */
+  interactionId?: string;
+  /** ACP session/prompt 的结算原因（拿到才回显） */
+  stopReason?: StopReason;
+  /** canonical feed 未完整收尾（上游回合异常结束 / 输出无法收尾） */
+  feedIncomplete?: boolean;
 }
 
 export interface TaskHooks {
@@ -149,6 +164,10 @@ interface Entry {
   stepParser?: import('../adapters/step-parsers.js').StepParser;
   /** 已发出的步骤数（seq 分配器） */
   stepSeq: number;
+  /** 本次任务采用的权限模式（1.0） */
+  permissionMode: PermissionMode;
+  /** 需要固定注入的环境变量（目前只有 CodeBuddy full 的 CODEBUDDY_IS_SANDBOX） */
+  permissionEnv?: Record<string, string>;
   /** ref → seq：finished 事件配对回同一步，不另占序号（tool_use/tool_result 不拆成两步） */
   stepRefs: Map<string, number>;
   child?: ChildProcess;
@@ -333,7 +352,22 @@ export class TaskSupervisor {
       return reject(req, hooks, 'cwd_not_allowed', `工作目录不在允许范围内：${req.cwd}`);
     }
 
-    const args = req.args.length > 0 ? req.args : buildArgs(def.taskArgs, req.prompt ?? '');
+    // 权限策略（1.0）：在 spawn 前定判，拒绝即不产生任何子进程；不允许静默降级到 default
+    const permission = decidePermissionMode({
+      policy: req.permissionPolicy,
+      requested: req.permissionMode,
+      args: req.args,
+      fullArgs: def.fullArgs,
+      kind: def.kind,
+      externalSandbox: req.externalSandbox,
+    });
+    if (!permission.ok) {
+      return reject(req, hooks, permission.code, permission.message);
+    }
+
+    const template =
+      permission.mode === 'full' ? [...def.taskArgs, ...(def.fullArgs ?? [])] : def.taskArgs;
+    const args = req.args.length > 0 ? req.args : buildArgs(template, req.prompt ?? '');
     let cmd: string;
     let argv: string[];
     if (def.npxSpec && !resolveBin([def.bin, ...(def.altBins ?? [])])) {
@@ -375,6 +409,8 @@ export class TaskSupervisor {
       status: 'running',
       stepFormat: def.steps,
       stepSeq: 0,
+      permissionMode: permission.mode,
+      permissionEnv: permissionEnvFor(def.kind, permission.mode),
       stepRefs: new Map(),
       resolve,
       done,
@@ -398,6 +434,7 @@ export class TaskSupervisor {
       hooks.onStatus('running', {
         phase: 'queued',
         queuePosition: this.queue.length,
+        permissionMode: permission.mode,
         error: `排队中（第 ${this.queue.length} 位，并发上限 ${this.maxTasks}）`,
       });
     }
@@ -468,20 +505,22 @@ export class TaskSupervisor {
       return;
     }
 
-    // 子进程环境恒为 bridge 自身进程环境：平台**不能**注入环境变量
+    // 子进程环境恒为 bridge 自身进程环境：平台**不能**注入环境变量。
+    // 唯一例外是 full 模式下 bridge 自己固定注入的那一个键（CodeBuddy 的沙箱声明）。
+    const childEnv = entry.permissionEnv ? { ...process.env, ...entry.permissionEnv } : process.env;
     const shim = isWinShim(entry.cmd);
     const stdinMode = entry.req.interactive ? 'pipe' : 'ignore';
     const child: ChildProcess = shim
       ? spawn(buildWinCommandLine(entry.cmd, entry.argv), {
           cwd: entry.req.cwd,
-          env: process.env,
+          env: childEnv,
           shell: true,
           windowsHide: true,
           stdio: [stdinMode, 'pipe', 'pipe'],
         })
       : spawn(entry.cmd, entry.argv, {
           cwd: entry.req.cwd,
-          env: process.env,
+          env: childEnv,
           windowsHide: true,
           stdio: [stdinMode, 'pipe', 'pipe'],
         });
@@ -646,7 +685,9 @@ export class TaskSupervisor {
       },
       onUpdate: (notification) => this.onCodexUpdate(entry, notification),
       onApproval: (request) => {
-        if (!entry.hooks.onInteraction) return 'decline';
+        // 交互关闭（interactionEnabled=false → interactive=false）时必须直接拒绝，
+        // 否则 Promise 永远悬着，任务会一直等到总超时
+        if (!entry.req.interactive || !entry.hooks.onInteraction) return 'decline';
         const requestId = `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
         const answer = new Promise<string | undefined>((resolve) => {
           entry.acpPermissions?.set(requestId, (value) => resolve(value?.optionId));
@@ -737,7 +778,7 @@ export class TaskSupervisor {
       signal: controller.signal,
       onUpdate: (update) => this.onAcpUpdate(entry, update),
       onPermission: (request) => {
-        if (!entry.hooks.onInteraction) return undefined;
+        if (!entry.req.interactive || !entry.hooks.onInteraction) return undefined;
         const requestId = `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
         const answer = new Promise<string | undefined>((resolve) => {
           entry.acpPermissions?.set(requestId, (value) => resolve(value?.optionId));
@@ -750,7 +791,7 @@ export class TaskSupervisor {
         return answer;
       },
       onForm: (request) => {
-        if (!entry.hooks.onInteraction) return { action: 'cancel' };
+        if (!entry.req.interactive || !entry.hooks.onInteraction) return { action: 'cancel' };
         const answer = new Promise<AcpFormResponse>((resolve) => {
           entry.acpPermissions?.set(request.requestId, (value) => {
             if (value?.action === 'accept') {
@@ -772,7 +813,32 @@ export class TaskSupervisor {
       .then((result) => {
         if (entry.state === 'settled') return;
         entry.hooks.onSession?.(result.sessionId);
-        this.settle(entry, 'success', { exitCode: 0, result: result.text });
+        // 收到 result ≠ 成功：必须按 stopReason 结算，否则 max_tokens / refusal 会被当成正常完成
+        const stop = knownStopReason(result.stopReason);
+        if (result.stopReason === 'end_turn' || result.stopReason === undefined) {
+          this.settle(entry, 'success', {
+            exitCode: 0,
+            result: result.text,
+            ...(stop ? { stopReason: stop } : {}),
+          });
+          return;
+        }
+        if (result.stopReason === 'cancelled') {
+          this.settle(entry, 'cancelled', {
+            error: 'ACP 回合已取消',
+            errorCode: 'cancelled',
+            stopReason: 'cancelled',
+          });
+          return;
+        }
+        this.settle(entry, 'failed', {
+          error: `ACP 回合未正常结束（stopReason=${result.stopReason}）`,
+          errorCode: 'agent_error',
+          // 回合没有 end_turn，canonical feed 必然不完整 —— 如实标注，别让 UI 当完整历史
+          feedIncomplete: true,
+          ...(stop ? { stopReason: stop } : {}),
+          ...(result.text.trim() ? { result: result.text } : {}),
+        });
       })
       .catch((error) => {
         if (entry.state === 'settled') return;
@@ -860,6 +926,9 @@ export class TaskSupervisor {
     if (entry.timer) clearTimeout(entry.timer);
     if (entry.killTimer) clearTimeout(entry.killTimer);
 
+    // 权限模式回显：终态必须带（平台据此区分「按 full 跑的」与「按 default 跑的」）
+    if (info.permissionMode === undefined) info = { ...info, permissionMode: entry.permissionMode };
+
     // 最终回答：步骤解析器从事件流提取（C 批次；面板结果视图与平台同享），上限 16KB
     const resultText = entry.stepParser?.finalText?.();
     if (resultText && info.result === undefined) {
@@ -899,6 +968,18 @@ function realpathOr(p: string): string {
   } catch {
     return p;
   }
+}
+
+/**
+ * 把上游的 stopReason 收敛到受控枚举：只认这五个值，其他（含 `unknown`）一律当未知，
+ * 于是不会被写进 wire 的受限字段 —— 未知原因只体现为 failed + agent_error。
+ */
+const STOP_REASONS: readonly StopReason[] = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'];
+
+export function knownStopReason(raw: unknown): StopReason | undefined {
+  return typeof raw === 'string' && (STOP_REASONS as readonly string[]).includes(raw)
+    ? (raw as StopReason)
+    : undefined;
 }
 
 export { BridgeError };

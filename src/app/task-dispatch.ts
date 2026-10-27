@@ -8,11 +8,16 @@
  */
 
 import type { Emitter } from '../core/emitter.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { hasAnsi } from '../core/ansi.js';
 import { validateFormContent } from '../core/form-schema.js';
+import type { PermissionPolicyName } from '../core/permission-policy.js';
 import { startTask, type TaskHandle } from '../runner.js';
-import type { ServerMessage, TaskStatus } from '../protocol.js';
+import { ARTIFACT_INLINE_MAX_BYTES } from '../protocol.js';
+import type { PermissionMode, ServerMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
+import { writeAudit } from '../infra/audit.js';
 import { canRunAcp } from '../adapters/acp-codebuddy.js';
 import { agentDefOf } from '../adapters/agent-adapters.js';
 import type { SessionLog } from './session-log.js';
@@ -23,6 +28,7 @@ import { dispatchConversationRun } from './conversation.js';
 export type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 export type CancelTaskMessage = Extract<ServerMessage, { type: 'cancel_task' }>;
 export type GetTaskMessage = Extract<ServerMessage, { type: 'get_task' }>;
+export type GetArtifactMessage = Extract<ServerMessage, { type: 'get_artifact' }>;
 export type CloseSessionMessage = Extract<ServerMessage, { type: 'close_session' }>;
 export type CancelTurnMessage = Extract<ServerMessage, { type: 'cancel_turn' }>;
 export type InteractionResponseMessage = Extract<ServerMessage, { type: 'task_interaction_response' }>;
@@ -41,6 +47,18 @@ export interface TaskDispatchOptions {
   /** 平台没带 captureDiff 时，是否按本地配置的 diff_default 开启 */
   captureDiffByDefault: boolean;
   requireServiceToken: boolean;
+  /** 本机权限策略（1.0，缺省 default；见 resolvePermissionPolicy） */
+  permissionPolicy?: PermissionPolicyName;
+  /** 本机是否声明 CodeBuddy full 运行在外部沙箱内 */
+  externalSandbox?: boolean;
+  /** 是否开放交互（1.0，缺省 false）：关闭时不发任何交互请求 */
+  interactionEnabled?: boolean;
+  /** 单次交互等待上限（毫秒）；适配器自带 expiresAt 时取二者较小值 */
+  interactionTimeoutMs?: number;
+  /** 单任务交互次数上限；超出的请求按失败处理，不无限回问 */
+  maxInteractionsPerTask?: number;
+  /** 附件 CAS 根目录（get_artifact 读内容用；缺省则只能回元数据） */
+  artifactRootDir?: string;
   /** 持久 Session/Turn/Event 权威源 */
   store: SessionStore;
   log: SessionLog;
@@ -304,10 +322,20 @@ export function dispatchInteractionResponse(
     resultSeq: resolved.resultSeq,
     resultPayload: storedPayload,
   });
+  // 等待态必须显式收起：不带 interactionId 的 running 帧就是「不再等待」的语义。
+  // 仅在任务仍活着时发 —— 终态后迟到的响应不应把已结算的任务拉回 running。
+  if (o.tasks.get(msg.taskId)) {
+    o.emitter.emit({
+      type: 'task_status',
+      taskId: msg.taskId,
+      status: 'running',
+      phase: 'running',
+      turnId: interaction.turnId,
+    });
+  }
 }
 
-export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {
-  const gate = authorizeService(msg, 'get_task', msg.taskId, 'task:read', o.requireServiceToken);
+export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {  const gate = authorizeService(msg, 'get_task', msg.taskId, 'task:read', o.requireServiceToken);
   if (!gate.ok) {
     o.emitter.emit({
       type: 'task_snapshot',
@@ -338,6 +366,12 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
       })),
       oldestEventSeq: snapshot.oldestEventSeq,
       latestEventSeq: snapshot.latestEventSeq,
+      // 缺口必须一起给：平台拿到连续的 [oldest, latest] 不代表中间没丢
+      eventWindow: {
+        oldestEventSeq: snapshot.oldestEventSeq,
+        latestEventSeq: snapshot.latestEventSeq,
+        gaps: o.store.eventGaps(msg.taskId, snapshot.session.tenantId),
+      },
     });
   } catch (error) {
     o.emitter.emit({
@@ -348,6 +382,65 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
       errorCode: 'task_not_found',
     });
     o.log('error', `[agent-bridge] 读取快照失败 ${msg.taskId}：${(error as Error).message}`);
+  }
+}
+
+/**
+ * `get_artifact`：按 artifactId 从持久元数据 + CAS 取回内容（1.0）。
+ *
+ * 为什么不能顺手把内容塞进 task_artifact：那是**事件**，重放会重复传输；
+ * 而这里是平台主动补取（终态后仍可用）。超过内联上限只回元数据 + `too_large`，
+ * 让平台走 artifact_download 分块通道 —— 大块 base64 会拖垮 WS 心跳。
+ * 也**不重读工作区**：避免 TOCTOU 与内容漂移，只认已落盘的那份。
+ */
+export function dispatchGetArtifact(msg: GetArtifactMessage, o: TaskDispatchOptions): void {
+  const deny = (errorCode: string): void => {
+    o.emitter.emit({
+      type: 'artifact_content',
+      taskId: msg.taskId,
+      artifactId: msg.artifactId,
+      requestId: msg.requestId,
+      found: false,
+      errorCode,
+    });
+  };
+  // 读产物与 get_task 同权（都是读该任务的结果面）
+  const gate = authorizeService(msg, 'get_artifact', msg.taskId, 'task:read', o.requireServiceToken);
+  if (!gate.ok) {
+    deny(gate.code);
+    return;
+  }
+  const session = o.store.getSession(msg.taskId);
+  const record = o.store.getArtifact(msg.artifactId, session?.tenantId);
+  // 必须同时校验归属：拿 A 任务的 id 读 B 任务的附件属于越权，不是「找不到」
+  if (!record || record.sessionId !== msg.taskId) {
+    deny('artifact_not_found');
+    return;
+  }
+  const meta = {
+    type: 'artifact_content' as const,
+    taskId: msg.taskId,
+    artifactId: record.artifactId,
+    requestId: msg.requestId,
+    found: true,
+    name: record.name,
+    mimeType: record.mimeType,
+    size: record.size,
+    sha256: record.sha256,
+    kind: record.kind,
+  };
+  if (record.size > ARTIFACT_INLINE_MAX_BYTES) {
+    o.emitter.emit({ ...meta, contentUnavailableReason: 'too_large' });
+    return;
+  }
+  try {
+    if (!o.artifactRootDir) throw new Error('未配置附件根目录');
+    const data = readFileSync(join(o.artifactRootDir, record.storageKey));
+    o.emitter.emit({ ...meta, data: data.toString('base64') });
+  } catch (error) {
+    // 元数据还在但 CAS 文件已回收：如实回 not_readable，不伪造成「任务不存在」
+    o.emitter.emit({ ...meta, contentUnavailableReason: 'not_readable' });
+    o.log('error', `[agent-bridge] 读取附件失败 ${record.artifactId}：${(error as Error).message}`);
   }
 }
 
@@ -418,6 +511,19 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
 
   o.registry.register(msg.taskId, { agentType: msg.agentType, cwd: msg.cwd, source: 'platform' });
 
+  // 交互额度（1.0）：按任务计数，不是全局 —— 一个任务问爆了不该拖累别的任务
+  const maxInteractions = o.maxInteractionsPerTask ?? 16;
+  const interactionBudgetMs = o.interactionTimeoutMs ?? 15 * 60 * 1000;
+  let interactionCount = 0;
+  /** 本任务实际采用的权限模式（由调度器决策后回传，用于交互帧与终态一致回显） */
+  let permissionModeForEcho: PermissionMode | undefined;
+  /** 交互过期时刻：适配器给了 expiresAt 就取较小值，绝不让单次等待超过本机上限 */
+  const interactionDeadline = (requested?: string): string => {
+    const cap = Date.now() + interactionBudgetMs;
+    const asked = requested ? Date.parse(requested) : NaN;
+    return new Date(Number.isFinite(asked) ? Math.min(asked, cap) : cap).toISOString();
+  };
+
   const handle = startTask(
     {
       taskId: msg.taskId,
@@ -431,13 +537,18 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       maxQueued: o.maxQueued,
       captureDiff: msg.captureDiff === true || o.captureDiffByDefault,
       diffMaxBytes: o.diffMaxBytes,
-      interactive: msg.allowInteractive === true,
+      // 权限模式（1.0）：平台请求 + 本机策略设备，实际模式由 TaskSupervisor 在 spawn 前定判
+      permissionMode: msg.permissionMode,
+      permissionPolicy: o.permissionPolicy,
+      externalSandbox: o.externalSandbox,
+      interactive: msg.allowInteractive === true && o.interactionEnabled === true,
       acp: Boolean(msg.prompt) && canRunAcp(agentDefOf(msg.agentType)?.acp),
       acpSpec: agentDefOf(msg.agentType)?.acp,
       appServer: msg.agentType === 'codex' && Boolean(msg.prompt),
       claudeStream:
         Boolean(msg.prompt) &&
         msg.allowInteractive === true &&
+        o.interactionEnabled === true &&
         (msg.agentType === 'claude-code' || msg.agentType === 'qoder-cli'),
     },
     {
@@ -494,6 +605,22 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
         }
       },
       onInteraction: (request) => {
+        // 本机关闭交互 / 超出单任务额度：**主动回拒绝**而不是静默丢弃 ——
+        // 静默会让上游的 Promise 一直悬着，任务白等到总超时。
+        const refuse = (why: string): void => {
+          o.tasks.get(msg.taskId)?.respondInteraction?.(request.requestId, { action: 'decline' });
+          o.log('info', `[agent-bridge] ${why}，已拒绝交互 ${request.kind}/${request.requestId}`);
+        };
+        if (o.interactionEnabled !== true) {
+          refuse('交互已关闭');
+          return;
+        }
+        interactionCount += 1;
+        if (interactionCount > maxInteractions) {
+          refuse(`交互次数超过上限 ${maxInteractions}`);
+          return;
+        }
+        const expiresAt = interactionDeadline(request.expiresAt);
         try {
           o.store.requestInteraction({
             sessionId: msg.taskId,
@@ -501,7 +628,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
             kind: request.kind,
             payload: request.payload,
             turnId: turn?.turnId,
-            expiresAt: request.expiresAt,
+            expiresAt,
           });
           let eventSeq: number | undefined;
           if (sessionCreated) {
@@ -512,7 +639,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
                 requestId: request.requestId,
                 kind: request.kind,
                 payload: request.payload,
-                expiresAt: request.expiresAt,
+                expiresAt,
               },
             }).eventSeq;
           }
@@ -523,8 +650,19 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
             turnId: turn?.turnId,
             kind: request.kind,
             payload: request.payload,
-            expiresAt: request.expiresAt,
+            expiresAt,
             eventSeq,
+          });
+          // 等待态必须带上 interactionId：平台据此收起「等待中」，而不是等到下一帧才反应过来
+          o.emitter.emit({
+            type: 'task_status',
+            taskId: msg.taskId,
+            status: 'running',
+            phase: 'waiting_interaction',
+            interactionId: request.requestId,
+            turnId: turn?.turnId,
+            permissionMode: permissionModeForEcho,
+            requestedBy: msg.requestedBy,
           });
         } catch (error) {
           o.log('error', `[agent-bridge] 创建交互失败 ${msg.taskId}：${(error as Error).message}`);
@@ -532,6 +670,25 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       },
       onStatus: (status, info) => {
         o.registry.updateStatus(msg.taskId, status, info);
+        // 记下实际权限模式：交互帧与后续帧要保持一致，不能让平台看到两个不同的模式
+        if (info?.permissionMode) permissionModeForEcho = info.permissionMode;
+        // 权限判定审计（每个任务一条，终态时落）：只写策略名/模式/结果，不写 argv 与环境值
+        if (terminalStatus(status)) {
+          const deniedByPolicy =
+            info?.errorCode === 'permission_policy_denied' || info?.errorCode === 'permission_mode_unsupported';
+          writeAudit({
+            at: new Date().toISOString(),
+            action: 'permission_decision',
+            outcome: deniedByPolicy ? 'denied' : 'allowed',
+            taskId: msg.taskId,
+            agent: msg.agentType,
+            requestedBy: msg.requestedBy,
+            purpose: msg.purpose,
+            policy: o.permissionPolicy ?? 'default',
+            permissionMode: info?.permissionMode,
+            reason: deniedByPolicy ? info?.error : undefined,
+          });
+        }
         if (info?.changedFiles?.length) {
           o.log(
             'info',
@@ -602,6 +759,9 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
               changedFiles: info?.changedFiles,
               diffTruncated: info?.diffTruncated,
               requestedBy: msg.requestedBy,
+              permissionMode: info?.permissionMode,
+              stopReason: info?.stopReason,
+              feedIncomplete: info?.feedIncomplete,
             };
             eventSeq = o.store.appendEvent({
               sessionId: msg.taskId,
@@ -628,6 +788,9 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
           changedFiles: info?.changedFiles,
           diffTruncated: info?.diffTruncated,
           requestedBy: msg.requestedBy,
+          permissionMode: info?.permissionMode,
+          stopReason: info?.stopReason,
+          feedIncomplete: info?.feedIncomplete,
           turnId: turn?.turnId,
           eventSeq,
         });
