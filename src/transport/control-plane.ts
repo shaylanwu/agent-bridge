@@ -16,7 +16,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, readFileSync, statSync } from 'node:fs';
 import { extname, resolve as resolvePath, sep } from 'node:path';
 import { Emitter, type Upstream } from '../core/emitter.js';
@@ -25,12 +25,12 @@ import { hasAnsi } from '../core/ansi.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
 import type { SessionLog } from '../app/session-log.js';
 import type { TaskRegistry } from '../app/task-registry.js';
-import type { SessionStore } from '../core/session-store.js';
+import type { SessionStore, InteractionState } from '../core/session-store.js';
 import type { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
 import { SESSIONS_HTML } from './control-plane-sessions-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
-import type { ClientMessage, AgentListItem, TaskPhase } from '../protocol.js';
+import type { ClientMessage, AgentListItem, TaskPhase, InteractionResponseCommand } from '../protocol.js';
 import {
   verifyServiceToken,
   type ServiceTokenRecord,
@@ -62,6 +62,17 @@ export interface ControlPlaneDeps {
   /** 按租户取附件管理器；缺省复用 artifacts */
   artifactsForTenant?: (tenantId: string) => ArtifactTransferManager;
   scan: (opts: { fresh?: boolean }) => Promise<AgentListItem[]>;
+  /**
+   * 响应一次交互（HTTP 通道）。由 `startSession` 注入，内部复用 WS 的同一套判定；
+   * 不注入时 `/v1/interactions/{id}:respond` 回 501，而不是假装成功。
+   */
+  respondInteraction?: (msg: InteractionResponseCommand) => {
+    ok: boolean;
+    state?: string;
+    responseId?: string;
+    resultSeq?: number;
+    errorCode?: string;
+  };
   log: SessionLog;
   /** 能力清单（与 `hello.capabilities` 同源） */
   capabilities: readonly string[];
@@ -79,7 +90,10 @@ export interface ControlPlaneDeps {
     externalSandbox?: boolean;
   };
   /** 令牌校验器（默认 `infra/service-token`；注入以便单测） */
-  verify?: (token: string | undefined, scope: ServiceScope) => VerifyResult;
+  verify?: (
+    token: string | undefined,
+    scope: ServiceScope | readonly ServiceScope[],
+  ) => VerifyResult;
   /** 可选 principal JWT 校验器；请求按 principal.tenantId 隔离读取 */
   jwt?: JwtVerifier;
 }
@@ -253,10 +267,17 @@ export async function startControlPlane(
     });
   });
 
-  const authorize = (ctx: RouteContext, scope: ServiceScope): boolean => {
+  /**
+   * 鉴权：`scope` 传数组表示**任一命中即可**（如 `['session:read','task:read']`）。
+   * 1.0 新增的更窄 scope 都按这个方式接入，1.0 之前签发的粗粒度令牌不会当场失效。
+   */
+  const authorize = (ctx: RouteContext, scope: ServiceScope | readonly ServiceScope[]): boolean => {
     if (!requireToken) return true;
+    const required = Array.isArray(scope) ? scope : [scope as ServiceScope];
+    const label = required.join(' 或 ');
     if (ctx.principal) {
-      const allowed = ctx.principal.scopes.includes(scope) || ctx.principal.scopes.includes('*');
+      const allowed =
+        ctx.principal.scopes.includes('*') || required.some((s) => ctx.principal?.scopes.includes(s));
       writeAudit({
         at: new Date().toISOString(),
         action: 'control_plane',
@@ -266,7 +287,7 @@ export async function startControlPlane(
         scopes: ctx.principal.scopes,
       });
       if (!allowed) {
-        problem(ctx.res, 403, 'insufficient_scope', `JWT 缺少 scope: ${scope}`);
+        problem(ctx.res, 403, 'insufficient_scope', `JWT 缺少 scope: ${label}`);
         return false;
       }
       return true;
@@ -309,7 +330,7 @@ export async function startControlPlane(
       serviceId: res.record?.id,
       reason: res.message,
     });
-    problem(ctx.res, code === 'insufficient_scope' ? 403 : 401, code, res.message ?? `需要 scope: ${scope}`);
+    problem(ctx.res, code === 'insufficient_scope' ? 403 : 401, code, res.message ?? `需要 scope: ${label}`);
     return false;
   };
 
@@ -690,7 +711,7 @@ export async function startControlPlane(
   };
 
   const handleSessions = (ctx: RouteContext): void => {
-    if (!authorize(ctx, 'task:read')) return;
+    if (!authorize(ctx, SESSION_READ)) return;
     const limitRaw = Number(ctx.url.searchParams.get('limit') ?? '50');
     const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, Math.floor(limitRaw))) : 50;
     json(ctx.res, 200, {
@@ -698,6 +719,156 @@ export async function startControlPlane(
         const window = deps.store.eventWindow(session.sessionId, ctx.tenantId);
         return { ...session, ...window };
       }),
+    });
+  };
+
+  /** 只读 scope：会话侧统一按「窄 scope 优先、旧 scope 兼容」判定 */
+  const SESSION_READ: readonly ServiceScope[] = ['session:read', 'task:read'];
+
+  /** 交互记录对外视图：Form 答案只留字段名（本来就只存字段名），不额外暴露 payload 内部结构 */
+  const viewInteraction = (rec: {
+    sessionId: string;
+    requestId: string;
+    turnId?: string;
+    kind: string;
+    state: string;
+    payload: unknown;
+    expiresAt?: string;
+    responseId?: string;
+    resultSeq?: number;
+    resultPayload?: unknown;
+    createdAt: string;
+  }): Record<string, unknown> => ({
+    taskId: rec.sessionId,
+    requestId: rec.requestId,
+    kind: rec.kind,
+    state: rec.state,
+    payload: rec.payload,
+    ...(rec.turnId ? { turnId: rec.turnId } : {}),
+    ...(rec.expiresAt ? { expiresAt: rec.expiresAt } : {}),
+    ...(rec.responseId ? { responseId: rec.responseId } : {}),
+    ...(rec.resultSeq !== undefined ? { resultSeq: rec.resultSeq } : {}),
+    ...(rec.resultPayload !== undefined ? { resultPayload: rec.resultPayload } : {}),
+    createdAt: rec.createdAt,
+  });
+
+  /**
+   * `GET /v1/interactions`：有界列出交互（缺省全部状态，最常用的是 `state=pending`）。
+   * 只读 —— 回答问题的写入口是下面那条 `:respond`。
+   */
+  const handleInteractions = (ctx: RouteContext): void => {
+    if (!authorize(ctx, SESSION_READ)) return;
+    const STATES: InteractionState[] = [
+      'pending',
+      'accepted',
+      'declined',
+      'cancelled',
+      'expired',
+      'failed',
+    ];
+    const stateRaw = ctx.url.searchParams.get('state');
+    if (stateRaw && !STATES.includes(stateRaw as InteractionState)) {
+      problem(ctx.res, 400, 'protocol_incompatible', `state 非法：${stateRaw}`);
+      return;
+    }
+    const taskId = ctx.url.searchParams.get('taskId') ?? undefined;
+    const limitRaw = Number(ctx.url.searchParams.get('limit') ?? '50');
+    const rows = deps.store.queryInteractions({
+      tenantId: ctx.tenantId,
+      ...(taskId ? { sessionId: taskId } : {}),
+      ...(stateRaw ? { state: stateRaw as InteractionState } : {}),
+      limit: Number.isFinite(limitRaw) ? limitRaw : 50,
+    });
+    json(ctx.res, 200, { interactions: rows.map(viewInteraction) });
+  };
+
+  /** `GET /v1/interactions/{requestId}`：单条快照（pending 的请求 + 已结算的结果） */
+  const handleInteraction = (ctx: RouteContext, requestId: string): void => {
+    if (!authorize(ctx, SESSION_READ)) return;
+    const rec = deps.store.findInteractionByRequestId(requestId, ctx.tenantId);
+    if (!rec) {
+      problem(ctx.res, 404, 'internal', `未找到交互：${requestId}`);
+      return;
+    }
+    json(ctx.res, 200, { interaction: viewInteraction(rec) });
+  };
+
+  /**
+   * `POST /v1/interactions/{requestId}:respond`：HTTP 侧回答问题。
+   *
+   * 鉴权分两层，都不可省：本函数按交互种类要 `task:approve`（permission）或 `task:respond`
+   * （form / auth-url）；随后 dispatch 内部再按同一规则复核一次 —— 两条通道共用一套判定，
+   * 不能因为“从 HTTP 来的”就放宽。
+   */
+  const handleInteractionRespond = (ctx: RouteContext, requestId: string): void => {
+    const rec = deps.store.findInteractionByRequestId(requestId, ctx.tenantId);
+    if (!rec) {
+      problem(ctx.res, 404, 'internal', `未找到交互：${requestId}`);
+      return;
+    }
+    const respond = deps.respondInteraction;
+    if (!respond) {
+      problem(ctx.res, 501, 'internal', '当前进程未启用交互响应通道（只读模式）');
+      return;
+    }
+    if (!authorize(ctx, rec.kind === 'permission' ? 'task:approve' : 'task:respond')) return;
+
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const state = body['state'];
+    if (state !== 'accepted' && state !== 'declined' && state !== 'cancelled') {
+      problem(ctx.res, 400, 'protocol_incompatible', 'state 必须是 accepted/declined/cancelled');
+      return;
+    }
+    const given =
+      typeof body['responseId'] === 'string' && body['responseId'].trim()
+        ? body['responseId'].trim()
+        : undefined;
+    const responseId = given ?? `rs_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const payload =
+      typeof body['payload'] === 'object' && body['payload'] !== null
+        ? (body['payload'] as Record<string, unknown>)
+        : undefined;
+    const header = ctx.req.headers['authorization'];
+    const raw = Array.isArray(header) ? header[0] : header;
+    const token = raw?.startsWith('Bearer ') ? raw.slice(7).trim() : undefined;
+
+    const outcome = respond({
+      type: 'task_interaction_response',
+      taskId: rec.sessionId,
+      requestId,
+      responseId,
+      state,
+      ...(payload ? { payload } : {}),
+      ...(token ? { serviceToken: token } : {}),
+    });
+    if (!outcome.ok) {
+      // 受控错误码只有 18 个（WS 与 HTTP 共用），交互侧的细分失败必须映射进来，
+      // 不能为了「好看的错误名」往协议里塞新码。
+      const reason = outcome.errorCode ?? 'internal';
+      const mapped =
+        reason === 'interaction_not_found'
+          ? { status: 404, code: 'internal' as BridgeErrorCode }
+          : reason === 'interaction_already_resolved'
+            ? { status: 409, code: 'protocol_incompatible' as BridgeErrorCode }
+            : reason === 'interaction_expired'
+              ? { status: 410, code: 'timeout' as BridgeErrorCode }
+              : reason === 'insufficient_scope' ||
+                  reason === 'unauthorized' ||
+                  reason === 'invalid_token' ||
+                  reason === 'token_expired'
+                ? { status: 403, code: reason as BridgeErrorCode }
+                : isBridgeErrorCode(reason)
+                  ? { status: 400, code: reason as BridgeErrorCode }
+                  : { status: 400, code: 'protocol_incompatible' as BridgeErrorCode };
+      problem(ctx.res, mapped.status, mapped.code, `交互响应失败：${reason}`);
+      return;
+    }
+    json(ctx.res, 200, {
+      taskId: rec.sessionId,
+      requestId,
+      state: outcome.state,
+      ...(outcome.responseId ? { responseId: outcome.responseId } : {}),
+      ...(outcome.resultSeq !== undefined ? { resultSeq: outcome.resultSeq } : {}),
     });
   };
 
@@ -742,7 +913,7 @@ export async function startControlPlane(
   };
 
   const handleSessionSnapshot = (ctx: RouteContext, id: string): void => {
-    if (!authorize(ctx, 'task:read')) return;
+    if (!authorize(ctx, SESSION_READ)) return;
     try {
       const afterRaw = Number(ctx.url.searchParams.get('afterEventSeq') ?? '0');
       const limitRaw = Number(ctx.url.searchParams.get('limit') ?? '200');
@@ -762,7 +933,7 @@ export async function startControlPlane(
    * event: snapshot / event / wire / heartbeat / done
    */
   const handleSessionEvents = (ctx: RouteContext, id: string): void => {
-    if (!authorize(ctx, 'task:read')) return;
+    if (!authorize(ctx, SESSION_READ)) return;
     let snapshot: ReturnType<SessionStore['snapshot']>;
     try {
       snapshot = deps.store.snapshot(id, { afterEventSeq: 0, limit: 1000, tenantId: ctx.tenantId });
@@ -977,6 +1148,18 @@ export async function startControlPlane(
         }
         if (path === '/v1/sessions' && req.method === 'GET') {
           return handleSessions(ctx);
+        }
+        // 交互（1.0）：HTTP 侧也能看与答，否则只做 HTTP 集成的调用方永远答不了权限确认
+        if (path === '/v1/interactions' && req.method === 'GET') {
+          return handleInteractions(ctx);
+        }
+        const interactionRespondMatch = /^\/v1\/interactions\/([^/:]+):respond$/.exec(path);
+        if (interactionRespondMatch && req.method === 'POST') {
+          return handleInteractionRespond(ctx, decodeURIComponent(interactionRespondMatch[1] ?? ''));
+        }
+        const interactionMatch = /^\/v1\/interactions\/([^/:]+)$/.exec(path);
+        if (interactionMatch && req.method === 'GET') {
+          return handleInteraction(ctx, decodeURIComponent(interactionMatch[1] ?? ''));
         }
         const artifactMatch = /^\/v1\/sessions\/([^/]+)\/artifacts\/([^/]+)$/.exec(path);
         if (artifactMatch && req.method === 'GET') {

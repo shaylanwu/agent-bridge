@@ -649,6 +649,157 @@ describe('本地回环控制面', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 交互端点（1.0）：HTTP 侧也要能看与答，否则只做 HTTP 集成的调用方永远答不了权限确认
+// ---------------------------------------------------------------------------
+
+describe('控制面 /v1/interactions', () => {
+  const seeding = (kind: 'permission' | 'form' = 'permission') => {
+    const store = new SessionStore(':memory:');
+    store.createSession({
+      sessionId: 'task-int',
+      mode: 'task',
+      agentType: 'codebuddy-cli',
+      cwd: tmpdir(),
+    });
+    store.requestInteraction({
+      sessionId: 'task-int',
+      requestId: 'ir_1',
+      kind,
+      payload: { toolCall: { kind: 'execute', title: 'Run tests' }, options: [] },
+    });
+    return store;
+  };
+
+  it('缺读 scope 回 403，且错误体是 problem+json', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ store: seeding(), jwt: verifier });
+    const res = await call(plane.port, 'GET', '/v1/interactions?state=pending', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'device:read' })}` },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers['content-type']).toContain('application/problem+json');
+    // RFC 9457 扩展成员：受控错误码放在顶层 `code`，与 WS 的 errorCode 同名同值
+    const body = res.json<{ code?: string; title?: string; type?: string }>();
+    expect(body.code).toBe('insufficient_scope');
+    expect(body.title).toBe('insufficient_scope');
+    expect(body.type).toContain('/errors/insufficient_scope');
+    plane.close();
+  });
+
+  it('session:read 可列 pending，也兼容旧的 task:read', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ store: seeding(), jwt: verifier });
+    for (const scope of ['session:read', 'task:read']) {
+      const res = await call(plane.port, 'GET', '/v1/interactions?state=pending', {
+        headers: { authorization: `Bearer ${sign({ sub: 'svc', scope })}` },
+      });
+      expect(res.status).toBe(200);
+      const list = res.json<{ interactions: Array<{ requestId: string; kind: string }> }>().interactions;
+      expect(list).toHaveLength(1);
+      expect(list[0]?.requestId).toBe('ir_1');
+      expect(list[0]?.kind).toBe('permission');
+    }
+    plane.close();
+  });
+
+  it('非法 state 回 400（不静默当成全量）', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ store: seeding(), jwt: verifier });
+    const res = await call(plane.port, 'GET', '/v1/interactions?state=whatever', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'session:read' })}` },
+    });
+    expect(res.status).toBe(400);
+    plane.close();
+  });
+
+  it('permission 交互要 task:approve，不是 task:respond', async () => {
+    const { sign, verifier } = jwtFixture();
+    const store = seeding();
+    const plane = await start({
+      store,
+      jwt: verifier,
+      respondInteraction: () => ({ ok: true, state: 'accepted' }),
+    });
+    const wrong = await call(plane.port, 'POST', '/v1/interactions/ir_1:respond', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'task:respond' })}` },
+      body: { state: 'accepted' },
+    });
+    expect(wrong.status).toBe(403);
+    const ok = await call(plane.port, 'POST', '/v1/interactions/ir_1:respond', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'task:approve' })}` },
+      body: { state: 'accepted', payload: { optionId: 'allow_once' } },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.json<{ state: string }>().state).toBe('accepted');
+    plane.close();
+  });
+
+  it('form 交互要 task:respond，并回显 responseId/resultSeq', async () => {
+    const { sign, verifier } = jwtFixture();
+    let seen: { requestId?: string; state?: string } = {};
+    const plane = await start({
+      store: seeding('form'),
+      jwt: verifier,
+      respondInteraction: (msg) => {
+        seen = { requestId: msg.requestId, state: msg.state };
+        return { ok: true, state: 'accepted', responseId: 'rs_x', resultSeq: 7 };
+      },
+    });
+    const res = await call(plane.port, 'POST', '/v1/interactions/ir_1:respond', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'task:respond' })}` },
+      body: { state: 'accepted', payload: { content: { env: 'staging' } } },
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ requestId: 'ir_1', state: 'accepted' });
+    expect(res.json<{ resultSeq: number }>().resultSeq).toBe(7);
+    plane.close();
+  });
+
+  it('未注入响应通道时回 501，不假装成功', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ store: seeding(), jwt: verifier });
+    const res = await call(plane.port, 'POST', '/v1/interactions/ir_1:respond', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'task:approve' })}` },
+      body: { state: 'declined' },
+    });
+    expect(res.status).toBe(501);
+    plane.close();
+  });
+
+  it('dispatch 的细分失败映射成状态码（409 / 410）', async () => {
+    const { sign, verifier } = jwtFixture();
+    const cases: Array<[string, number]> = [
+      ['interaction_already_resolved', 409],
+      ['interaction_expired', 410],
+    ];
+    for (const [errorCode, status] of cases) {
+      const plane = await start({
+        store: seeding(),
+        jwt: verifier,
+        respondInteraction: () => ({ ok: false, errorCode }),
+      });
+      const res = await call(plane.port, 'POST', '/v1/interactions/ir_1:respond', {
+        headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'task:approve' })}` },
+        body: { state: 'declined' },
+      });
+      expect(res.status).toBe(status);
+      plane.close();
+    }
+  });
+
+  it('未知 requestId 回 404', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ store: seeding(), jwt: verifier, respondInteraction: () => ({ ok: true }) });
+    const res = await call(plane.port, 'POST', '/v1/interactions/ir_nope:respond', {
+      headers: { authorization: `Bearer ${sign({ sub: 'svc', scope: 'task:approve' })}` },
+      body: { state: 'accepted' },
+    });
+    expect(res.status).toBe(404);
+    plane.close();
+  });
+});
+
 // 收尾：防止有测试漏关导致端口悬挂
 process.on('exit', () => {
   for (const p of started) {

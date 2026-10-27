@@ -437,8 +437,12 @@ timeout）后在 `cwd` 上取一次差异，随 `task_status` 一起回传：
 | scope          | 允许的动作                       |
 | -------------- | -------------------------------- |
 | `task:create`  | 下发 `run_task`                  |
-| `task:cancel`  | 下发 `cancel_task`               |
+| `task:cancel`  | 下发 `cancel_task` / `cancel_turn` / `close_session` |
 | `task:read`    | 查询任务/扫描结果                |
+| `session:read` | 只读会话、事件与交互（拿不到任务输出与 diff）—— 看板与审批 UI 用这一条 |
+| `task:approve` | 回答 `permission` 交互（`task_interaction_response`、`POST /v1/interactions/{id}:respond`） |
+| `task:respond` | 回答 `form` / `auth-url` 交互    |
+| `approval:persist` | 允许该回答写进持久授权账本（影响未来任务，因此单独一条） |
 | `device:read`  | 读取本机工具清单（`scan`）       |
 
 `run_task` / `cancel_task` 可带 `requestedBy`（≤128 字符）、`purpose`（≤64 字符）、`serviceToken`；
@@ -521,10 +525,13 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | POST | `/v1/agents:scan` | `device:read` |
 | GET | `/v1/board` | `task:read`（面板聚合视图：任务 + 计数 + 容量） |
 | POST | `/v1/artifacts:gc` | `task:cancel`（显式 artifact TTL 清理，支持 dryRun） |
-| GET | `/v1/sessions` | `task:read`（持久会话列表） |
-| GET | `/v1/sessions/{id}` | `task:read`（会话快照 + eventSeq 窗口） |
-| GET | `/v1/sessions/{id}/events` | `task:read`（SSE：回放 + 实时事件） |
+| GET | `/v1/sessions` | `session:read` 或 `task:read`（持久会话列表） |
+| GET | `/v1/sessions/{id}` | `session:read` 或 `task:read`（会话快照 + eventSeq 窗口） |
+| GET | `/v1/sessions/{id}/events` | `session:read` 或 `task:read`（SSE：回放 + 实时事件） |
 | GET | `/v1/sessions/{id}/artifacts/{artifactId}` | `task:read`（附件流式下载） |
+| GET | `/v1/interactions?taskId=&state=&limit=` | `session:read` 或 `task:read`（有界交互列表，常用 `state=pending`） |
+| GET | `/v1/interactions/{requestId}` | `session:read` 或 `task:read`（单条交互：待答请求或已结算结果） |
+| POST | `/v1/interactions/{requestId}:respond` | permission 要 `task:approve`，form/auth-url 要 `task:respond`（规则与代码路径同 WS 的 `task_interaction_response`） |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read`（游标分页） |
 | GET | `/v1/tasks/{id}` | `task:read` |

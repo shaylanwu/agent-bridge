@@ -1085,6 +1085,58 @@ export class SessionStore {
     return row ? toInteraction(row) : undefined;
   }
 
+  /**
+   * 按租户有界列交互（控制面 `/v1/interactions` 用）。
+   *
+   * `state=pending` 是最常见的用法（「现在有哪些问题在等我回答」），所以按 created_at 倒序、
+   * 上限 200 条 —— 交互永远是有界的小集合，不需要分页游标。
+   */
+  queryInteractions(input: {
+    tenantId?: string;
+    sessionId?: string;
+    state?: InteractionState;
+    limit?: number;
+  } = {}): InteractionRecord[] {
+    const tenantId = input.tenantId ?? DEFAULT_TENANT;
+    const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 50)));
+    const where: string[] = ['tenant_id = ?'];
+    const params: unknown[] = [tenantId];
+    if (input.sessionId) {
+      where.push('session_id = ?');
+      params.push(input.sessionId);
+    }
+    if (input.state) {
+      where.push('state = ?');
+      params.push(input.state);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM interactions WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(...params, limit) as InteractionRow[];
+    return rows.map(toInteraction);
+  }
+
+  /**
+   * 只凭 requestId 反查交互（`POST /v1/interactions/{requestId}:respond` 的路径里没有 taskId）。
+   *
+   * requestId 只在 session 内唯一，理论上可能撞；取最新一条（同一 requestId 的重放会落在同一条上，
+   * 因为 requestInteraction 用 (tenant,session,request) 做主键）。
+   */
+  findInteractionByRequestId(
+    requestId: string,
+    tenantId = DEFAULT_TENANT,
+  ): InteractionRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM interactions
+          WHERE tenant_id = ? AND request_id = ?
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(tenantId, requestId) as InteractionRow | undefined;
+    return row ? toInteraction(row) : undefined;
+  }
+
   // ---------- 持久授权账本（approvals） ----------
 
   /**

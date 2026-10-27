@@ -473,8 +473,12 @@ constant-time:
 | scope          | Allows                            |
 | -------------- | --------------------------------- |
 | `task:create`  | sending `run_task`                |
-| `task:cancel`  | sending `cancel_task`             |
+| `task:cancel`  | sending `cancel_task` / `cancel_turn` / `close_session` |
 | `task:read`    | reading task / scan results       |
+| `session:read` | reading sessions, events and interactions only (no task output, no diff) — the narrow scope for boards and approval UIs |
+| `task:approve` | answering a `permission` interaction (`task_interaction_response`, `POST /v1/interactions/{id}:respond`) |
+| `task:respond` | answering a `form` / `auth-url` interaction |
+| `approval:persist` | letting that answer be written into the persistent approval ledger (affects future tasks, so it is separate) |
 | `device:read`  | reading the local tool list (`scan`) |
 
 `run_task` / `cancel_task` may carry `requestedBy` (≤128 chars), `purpose` (≤64 chars) and `serviceToken`;
@@ -560,10 +564,13 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | POST | `/v1/agents:scan` | `device:read` |
 | GET | `/v1/board` | `task:read` (board aggregate: tasks + counts + capacity) |
 | POST | `/v1/artifacts:gc` | `task:cancel` (explicit artifact TTL cleanup, dryRun supported) |
-| GET | `/v1/sessions` | `task:read` (persistent sessions) |
-| GET | `/v1/sessions/{id}` | `task:read` (session snapshot + eventSeq window) |
-| GET | `/v1/sessions/{id}/events` | `task:read` (SSE: replay + live events) |
+| GET | `/v1/sessions` | `session:read` or `task:read` (persistent sessions) |
+| GET | `/v1/sessions/{id}` | `session:read` or `task:read` (session snapshot + eventSeq window) |
+| GET | `/v1/sessions/{id}/events` | `session:read` or `task:read` (SSE: replay + live events) |
 | GET | `/v1/sessions/{id}/artifacts/{artifactId}` | `task:read` (stream artifact download) |
+| GET | `/v1/interactions?taskId=&state=&limit=` | `session:read` or `task:read` (bounded interaction list; `state=pending` is the common one) |
+| GET | `/v1/interactions/{requestId}` | `session:read` or `task:read` (one interaction: pending request or settled result) |
+| POST | `/v1/interactions/{requestId}:respond` | `task:approve` for permission, `task:respond` for form/auth-url (same rule and same code path as the WS `task_interaction_response`) |
 | POST | `/v1/tasks` | `task:create` |
 | GET | `/v1/tasks` | `task:read` (cursor-paginated) |
 | GET | `/v1/tasks/{id}` | `task:read` |

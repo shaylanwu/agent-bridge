@@ -12,7 +12,12 @@ import { scanAgents } from '../core/scan.js';
 import { defaultSupervisor } from '../core/task-supervisor.js';
 import type { PermissionPolicyName } from '../core/permission-policy.js';
 import type { TaskRegistry } from './task-registry.js';
-import { assertServerMessage, ProtocolError, type ClientMessage } from '../protocol.js';
+import {
+  assertServerMessage,
+  ProtocolError,
+  type ClientMessage,
+  type InteractionResponseCommand,
+} from '../protocol.js';
 import type { TaskHandle } from '../runner.js';
 import { createBridgeClient } from '../transport/bridge-client.js';
 import type { SessionLog } from './session-log.js';
@@ -24,8 +29,10 @@ import {
   dispatchGetTask,
   dispatchInteractionResponse,
   dispatchRunTask,
+  type InteractionOutcome,
 } from './task-dispatch.js';
 import { dispatchConversationMessage } from './conversation.js';
+import type { ClaudeResident } from './claude-resident.js';
 import { authorizeService } from './service-gate.js';
 import { DEFAULT_TENANT, type SessionStore } from '../core/session-store.js';
 import { DEFAULT_APPROVAL_TTL_MS } from '../core/permission-ledger.js';
@@ -93,10 +100,60 @@ export interface BridgeSession {
   activeTasks: () => number;
   /** 取消指定任务（无此任务返回 false） */
   cancelTask: (taskId: string) => boolean;
+  /**
+   * 响应一次交互（1.0 HTTP 通道入口）。
+   *
+   * 与 WS 的 `task_interaction_response` 走**同一个** `dispatchInteractionResponse`：
+   * 同样的 scope 判定、同样的 Form 校验、同样的账本写入与审计。返回客观结果，
+   * 让 HTTP 层能把 `insufficient_scope` / `interaction_not_found` 映射成状态码，
+   * 而不是回读 SQLite 猜（鉴权失败不落库，回读会误判成 pending）。
+   */
+  respondInteraction: (msg: InteractionResponseCommand) => InteractionOutcome;
 }
 
 export function createSession(opts: SessionOptions): BridgeSession {
   const tasks = new Map<string, TaskHandle>();
+  /**
+   * 常驻会话与空闲计时器必须挂在**会话级**，不能写在每条报文的 dispatchOpts 字面量里：
+   * 那样每个回合都会拿到一张新 Map，`residentSessions.get()` 永远 miss ——
+   * Claude/Qoder 的常驻进程复用形同虚设，每回合都重新拉起一个进程。
+   */
+  const residentSessions = new Map<string, ClaudeResident>();
+  const idleTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * 任务调度的公共依赖。抽成函数是为了**两条通道共用同一份规则**：
+   * WS 的 `task_interaction_response` 与 HTTP 的 `POST /v1/interactions/{id}:respond`
+   * 如果各拼一份选项，鉴权/账本/审计迟早会漂。
+   */
+  const dispatchOptions = (em: Emitter) => ({
+    emitter: em,
+    tasks,
+    registry: opts.registry,
+    allowedCwd: opts.allowedCwd,
+    maxConcurrent: opts.maxConcurrent,
+    maxQueued: opts.maxQueued,
+    diffMaxBytes: opts.diffMaxBytes,
+    captureDiffByDefault: opts.captureDiffByDefault,
+    requireServiceToken: opts.requireServiceToken,
+    permissionPolicy: opts.permissionPolicy,
+    externalSandbox: opts.externalSandbox,
+    interactionEnabled: opts.interactionEnabled === true,
+    interactionTimeoutMs: opts.interactionTimeoutMs,
+    maxInteractionsPerTask: opts.maxInteractionsPerTask,
+    // 持久授权账本（1.0）：默认关闭时 enabled=false，dispatch 侧既不查也不写
+    approvalLedger: {
+      enabled: opts.approvalLedgerEnabled === true,
+      tenantId: DEFAULT_TENANT,
+      ttlMs: opts.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS,
+    },
+    artifactRootDir: opts.artifactRootDir,
+    store: opts.store,
+    log: opts.log,
+    residentSessions,
+    idleTimeoutMs: opts.sessionIdleMs,
+    idleTimers,
+  });
   // client 的 onOpen/onMessage 里要用到 emitter，而 emitter 又要用到 client.send ——
   // 互相依赖只能在"连接建立后才会回调"这个前提下用后赋值解决（与实现顺序无关，回调天然晚于同步构造）
   let emitter: Emitter | undefined;
@@ -174,34 +231,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
       }
       if (!emitter) return;
 
-      const dispatchOpts = {
-        emitter,
-        tasks,
-        registry: opts.registry,
-        allowedCwd: opts.allowedCwd,
-        maxConcurrent: opts.maxConcurrent,
-        maxQueued: opts.maxQueued,
-        diffMaxBytes: opts.diffMaxBytes,
-        captureDiffByDefault: opts.captureDiffByDefault,
-        requireServiceToken: opts.requireServiceToken,
-        permissionPolicy: opts.permissionPolicy,
-        externalSandbox: opts.externalSandbox,
-        interactionEnabled: opts.interactionEnabled === true,
-        interactionTimeoutMs: opts.interactionTimeoutMs,
-        maxInteractionsPerTask: opts.maxInteractionsPerTask,
-        // 持久授权账本（1.0）：默认关闭时 enabled=false，dispatch 侧既不查也不写
-        approvalLedger: {
-          enabled: opts.approvalLedgerEnabled === true,
-          tenantId: DEFAULT_TENANT,
-          ttlMs: opts.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS,
-        },
-        artifactRootDir: opts.artifactRootDir,
-        store: opts.store,
-        log: opts.log,
-        residentSessions: new Map(),
-        idleTimeoutMs: opts.sessionIdleMs,
-        idleTimers: new Map(),
-      };
+      const dispatchOpts = dispatchOptions(emitter);
 
       if (msg.type === 'ping') {
         emitter.emit({ type: 'pong', at: Date.now() });
@@ -417,6 +447,12 @@ export function createSession(opts: SessionOptions): BridgeSession {
     artifactsForTenant,
     urls,
     close: () => {
+      // 常驻进程（Claude/Qoder）不属于 supervisor，关闭会话时必须自己收干净，
+      // 否则每开一次会话就在后台留一批子进程。
+      for (const timer of idleTimers.values()) clearTimeout(timer);
+      idleTimers.clear();
+      for (const resident of residentSessions.values()) resident.close();
+      residentSessions.clear();
       client.close();
       opts.store.close();
     },
@@ -428,5 +464,6 @@ export function createSession(opts: SessionOptions): BridgeSession {
       h.cancel();
       return true;
     },
+    respondInteraction: (msg) => dispatchInteractionResponse(msg, dispatchOptions(emitter)),
   };
 }

@@ -83,7 +83,7 @@ agent-bridge logout
 ```bash
 agent-bridge services issue|list|revoke|rotate
   --label=<name>
-  --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond,approval:persist
+  --scopes=task:create,task:cancel,task:read,session:read,device:read,task:approve,task:respond,approval:persist
   [--ttl-days=90]          # issue 用
   [--grace-hours=24]       # rotate 用：旧令牌宽限期内仍然有效
 ```

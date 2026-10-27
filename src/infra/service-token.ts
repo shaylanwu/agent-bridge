@@ -24,6 +24,11 @@ export const SERVICE_SCOPES = [
   'task:create',
   'task:cancel',
   'task:read',
+  /**
+   * 只读会话侧内容（会话列表/快照/事件/交互）。比 `task:read` 窄：拿不到任务输出与 diff，
+   * 适合只做看板/审批的集成方。1.0 之前签发的 `task:read` 令牌仍可用（见 control-plane 的别名规则）。
+   */
+  'session:read',
   'task:approve',
   /** 允许把人工的「永久允许」写进持久授权账本（比 task:approve 更敏感：影响未来任务） */
   'approval:persist',
@@ -173,7 +178,8 @@ function parseToken(token: string): { kid: string; secret: string } | undefined 
  */
 export function verifyServiceToken(
   token: string | undefined,
-  requiredScope: ServiceScope,
+  /** 单个 scope = 必须命中；数组 = 任一命中即可（例如 `session:read` 与兼容别名 `task:read`） */
+  requiredScope: ServiceScope | readonly ServiceScope[],
   now = new Date(),
 ): VerifyResult {
   if (!token || !token.trim()) return { ok: false, reason: 'missing', message: '未提供服务令牌' };
@@ -199,8 +205,13 @@ export function verifyServiceToken(
       return { ok: false, reason: 'revoked', message: '服务令牌已吊销' };
     }
   }
-  if (!rec.scopes.includes(requiredScope)) {
-    return { ok: false, reason: 'scope', message: `服务令牌缺少 scope：${requiredScope}` };
+  const required = Array.isArray(requiredScope) ? requiredScope : [requiredScope as ServiceScope];
+  if (!required.some((scope) => rec.scopes.includes(scope))) {
+    return {
+      ok: false,
+      reason: 'scope',
+      message: `服务令牌缺少 scope：${required.join(' 或 ')}`,
+    };
   }
 
   // 记录最近使用（best-effort：写失败不影响本次判定）

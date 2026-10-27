@@ -80,8 +80,14 @@ async function runServe(flags: Flags): Promise<void> {
   // scope 只放行 task:read / device:read —— 面板 URL 直接拼上它，点开即用；
   // 需要写操作（下发/取消任务）的调用方仍走 `services issue` 签发的落盘令牌。
   const uiToken = `abs_ui_${randomBytes(16).toString('hex')}`;
-  const verifyWithUi = (token: string | undefined, scope: ServiceScope): ReturnType<typeof verifyServiceToken> => {
-    if (token === uiToken && (scope === 'task:read' || scope === 'device:read')) return { ok: true };
+  const verifyWithUi = (
+    token: string | undefined,
+    scope: ServiceScope | readonly ServiceScope[],
+  ): ReturnType<typeof verifyServiceToken> => {
+    const required = Array.isArray(scope) ? scope : [scope as ServiceScope];
+    // 面板令牌是只读的：允许读会话/任务/设备；写操作仍必须用 services issue 签发的令牌
+    const readOnly = ['task:read', 'session:read', 'device:read'];
+    if (token === uiToken && required.every((s) => readOnly.includes(s))) return { ok: true };
     return verifyServiceToken(token, scope);
   };
 
@@ -95,6 +101,7 @@ async function runServe(flags: Flags): Promise<void> {
       artifactsForTenant: (tenantId) => session.artifactsForTenant(tenantId),
       // 与平台下发的任务共用同一个 supervisor：并发上限不会因多开一条通道而翻倍
       startTask: (req, hooks) => startTask(req, hooks),
+      respondInteraction: (msg) => session.respondInteraction(msg),
       scan: (opts) => scanAgents(opts),
       log,
       verify: verifyWithUi,

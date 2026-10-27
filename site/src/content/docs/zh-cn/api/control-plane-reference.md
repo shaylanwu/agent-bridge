@@ -22,6 +22,9 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
 | `GET` | [`/v1/sessions/{id}/artifacts/{artifactId}`](#op-get-v1-sessions-id-artifacts-artifactid) | 下载会话附件（流式，Content-Disposition attachment） |
 | `GET` | [`/v1/sessions/{id}/events`](#op-get-v1-sessions-id-events) | 会话 SSE：先回放历史，再接实时事件 |
+| `GET` | [`/v1/interactions`](#op-get-v1-interactions) | 交互列表（有界，按 created_at 倒序；`state=pending` 最常用） |
+| `GET` | [`/v1/interactions/{requestId}`](#op-get-v1-interactions-requestid) | 单条交互快照（pending 请求 + 已结算结果） |
+| `POST` | [`/v1/interactions/{requestId}:respond`](#op-post-v1-interactions-requestid-respond) | 响应一条交互（HTTP 通道，与 WS 共用同一套判定） |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | 任务台账（游标分页） |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | 创建任务 |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | 任务状态 + 终态产物 |
@@ -514,6 +517,163 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `401` |  — 结构: Problem |
 | `403` |  — 结构: Problem |
 | `404` |  — 结构: Problem |
+
+
+
+
+<a id="op-get-v1-interactions"></a>
+
+### GET /v1/interactions
+
+**交互列表（有界，按 created_at 倒序；`state=pending` 最常用）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `taskId` | query | `string` |  |  |
+| `state` | query | `pending` \| `accepted` \| `declined` \| `cancelled` \| `expired` \| `failed` |  |  |
+| `limit` | query | `integer` |  |  |
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `400` |  — 结构: Problem |
+| `401` |  — 结构: Problem |
+| `403` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "interactions": [
+    {
+      "taskId": "string",
+      "requestId": "string",
+      "kind": "permission",
+      "state": "pending",
+      "turnId": "string",
+      "expiresAt": "string",
+      "responseId": "string",
+      "createdAt": "string"
+    }
+  ]
+}
+```
+
+
+
+
+<a id="op-get-v1-interactions-requestid"></a>
+
+### GET /v1/interactions/{requestId}
+
+**单条交互快照（pending 请求 + 已结算结果）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `requestId` | path | `string` | ✓ |  |
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `401` |  — 结构: Problem |
+| `403` |  — 结构: Problem |
+| `404` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "interaction": {
+    "taskId": "string",
+    "requestId": "string",
+    "kind": "permission",
+    "state": "pending",
+    "turnId": "string",
+    "expiresAt": "string",
+    "responseId": "string",
+    "createdAt": "string"
+  }
+}
+```
+
+
+
+
+<a id="op-post-v1-interactions-requestid-respond"></a>
+
+### POST /v1/interactions/{requestId}:respond
+
+**响应一条交互（HTTP 通道，与 WS 共用同一套判定）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `requestId` | path | `string` | ✓ |  |
+
+
+**请求体**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `state` | `accepted` \| `declined` \| `cancelled` | ✓ |  |
+| `responseId` | `string` |  |  |
+| `payload` | `object` |  |  |
+
+
+**示例**
+
+```json
+{
+  "state": "accepted",
+  "responseId": "string"
+}
+```
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `400` |  — 结构: Problem |
+| `401` |  — 结构: Problem |
+| `403` |  — 结构: Problem |
+| `404` |  — 结构: Problem |
+| `409` |  — 结构: Problem |
+| `410` |  — 结构: Problem |
+| `501` |  — 结构: Problem |
+
+
+**示例**
+
+```json
+{
+  "taskId": "string",
+  "requestId": "string",
+  "state": "accepted",
+  "responseId": "string"
+}
+```
 
 
 

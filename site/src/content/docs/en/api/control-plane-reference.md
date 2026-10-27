@@ -22,6 +22,9 @@ description: Every endpoint of the optional loopback control plane — generated
 | `GET` | [`/v1/sessions/{id}`](#op-get-v1-sessions-id) | 会话快照（Session + Turns + Events + Artifacts） |
 | `GET` | [`/v1/sessions/{id}/artifacts/{artifactId}`](#op-get-v1-sessions-id-artifacts-artifactid) | 下载会话附件（流式，Content-Disposition attachment） |
 | `GET` | [`/v1/sessions/{id}/events`](#op-get-v1-sessions-id-events) | 会话 SSE：先回放历史，再接实时事件 |
+| `GET` | [`/v1/interactions`](#op-get-v1-interactions) | 交互列表（有界，按 created_at 倒序；`state=pending` 最常用） |
+| `GET` | [`/v1/interactions/{requestId}`](#op-get-v1-interactions-requestid) | 单条交互快照（pending 请求 + 已结算结果） |
+| `POST` | [`/v1/interactions/{requestId}:respond`](#op-post-v1-interactions-requestid-respond) | 响应一条交互（HTTP 通道，与 WS 共用同一套判定） |
 | `GET` | [`/v1/tasks`](#op-get-v1-tasks) | Task ledger, cursor-paginated (cursor, not offset — the list keeps moving) |
 | `POST` | [`/v1/tasks`](#op-post-v1-tasks) | Create a task |
 | `GET` | [`/v1/tasks/{id}`](#op-get-v1-tasks-id) | Task state plus terminal artifacts (diff / changedFiles) |
@@ -514,6 +517,167 @@ event 类型：snapshot / event / wire / heartbeat / done。 afterEventSeq 之�
 | `401` | Missing / invalid / expired token — Schema: Problem |
 | `403` | Token valid but the required scope is missing — Schema: Problem |
 | `404` | Session does not exist — Schema: Problem |
+
+
+
+
+<a id="op-get-v1-interactions"></a>
+
+### GET /v1/interactions
+
+**交互列表（有界，按 created_at 倒序；`state=pending` 最常用）**
+
+只读。需要 `session:read`，1.0 之前签发的 `task:read` 仍被接受（窄 scope 优先）。 Form 的答案从不在此返回（只存字段名），auth-url 的完整 URL 只在进程内 vault 里。
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `taskId` | query | `string` |  |  |
+| `state` | query | `pending` \| `accepted` \| `declined` \| `cancelled` \| `expired` \| `failed` |  |  |
+| `limit` | query | `integer` |  |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Invalid request body or parameters — Schema: Problem |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "interactions": [
+    {
+      "taskId": "string",
+      "requestId": "string",
+      "kind": "permission",
+      "state": "pending",
+      "turnId": "string",
+      "expiresAt": "string",
+      "responseId": "string",
+      "createdAt": "string"
+    }
+  ]
+}
+```
+
+
+
+
+<a id="op-get-v1-interactions-requestid"></a>
+
+### GET /v1/interactions/{requestId}
+
+**单条交互快照（pending 请求 + 已结算结果）**
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `requestId` | path | `string` | ✓ |  |
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+| `404` | Session does not exist — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "interaction": {
+    "taskId": "string",
+    "requestId": "string",
+    "kind": "permission",
+    "state": "pending",
+    "turnId": "string",
+    "expiresAt": "string",
+    "responseId": "string",
+    "createdAt": "string"
+  }
+}
+```
+
+
+
+
+<a id="op-post-v1-interactions-requestid-respond"></a>
+
+### POST /v1/interactions/{requestId}:respond
+
+**响应一条交互（HTTP 通道，与 WS 共用同一套判定）**
+
+permission 交互需要 `task:approve`；form / auth-url 需要 `task:respond`。 同 `responseId` 重放是幂等的（回既有终态）；换 `responseId` 再答已结算的请求回 409。
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `requestId` | path | `string` | ✓ |  |
+
+
+**Request body**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | `accepted` \| `declined` \| `cancelled` | ✓ |  |
+| `responseId` | `string` |  | 幂等键；缺省由服务端生成 |
+| `payload` | `object` |  | permission 传 optionId；form 传 content（按 requestedSchema 校验） |
+
+
+**Example**
+
+```json
+{
+  "state": "accepted",
+  "responseId": "string"
+}
+```
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Invalid request body or parameters — Schema: Problem |
+| `401` | Missing / invalid / expired token — Schema: Problem |
+| `403` | Token valid but the required scope is missing — Schema: Problem |
+| `404` | Session does not exist — Schema: Problem |
+| `409` | 已结算（responseId 与既有不同） — Schema: Problem |
+| `410` | 交互已过期 — Schema: Problem |
+| `501` | 该进程未启用交互响应通道（只读模式） — Schema: Problem |
+
+
+**Example**
+
+```json
+{
+  "taskId": "string",
+  "requestId": "string",
+  "state": "accepted",
+  "responseId": "string"
+}
+```
 
 
 

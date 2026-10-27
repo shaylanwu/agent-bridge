@@ -204,10 +204,27 @@ export function dispatchCancelTurn(msg: CancelTurnMessage, o: TaskDispatchOption
   ackSession(o, msg, 'cancel_turn', true, { status: 'cancelled' });
 }
 
+/**
+ * 一次交互响应处理的客观结果。
+ *
+ * 抽出来是因为同一条规则要服务两条通道：WS（`task_interaction_response`）只看「有没有回 result 帧」，
+ * 而 HTTP（`POST /v1/interactions/{requestId}:respond`）必须能给出状态码。让判定函数返回结果，
+ * 而不是让调用方回读 SQLite 猜 —— 回读在“鉴权失败”这类不落库的分支上会误判成 pending。
+ */
+export interface InteractionOutcome {
+  ok: boolean;
+  /** 结算后的状态（ok=true 时有效；幂等重放返回既有终态） */
+  state?: 'accepted' | 'declined' | 'cancelled' | 'expired';
+  responseId?: string;
+  resultSeq?: number;
+  /** ok=false 时的受控错误码，与 WS 的 `task_interaction_result.errorCode` 同源 */
+  errorCode?: string;
+}
+
 export function dispatchInteractionResponse(
   msg: InteractionResponseMessage,
   o: TaskDispatchOptions,
-): void {
+): InteractionOutcome {
   const emitResult = (
     state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed',
     extra: { responseId?: string; resultSeq?: number; resultPayload?: Record<string, unknown>; errorCode?: string } = {},
@@ -224,25 +241,25 @@ export function dispatchInteractionResponse(
   const interaction = o.store.getInteraction(msg.taskId, msg.requestId);
   if (!interaction) {
     emitResult('failed', { errorCode: 'interaction_not_found' });
-    return;
+    return { ok: false, errorCode: 'interaction_not_found' };
   }
   if (interaction.state !== 'pending') {
     if (interaction.responseId === msg.responseId) {
-      const settledState = interaction.state as
-        | 'accepted'
-        | 'declined'
-        | 'cancelled'
-        | 'expired'
-        | 'failed';
-      emitResult(settledState, {
+      emitResult(interaction.state as 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed', {
         responseId: interaction.responseId,
         resultSeq: interaction.resultSeq,
         resultPayload: interaction.resultPayload as Record<string, unknown> | undefined,
       });
-    } else {
-      emitResult('failed', { errorCode: 'interaction_already_resolved' });
+      // 幂等重放：同 responseId 再发一次 = 同一结果，不算错
+      return {
+        ok: true,
+        state: interaction.state as 'accepted' | 'declined' | 'cancelled' | 'expired',
+        responseId: interaction.responseId,
+        resultSeq: interaction.resultSeq,
+      };
     }
-    return;
+    emitResult('failed', { errorCode: 'interaction_already_resolved' });
+    return { ok: false, errorCode: 'interaction_already_resolved' };
   }
   if (interaction.expiresAt && Date.parse(interaction.expiresAt) <= Date.now()) {
     const event = o.store.appendEvent({
@@ -265,14 +282,14 @@ export function dispatchInteractionResponse(
       responseId: expired.responseId,
       resultSeq: expired.resultSeq,
     });
-    return;
+    return { ok: false, errorCode: 'interaction_expired', state: 'expired' as const };
   }
 
   const scope = interaction.kind === 'permission' ? 'task:approve' : 'task:respond';
   const gate = authorizeService(msg, 'task_interaction_response', msg.taskId, scope, o.requireServiceToken);
   if (!gate.ok) {
     emitResult('failed', { errorCode: gate.code });
-    return;
+    return { ok: false, errorCode: gate.code };
   }
 
   const payload = msg.payload ?? {};
@@ -296,7 +313,7 @@ export function dispatchInteractionResponse(
     const invalid = validateFormContent(schema, content ?? {});
     if (invalid) {
       emitResult('failed', { errorCode: 'protocol_incompatible' });
-      return;
+      return { ok: false, errorCode: 'protocol_incompatible' };
     }
   }
 
@@ -366,6 +383,12 @@ export function dispatchInteractionResponse(
       turnId: interaction.turnId,
     });
   }
+  return {
+    ok: true,
+    state: resolved.state as 'accepted' | 'declined' | 'cancelled',
+    responseId: resolved.responseId,
+    resultSeq: resolved.resultSeq,
+  };
 }
 
 export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {  const gate = authorizeService(msg, 'get_task', msg.taskId, 'task:read', o.requireServiceToken);

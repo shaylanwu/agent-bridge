@@ -86,7 +86,7 @@ humans.
 ```bash
 agent-bridge services issue|list|revoke|rotate
   --label=<name>
-  --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond,approval:persist
+  --scopes=task:create,task:cancel,task:read,session:read,device:read,task:approve,task:respond,approval:persist
   [--ttl-days=90]          # issue
   [--grace-hours=24]       # rotate: old token stays valid during the grace window
 ```

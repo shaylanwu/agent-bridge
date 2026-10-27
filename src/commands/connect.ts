@@ -59,8 +59,14 @@ async function runConnect(flags: Flags): Promise<void> {
   // 只绑回环、必须带令牌；端口占用时从 8787 起顺延，全部失败才降级为无 Web 面板。
   const settings = resolveControlPlane(config?.controlPlane);
   const uiToken = `abs_ui_${randomBytes(16).toString('hex')}`;
-  const verifyWithUi = (token: string | undefined, scope: ServiceScope): ReturnType<typeof verifyServiceToken> => {
-    if (token === uiToken && (scope === 'task:read' || scope === 'device:read')) return { ok: true };
+  const verifyWithUi = (
+    token: string | undefined,
+    scope: ServiceScope | readonly ServiceScope[],
+  ): ReturnType<typeof verifyServiceToken> => {
+    const required = Array.isArray(scope) ? scope : [scope as ServiceScope];
+    // 面板令牌是只读的：允许读会话/任务/设备；写操作仍必须用 services issue 签发的令牌
+    const readOnly = ['task:read', 'session:read', 'device:read'];
+    if (token === uiToken && required.every((s) => readOnly.includes(s))) return { ok: true };
     return verifyServiceToken(token, scope);
   };
   let plane: Awaited<ReturnType<typeof startControlPlane>> | undefined;
@@ -77,6 +83,7 @@ async function runConnect(flags: Flags): Promise<void> {
           artifacts: session.artifacts,
           artifactsForTenant: (tenantId) => session.artifactsForTenant(tenantId),
           startTask: (req, hooks) => startTask(req, hooks),
+          respondInteraction: (msg) => session.respondInteraction(msg),
           scan: (opts) => scanAgents(opts),
           log,
           verify: verifyWithUi,

@@ -306,6 +306,124 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/interactions:
+    get:
+      tags: [interactions]
+      summary: 交互列表（有界，按 created_at 倒序；`state=pending` 最常用）
+      description: |
+        只读。需要 `session:read`，1.0 之前签发的 `task:read` 仍被接受（窄 scope 优先）。
+        Form 的答案从不在此返回（只存字段名），auth-url 的完整 URL 只在进程内 vault 里。
+      parameters:
+        - name: taskId
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, accepted, declined, cancelled, expired, failed]
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [interactions]
+                properties:
+                  interactions:
+                    type: array
+                    items: { $ref: '#/components/schemas/InteractionSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/interactions/{requestId}:
+    get:
+      tags: [interactions]
+      summary: 单条交互快照（pending 请求 + 已结算结果）
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [interaction]
+                properties:
+                  interaction: { $ref: '#/components/schemas/InteractionSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/interactions/{requestId}:respond:
+    post:
+      tags: [interactions]
+      summary: 响应一条交互（HTTP 通道，与 WS 共用同一套判定）
+      description: |
+        permission 交互需要 `task:approve`；form / auth-url 需要 `task:respond`。
+        同 `responseId` 重放是幂等的（回既有终态）；换 `responseId` 再答已结算的请求回 409。
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  enum: [accepted, declined, cancelled]
+                responseId:
+                  type: string
+                  description: 幂等键；缺省由服务端生成
+                payload:
+                  type: object
+                  description: permission 传 optionId；form 传 content（按 requestedSchema 校验）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskId, requestId, state]
+                properties:
+                  taskId: { type: string }
+                  requestId: { type: string }
+                  state: { type: string, enum: [accepted, declined, cancelled] }
+                  responseId: { type: string }
+                  resultSeq: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 已结算（responseId 与既有不同）
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '410':
+          description: 交互已过期
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '501':
+          description: 该进程未启用交互响应通道（只读模式）
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /v1/tasks:
     get:
       tags: [tasks]
@@ -532,6 +650,25 @@ components:
           type: string
           description: Same controlled enum as the wire protocol (src/core/errors.ts)
       required: [type, title, status, code]
+    InteractionSummary:
+      type: object
+      properties:
+        taskId: { type: string }
+        requestId: { type: string }
+        kind: { type: string, enum: [permission, form, auth-url] }
+        state: { type: string, enum: [pending, accepted, declined, cancelled, expired, failed] }
+        payload:
+          type: object
+          description: permission 为 toolCall/options；form 为 message/requestedSchema（永不含答案）
+        turnId: { type: string }
+        expiresAt: { type: string, format: date-time }
+        responseId: { type: string }
+        resultSeq: { type: integer }
+        resultPayload:
+          type: object
+          description: 已结算结果；Form 只保留 action 与字段名
+        createdAt: { type: string, format: date-time }
+      required: [taskId, requestId, kind, state, createdAt]
     SessionSummary:
       type: object
       properties:

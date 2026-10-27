@@ -127,17 +127,30 @@
 - [ ] 5.11 实现 task:approve/task:respond scope；respondedBy 与内容脱敏审计，Form content 不落审计/result
 - [ ] 5.12 实现 get_task/task_snapshot/get_artifact 与 `/v1/sessions/{id}/snapshot`；session:read、
        before/after 游标、partialMessages、eventWindow/gaps、task_not_found/session_deleted/session_history_pruned/artifact_not_found
-      （2026-10-27 已落 get_task / task_snapshot / get_artifact / eventWindow.gaps / artifact_not_found；
-      **剩余** `session:read` 细分 scope（当前复用 task:read）、before 游标、partialMessages、
-      session_deleted / session_history_pruned 两个码）
+      （2026-10-27 已落 get_task / task_snapshot / get_artifact / eventWindow.gaps / artifact_not_found /
+      **`session:read` 细分 scope**：新增第 8 个受控 scope，会话与交互的读端点改为「`session:read` 或
+      `task:read`」任一命中（1.0 之前签发的粗粒度令牌不会当场失效），面板只读令牌也一并放行 session:read。
+      查证方式：`SERVICE_SCOPES` 8 项、`verifyServiceToken` 支持 any-of、控制面 3 个会话读端点已切；
+      **剩余** before 游标、partialMessages、session_deleted / session_history_pruned 两个码）
 
 ## 6. 外部接口与文档
 
 - [x] 6.1 `contracts/asyncapi-3.0.yaml` 完整描述 v1 消息、executionModes、交互联合类型和示例
       （2026-10-27：get_artifact / artifact_content / hello.execution / executionModes / interactionId /
       stopReason / feedIncomplete / eventWindow.gaps 均已写入契约；站点参考页由 gen-reference 重生成）
-- [ ] 6.2 `contracts/openapi.control-plane.yaml` 增加任务字段、交互查询/回复端点与 RFC 9457
-- [ ] 6.3 本地 HTTP：GET /v1/interactions、GET /v1/interactions/{id}、POST /v1/interactions/{id}:respond；SSE 复用
+- [x] 6.2 `contracts/openapi.control-plane.yaml` 增加任务字段、交互查询/回复端点与 RFC 9457
+      （2026-10-27：三个 `/v1/interactions*` 路径 + `InteractionSummary` schema 已写进契约；
+      RFC 9457 早已落地 —— `problem()` 用 `application/problem+json`，`toProblem()` 输出 type/title/status/detail
+      并带顶层 `code`（受控错误码，与 WS errorCode 同名同值）。实测断言见 control-plane 测试里的
+      「错误体是 problem+json」一例）
+- [x] 6.3 本地 HTTP：GET /v1/interactions、GET /v1/interactions/{id}、POST /v1/interactions/{id}:respond；SSE 复用
+      （2026-10-27：三条端点已实现，且**不另写一套判定** —— 统一走 `session.respondInteraction` →
+      `dispatchInteractionResponse`，与 WS 的 `task_interaction_response` 同一条代码路径、同一套 scope 规则
+      （permission 要 task:approve，form/auth-url 要 task:respond）。为此把该函数的返回类型从 `void` 改成
+      `InteractionOutcome`：HTTP 必须能区分「没找到 / 已结算 / 已过期 / 鉴权失败」，而回读 SQLite 在鉴权失败
+      这类不落库的分支上会误判成 pending。映射：404 / 409 / 410 / 403 / 400，未注入响应通道回 501。
+      测试：control-plane 新增 8 例（缺 scope、session:read 与 task:read 双通过、非法 state、按 kind 鉴权、
+      form 回显、501、409/410、未知 requestId））
 - [ ] 6.4 编写 A2A TaskState/Message/Part/TaskStatusUpdateEvent 映射与扩展 URI，明确权限不是 A2A 原生能力；
        v1.0.1 终态由 status.state 表达并关闭流，不添加 final 字段
 - [ ] 6.5 编写 ACP/MCP 映射：ACP 显式 form、MCP 版本承载差异隔离、权限使用 agent-bridge 命名空间
