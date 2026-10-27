@@ -13,7 +13,7 @@ import { writeAudit } from '../infra/audit.js';
 import { verifyServiceToken, type ServiceScope } from '../infra/service-token.js';
 
 export type GateResult =
-  | { ok: true; serviceId?: string }
+  | { ok: true; serviceId?: string; scopes?: string[] }
   | { ok: false; message: string; code: BridgeErrorCode };
 
 export interface ServiceIdentityInput {
@@ -50,7 +50,7 @@ export function authorizeService(
       serviceId: res.record?.id,
       scopes: res.record?.scopes,
     });
-    return { ok: true, serviceId: res.record?.id };
+    return { ok: true, serviceId: res.record?.id, scopes: res.record?.scopes ? [...res.record.scopes] : undefined };
   }
 
   writeAudit({

@@ -86,7 +86,7 @@ humans.
 ```bash
 agent-bridge services issue|list|revoke|rotate
   --label=<name>
-  --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond
+  --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond,approval:persist
   [--ttl-days=90]          # issue
   [--grace-hours=24]       # rotate: old token stays valid during the grace window
 ```
@@ -101,6 +101,24 @@ agent-bridge services issue|list|revoke|rotate
 Pass the token as `serviceToken` on `run_task` / `cancel_task`, or as a Bearer token to the control
 plane. Failure codes are stable: `unauthorized` (missing), `invalid_token`, `token_expired`,
 `insufficient_scope`.
+
+## approvals
+
+Inspect and revoke **persistent approvals** (1.0). The ledger is off by default
+(`approval_ledger_enabled = true` or `connect --approval-ledger`); it is only ever written when a human
+answers an interactive permission request with a persistent allow **and** the responder holds
+`approval:persist`.
+
+```bash
+agent-bridge approvals list [--all]        # --all also shows revoked rows
+agent-bridge approvals revoke <approvalId>
+agent-bridge approvals purge               # drop expired rows
+```
+
+An approval matches only when the mode is `default`, the request really offers a persistent allow
+option, and the fingerprint (agent + tool kind + normalized resource) hits an unexpired record. `full`
+mode never uses the ledger, and model text or tool titles never create or widen an approval. Hits and
+revocations are audited as `approval_hit` / `approval_grant` / `approval_revoke`.
 
 ## daemon
 

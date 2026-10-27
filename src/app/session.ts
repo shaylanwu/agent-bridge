@@ -27,7 +27,8 @@ import {
 } from './task-dispatch.js';
 import { dispatchConversationMessage } from './conversation.js';
 import { authorizeService } from './service-gate.js';
-import type { SessionStore } from '../core/session-store.js';
+import { DEFAULT_TENANT, type SessionStore } from '../core/session-store.js';
+import { DEFAULT_APPROVAL_TTL_MS } from '../core/permission-ledger.js';
 import { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { InteractionUrlVault } from '../core/interaction-url.js';
 import { DEFAULT_INTERACTION_TIMEOUT_MS, DEFAULT_MAX_INTERACTIONS_PER_TASK } from '../infra/config.js';
@@ -58,6 +59,10 @@ export interface SessionOptions {
   interactionTimeoutMs?: number;
   /** 单任务交互次数上限 */
   maxInteractionsPerTask?: number;
+  /** 是否启用持久授权账本（1.0，缺省 false） */
+  approvalLedgerEnabled?: boolean;
+  /** 持久授权有效期（毫秒） */
+  approvalTtlMs?: number;
   /** waiting_user 空闲关闭（0 = 关闭） */
   sessionIdleMs: number;
   /** 任务注册表（面板/台账共用视图；由 bootstrap 创建） */
@@ -140,6 +145,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
       interactionEnabled: opts.interactionEnabled === true,
       interactionTimeoutMs: opts.interactionTimeoutMs ?? DEFAULT_INTERACTION_TIMEOUT_MS,
       maxInteractionsPerTask: opts.maxInteractionsPerTask ?? DEFAULT_MAX_INTERACTIONS_PER_TASK,
+      approvalLedgerEnabled: opts.approvalLedgerEnabled === true,
     },
     log: (line) => opts.log('info', line),
     onOpen: async () => {
@@ -183,6 +189,12 @@ export function createSession(opts: SessionOptions): BridgeSession {
         interactionEnabled: opts.interactionEnabled === true,
         interactionTimeoutMs: opts.interactionTimeoutMs,
         maxInteractionsPerTask: opts.maxInteractionsPerTask,
+        // 持久授权账本（1.0）：默认关闭时 enabled=false，dispatch 侧既不查也不写
+        approvalLedger: {
+          enabled: opts.approvalLedgerEnabled === true,
+          tenantId: DEFAULT_TENANT,
+          ttlMs: opts.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS,
+        },
         artifactRootDir: opts.artifactRootDir,
         store: opts.store,
         log: opts.log,

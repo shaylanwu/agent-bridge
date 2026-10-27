@@ -38,8 +38,11 @@ ${C.bold('agent-bridge')} ${version()} —— 把本机 AI 编码 CLI 接入你�
       清除本地设备凭证，保留设备身份、平台地址与业务设置
   agent-bridge services issue|list|revoke|rotate
       服务令牌（scoped service token）：给外部系统/后端服务签发可轮换的最小权限身份
-      --label=<name> --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond [--ttl-days=90]
+      --label=<name> --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond,approval:persist [--ttl-days=90]
       rotate 可带 --grace-hours=24（旧令牌宽限期，期间仍然有效）
+  agent-bridge approvals list|revoke|purge
+      持久授权账本（1.0）：查看/撤销「永久允许」记住的授权（默认关闭，需 --approval-ledger 或配置开启）
+      revoke <approvalId>；purge 清理过期记录；--all 连已撤销的一起列出
   agent-bridge daemon start <platformUrl> | stop | status | install <platformUrl> | uninstall
       轻量后台进程管理（detached + PID + daemon.log）；install/uninstall 注册当前用户服务
       Linux systemd user / macOS LaunchAgent / Windows 计划任务；均支持 --dry-run

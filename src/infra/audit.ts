@@ -33,6 +33,8 @@ export interface AuditEntry {
   /** 权限判定（1.0）：本机策略名与实际采用的模式；绝不写 argv 或环境值 */
   policy?: string;
   permissionMode?: string;
+  /** 持久授权账本（1.0）：命中的授权 id；只写 id，不写资源原文 */
+  approvalId?: string;
 }
 
 export function auditPath(): string {
@@ -64,6 +66,7 @@ export function writeAudit(entry: AuditEntry): void {
       reason: clip(entry.reason),
       policy: clip(entry.policy),
       permissionMode: clip(entry.permissionMode),
+      approvalId: clip(entry.approvalId),
     });
     const file = auditPath();
     appendFileSync(file, `${line}\n`, { encoding: 'utf8', mode: 0o600 });

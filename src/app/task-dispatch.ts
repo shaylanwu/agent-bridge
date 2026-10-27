@@ -9,11 +9,21 @@
 
 import type { Emitter } from '../core/emitter.js';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hasAnsi } from '../core/ansi.js';
 import { validateFormContent } from '../core/form-schema.js';
 import type { PermissionPolicyName } from '../core/permission-policy.js';
+import {
+  approvalExpiry,
+  approvalFingerprint,
+  canAutoApprove,
+  PERSISTENT_OPTION_KINDS,
+  permissionTarget,
+  persistentAllowOption,
+} from '../core/permission-ledger.js';
 import { startTask, type TaskHandle } from '../runner.js';
+import type { ApprovalLookupInput, ApprovalLookupResult } from '../core/task-supervisor.js';
 import { ARTIFACT_INLINE_MAX_BYTES } from '../protocol.js';
 import type { PermissionMode, ServerMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
@@ -61,6 +71,17 @@ export interface TaskDispatchOptions {
   artifactRootDir?: string;
   /** 持久 Session/Turn/Event 权威源 */
   store: SessionStore;
+  /**
+   * 持久授权账本（1.0）：缺省关闭。开启后人工的 persistent allow 才会落库，
+   * 后续 default 模式下同指纹请求可自动命中。
+   */
+  approvalLedger?: {
+    enabled: boolean;
+    tenantId: string;
+    ttlMs: number;
+    /** 是否要求响应方具备 approval:persist 才允许落库（缺省 true，关掉只用于单测） */
+    requirePersistScope?: boolean;
+  };
   log: SessionLog;
   /** 常驻 conversation 进程（close_session 成功后才回收） */
   residentSessions?: Map<string, import('./claude-resident.js').ClaudeResident>;
@@ -316,6 +337,18 @@ export function dispatchInteractionResponse(
       : undefined;
   const optionId =
     explicitOption ?? (typeof fallbackOption === 'string' ? fallbackOption : undefined);
+
+  // ---- 持久授权（1.0）：只有人工明确选了「持久允许」才落账本 ----
+  // 写在 respondInteraction 之前，但任何失败都不影响本次响应：会话内的授权由 ACP 自己维持。
+  if (msg.state === 'accepted' && interaction.kind === 'permission' && o.approvalLedger?.enabled) {
+    const chosenKind = Array.isArray(requestOptions)
+      ? requestOptions.find((option) => option['optionId'] === optionId)?.['kind']
+      : undefined;
+    if (typeof chosenKind === 'string' && (PERSISTENT_OPTION_KINDS as readonly string[]).includes(chosenKind)) {
+      persistApproval(o, msg, interaction.payload as Record<string, unknown>, gate, chosenKind);
+    }
+  }
+
   o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, { optionId, action, content });
   emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
     responseId: resolved.responseId,
@@ -668,6 +701,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
           o.log('error', `[agent-bridge] 创建交互失败 ${msg.taskId}：${(error as Error).message}`);
         }
       },
+      onApprovalLookup: (input) => resolveApproval(o, input, msg.taskId),
       onStatus: (status, info) => {
         o.registry.updateStatus(msg.taskId, status, info);
         // 记下实际权限模式：交互帧与后续帧要保持一致，不能让平台看到两个不同的模式
@@ -800,4 +834,156 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
 
   o.tasks.set(msg.taskId, handle);
   void handle.done.then(() => o.tasks.delete(msg.taskId));
+}
+
+/**
+ * 把一次人工「持久允许」写进账本（1.0 approval ledger）。
+ *
+ * 三条保险，任一不满足就只留审计、不落库：
+ *  1. 本机开了账本（`approval_ledger_enabled`）—— 调用方已判；
+ *  2. 响应方通过 `task:approve` 且**额外**具备 `approval:persist` —— 授权别人的未来任务比批一次更重；
+ *  3. 能定位到 agent 与资源 —— 定位不了就不猜（不按 title/模型文本造授权）。
+ *
+ * ⚠️ 落库失败也绝不抛：本次响应已经发出，会话内授权由 ACP 自己维持。
+ */
+function persistApproval(
+  o: TaskDispatchOptions,
+  msg: InteractionResponseMessage,
+  requestPayload: Record<string, unknown>,
+  gate: { scopes?: string[] },
+  optionKind: string,
+): void {
+  const ledger = o.approvalLedger;
+  if (!ledger) return;
+  const at = new Date().toISOString();
+  const session = o.store.getSession(msg.taskId, undefined);
+  const agentType = session?.agentType;
+  if (!agentType) {
+    o.log('warn', `[ledger] 无法确定 ${msg.taskId} 的 agent，跳过持久授权`);
+    return;
+  }
+  let persistScope: ScopeCheck;
+  if (ledger.requirePersistScope === false) {
+    persistScope = { ok: true, scopes: gate.scopes };
+  } else if (gate.scopes === undefined) {
+    // 没有令牌 = 未鉴权：兼容模式（require_service_token=false）下不落库，只提示
+    persistScope = { ok: false, scopes: [], reason: 'no_service_token' };
+  } else if (!gate.scopes.includes('approval:persist')) {
+    persistScope = { ok: false, scopes: gate.scopes, reason: 'missing_scope:approval:persist' };
+  } else {
+    persistScope = { ok: true, scopes: gate.scopes };
+  }
+  if (!persistScope.ok) {
+    writeAudit({
+      at,
+      action: 'approval_grant',
+      outcome: 'denied',
+      taskId: msg.taskId,
+      agent: agentType,
+      cwd: session?.cwd,
+      requestedBy: msg.respondedBy,
+      scopes: persistScope.scopes,
+      reason: persistScope.reason,
+    });
+    o.log('warn', `[ledger] 不落库（${persistScope.reason}）：本次授权仅在当前会话内有效`);
+    return;
+  }
+
+  const target = permissionTarget(requestPayload['toolCall'], session?.cwd);
+  const fingerprint = approvalFingerprint({ agentType, tool: target.tool, resourceKey: target.resourceKey });
+  const approvalId = `ap_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+  try {
+    o.store.addApproval({
+      tenantId: ledger.tenantId,
+      approvalId,
+      principalId: msg.respondedBy ?? 'local',
+      agentType,
+      tool: target.tool,
+      action: 'permission',
+      resource: target.display,
+      scope: optionKind,
+      fingerprint,
+      expiresAt: approvalExpiry(Date.now(), ledger.ttlMs),
+      createdAt: at,
+    });
+    writeAudit({
+      at,
+      action: 'approval_grant',
+      outcome: 'allowed',
+      taskId: msg.taskId,
+      agent: agentType,
+      cwd: session?.cwd,
+      requestedBy: msg.respondedBy,
+      scopes: persistScope.scopes,
+      approvalId,
+      reason: `tool=${target.tool} resource=${target.display} expires=${approvalExpiry(Date.now(), ledger.ttlMs)}`,
+    });
+    o.log('info', `[ledger] 已记住授权 ${approvalId}（tool=${target.tool}），可用 approvals revoke 撤销`);
+  } catch (error) {
+    writeAudit({
+      at,
+      action: 'approval_grant',
+      outcome: 'error',
+      taskId: msg.taskId,
+      agent: agentType,
+      requestedBy: msg.respondedBy,
+      reason: (error as Error).message,
+    });
+    o.log('error', `[ledger] 持久授权写入失败：${(error as Error).message}`);
+  }
+}
+
+interface ScopeCheck {
+  ok: boolean;
+  scopes?: string[];
+  reason?: string;
+}
+
+/**
+ * 查询持久授权（1.0）：命中就返回**请求里真实存在**的 optionId。
+ *
+ * 独立成函数而非内联在 hooks 里，是因为「命中判定」是安全边界，必须能被单测直接打到。
+ * 判定规则全在 `canAutoApprove()`；这里只负责取指纹、找记录、写审计。
+ */
+export function resolveApproval(
+  o: TaskDispatchOptions,
+  input: ApprovalLookupInput,
+  taskId: string,
+): ApprovalLookupResult | undefined {
+  const ledger = o.approvalLedger;
+  // 账本未开启时既没有记录也不该查（等价于从未授过权）
+  if (ledger?.enabled !== true) return undefined;
+  const target = permissionTarget(input.toolCall, input.cwd);
+  const fingerprint = approvalFingerprint({
+    agentType: input.agentType,
+    tool: target.tool,
+    resourceKey: target.resourceKey,
+  });
+  const record = o.store.findApproval(ledger.tenantId, input.agentType, fingerprint);
+  const option = persistentAllowOption(input.options);
+  const verdict = canAutoApprove(record, {
+    fingerprint,
+    permissionMode: input.permissionMode,
+    hasPersistentOption: option !== undefined,
+  });
+  if (!verdict.ok) {
+    // 未命中是常态，不留审计噪声；只有"本来有记录却用不上"才值得记一行
+    if (record && verdict.reason !== 'no_persistent_option') {
+      o.log('info', `[ledger] 未自动批准：${verdict.reason}`);
+    }
+    return undefined;
+  }
+  writeAudit({
+    at: new Date().toISOString(),
+    action: 'approval_hit',
+    outcome: 'allowed',
+    taskId,
+    agent: input.agentType,
+    cwd: input.cwd,
+    approvalId: record?.approvalId,
+    reason: `tool=${target.tool} resource=${target.display}`,
+    permissionMode: input.permissionMode,
+  });
+  if (!option) return undefined;
+  return { optionId: option.optionId, approvalId: record?.approvalId ?? '' };
 }

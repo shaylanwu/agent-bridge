@@ -29,6 +29,8 @@ import {
   resolveInteractionEnabled,
   resolveInteractionTimeoutMs,
   resolveMaxInteractionsPerTask,
+  resolveApprovalLedgerEnabled,
+  resolveApprovalTtlMs,
   resolveMaxQueued,
   resolveMaxTasks,
   resolvePermissionPolicy,
@@ -148,6 +150,8 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
   const interactionEnabledOverride = boolFlag(flags, 'interaction-enabled') || undefined;
   const interactionTimeoutOverride = numFlagMin(flags, 'interaction-timeout-ms', 1000);
   const maxInteractionsOverride = numFlagMin(flags, 'max-interactions-per-task', 1);
+  const approvalLedgerOverride = boolFlag(flags, 'approval-ledger') || undefined;
+  const approvalTtlOverride = numFlagMin(flags, 'approval-ttl-ms', 60_000);
 
   const store = new SessionStore(stateDbPath());
   const recovered = store.recoverInterrupted();
@@ -205,6 +209,8 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
         saved.maxInteractionsPerTask,
         maxInteractionsOverride,
       ),
+      approvalLedgerEnabled: resolveApprovalLedgerEnabled(saved.approvalLedgerEnabled, approvalLedgerOverride),
+      approvalTtlMs: resolveApprovalTtlMs(saved.approvalTtlMs, approvalTtlOverride),
       sessionIdleMs: resolveSessionIdleMs(saved.sessionIdleMs),
       registry: new TaskRegistry(),
       store,

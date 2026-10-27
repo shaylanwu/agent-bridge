@@ -79,6 +79,11 @@ agent-bridge services issue --label=repair-orchestrator --scopes=task:create,tas
 agent-bridge services list
 agent-bridge services rotate svc_9f1c2a --grace-hours=24   # 轮换：旧令牌宽限 24h
 agent-bridge services revoke svc_9f1c2a
+
+# 持久授权账本（1.0）：只有 approval_ledger_enabled = true 时才会写入
+agent-bridge approvals list            # 加 --all 连已撤销的一起列出
+agent-bridge approvals revoke ap_7c31f0d2a4b8   # 撤销后该指纹不再自动批准
+agent-bridge approvals purge           # 清理过期记录
 ```
 
 > `agent-bridge daemon start <platformUrl>` / `stop` / `status` 提供轻量后台进程管理（detached + PID +
@@ -208,7 +213,22 @@ max_interactions_per_task = 16   # 单任务交互次数上限（默认 16，夹
 启动参数 `--interaction-enabled` / `--interaction-timeout-ms=` / `--max-interactions-per-task=` 可临时覆盖。
 
 `hello.execution` 会把本机实际策略（`permissionPolicy` / `externalSandbox` / `interactionEnabled` /
-`interactionTimeoutMs` / `maxInteractionsPerTask`）如实上报，平台据此决定能不能请求 full、要不要等交互。
+`interactionTimeoutMs` / `maxInteractionsPerTask` / `approvalLedgerEnabled`）如实上报，平台据此决定能不能
+请求 full、要不要等交互。
+
+**持久授权默认关闭**，且只能由人工回答产生：
+
+```toml
+approval_ledger_enabled = false   # true 才记住「永久允许」的回答
+approval_ttl_ms = 604800000       # 7 天（夹 1 分钟 ~ 90 天）
+```
+
+开启后，交互里选 `allow_always` 会连同 tenant/principal/agent/tool/resource/scope 与到期时间一起落库 ——
+但**响应方还必须在 `task:approve` 之外持有 `approval:persist`**；不满足时该回答只对当前会话有效、
+不被记住（审计记 `approval_grant` + `outcome=denied`）。后续自动批准必须**同时**满足：模式是 `default`、
+请求本身真的提供了持久允许选项、指纹（agent + 工具类别 + 归一化资源）命中未过期记录。
+`full` 模式永不用账本，模型文本与工具标题也不会创建或扩大授权。查看与撤销：
+`agent-bridge approvals list` / `agent-bridge approvals revoke <approvalId>`（审计记 `approval_hit` / `approval_revoke`）。
 
 ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
 `trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
@@ -351,6 +371,7 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 | `interaction-url` | 支持 `get_interaction_url`，URL 仅进程内短期保存 |
 | `permission-mode` | 支持 `run_task.permissionMode`（本机 `permission_policy` 仍可否决，不代表一定能给 full） |
 | `artifact-inline` | 支持 `get_artifact` 内联取回附件内容（超过 1 MB 回 `too_large`，改走分块下载） |
+| `approval-ledger` | 持久授权账本：交互里选「永久允许」可被记住（限 default 模式、指纹匹配、带过期），可用 `agent-bridge approvals revoke` 撤销 |
 
 ### 步骤流（task_step）
 

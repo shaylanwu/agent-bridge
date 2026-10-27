@@ -83,7 +83,7 @@ agent-bridge logout
 ```bash
 agent-bridge services issue|list|revoke|rotate
   --label=<name>
-  --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond
+  --scopes=task:create,task:cancel,task:read,device:read,task:approve,task:respond,approval:persist
   [--ttl-days=90]          # issue 用
   [--grace-hours=24]       # rotate 用：旧令牌宽限期内仍然有效
 ```
@@ -97,6 +97,22 @@ agent-bridge services issue|list|revoke|rotate
 
 令牌作为 `serviceToken` 随 `run_task` / `cancel_task` 下发，或作为控制面的 Bearer 令牌。
 失败错误码是稳定的：`unauthorized`（缺失）、`invalid_token`、`token_expired`、`insufficient_scope`。
+
+## approvals
+
+查看与撤销**持久授权**（1.0）。账本默认关闭（`approval_ledger_enabled = true` 或
+`connect --approval-ledger`）；只有当人工在交互里选择持久允许、**且**响应方持有 `approval:persist`
+时才会写入。
+
+```bash
+agent-bridge approvals list [--all]        # --all 连已撤销的一起列出
+agent-bridge approvals revoke <approvalId>
+agent-bridge approvals purge               # 清理过期记录
+```
+
+自动命中必须同时满足：模式是 `default`、请求本身真的提供了持久允许选项、指纹（agent + 工具类别 +
+归一化资源）命中未过期记录。`full` 模式永不用账本，模型文本与工具标题也不会创建或扩大授权。
+命中与撤销分别记 `approval_hit` / `approval_grant` / `approval_revoke` 审计。
 
 ## daemon
 

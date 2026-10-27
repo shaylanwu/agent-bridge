@@ -109,6 +109,29 @@ export interface TaskHooks {
   onSession?: (nativeSessionId: string) => void;
   /** ACP 权限请求（由调用方落库并上行 task_interaction_request） */
   onInteraction?: (request: AcpInteractionRequest) => void;
+  /**
+   * 持久授权查询（1.0 approval ledger）。
+   *
+   * 由调用方持有账本存储，supervisor 只问「这条请求有没有人工授权过」——
+   * 返回命中的 optionId 就直接批，返回 undefined 就走正常交互。
+   * ⚠️ 只有 permissionMode=default 时才问（full 残留请求必须问人，见 permission-ledger 规则）。
+   */
+  onApprovalLookup?: (input: ApprovalLookupInput) => ApprovalLookupResult | undefined;
+}
+
+/** 账本查询入参：只带结构化字段，不带模型输出文本 */
+export interface ApprovalLookupInput {
+  agentType: string;
+  cwd: string;
+  permissionMode: PermissionMode;
+  toolCall: unknown;
+  options: unknown;
+}
+
+export interface ApprovalLookupResult {
+  /** 实际要回给 ACP 的 optionId（必须是请求里真实存在的选项） */
+  optionId: string;
+  approvalId: string;
 }
 
 export interface AcpInteractionRequest {
@@ -778,6 +801,23 @@ export class TaskSupervisor {
       signal: controller.signal,
       onUpdate: (update) => this.onAcpUpdate(entry, update),
       onPermission: (request) => {
+        // 持久授权（1.0）：只问一次账本，命中就不再打扰平台（这个问题人工已经回答过）。
+        // 三个前提缺一不可 —— default 模式、请求真实提供 persistent 选项、指纹匹配；
+        // 判定在 permission-ledger.canAutoApprove()，这里只负责「问」和「用」。
+        const approved =
+          entry.permissionMode === 'default' && entry.hooks.onApprovalLookup
+            ? entry.hooks.onApprovalLookup({
+                agentType: entry.req.agentType,
+                cwd: entry.req.cwd,
+                permissionMode: entry.permissionMode,
+                toolCall: request.toolCall,
+                options: request.options,
+              })
+            : undefined;
+        if (approved) {
+          entry.hooks.onLog('stdout', `[ledger] 命中持久授权 ${approved.approvalId}，已自动允许\n`);
+          return approved.optionId;
+        }
         if (!entry.req.interactive || !entry.hooks.onInteraction) return undefined;
         const requestId = `ir_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
         const answer = new Promise<string | undefined>((resolve) => {

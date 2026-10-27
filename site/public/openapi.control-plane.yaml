@@ -4,16 +4,16 @@ info:
   version: '1.0.0'
   summary: Loopback-only HTTP surface for other programs on the same machine.
   description: |
-    An optional extension: `agent-bridge serve <platformUrl> --port=8787`.
+    `agent-bridge connect` starts it on `127.0.0.1:8787` by default and falls forward when the port
+    is occupied; `agent-bridge serve <platformUrl> --port=8787` can still set it explicitly.
 
-    It is OFF by default (`[control_plane] enabled = true` to turn it on) and binds loopback only,
-    so it is not an inbound network surface. Its audience is **other programs on this machine**
-    (IDE extensions, scripts, MCP servers, CI runners) — remote platforms keep using the outbound
-    WebSocket described by `asyncapi-3.0.yaml`; this is a separate channel.
+    It binds loopback only, so it is not an inbound network surface. Its audience is **other
+    programs on this machine** (IDE extensions, scripts, MCP servers, CI runners) — remote platforms
+    keep using the outbound WebSocket described by `asyncapi-3.0.yaml`; this is a separate channel.
 
-    Rules enforced by the harness (`npm run arch:check`): loopback bind only, an `enabled` switch that
-    defaults to off, and no CORS headers ever. Every route except `/v1/health` requires a scoped Bearer
-    token (`abs_<kid>_<secret>`) issued by `agent-bridge services issue`.
+    Rules enforced by the harness (`npm run arch:check`): loopback bind only and no CORS headers ever.
+    Every route except `/v1/health` requires a scoped Bearer token (`abs_<kid>_<secret>`) issued by
+    `agent-bridge services issue`.
 
     Errors are RFC 9457 `application/problem+json` and carry the same controlled `code` enum as the
     wire protocol (`src/core/errors.ts`), so clients branch on `code`, never on prose.
@@ -65,7 +65,46 @@ paths:
                     type: object
                     properties:
                       tracked: { type: integer }
+                      running: { type: integer }
+                      queued: { type: integer }
+                  capacity:
+                    type: object
+                    properties:
+                      maxTasks: { type: integer }
+                      maxQueued: { type: integer }
                 required: [status, version, ready]
+  /v1/metrics:
+    get:
+      tags: [device]
+      summary: Minimal Prometheus metrics
+      description: Process uptime, registry task counts, sessions and memory; requires device:read.
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: { type: string }
+  /v1/whoami:
+    get:
+      tags: [device]
+      summary: Current principal (JWT or service token)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authenticated: { type: boolean }
+                  principal:
+                    type: object
+                    properties:
+                      subject: { type: string }
+                      tenantId: { type: string }
+                      scopes:
+                        type: array
+                        items: { type: string }
   /v1/capabilities:
     get:
       tags: [device]
@@ -558,6 +597,12 @@ components:
           items: { type: string }
         timeoutMs: { type: integer }
         captureDiff: { type: boolean }
+        permissionMode:
+          type: string
+          enum: [default, full]
+          description: |
+            请求的权限模式。本机 `permission_policy` 同样适用（受管参数模式不会被本地通道绕过）：
+            不满足时返回 `permission_policy_denied` / `permission_mode_unsupported`，不会降级执行。
         requestedBy: { type: string }
         purpose: { type: string }
       required: [agentType, cwd]

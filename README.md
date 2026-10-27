@@ -94,6 +94,11 @@ agent-bridge services issue --label=repair-orchestrator --scopes=task:create,tas
 agent-bridge services list
 agent-bridge services rotate svc_9f1c2a --grace-hours=24   # rotate: old token stays valid for 24h
 agent-bridge services revoke svc_9f1c2a
+
+# Persistent approvals (1.0): only written when approval_ledger_enabled = true
+agent-bridge approvals list            # --all also shows revoked rows
+agent-bridge approvals revoke ap_7c31f0d2a4b8   # stop auto-approving that fingerprint
+agent-bridge approvals purge           # drop expired rows
 ```
 
 > `agent-bridge daemon start <platformUrl>` / `stop` / `status` provides lightweight background management
@@ -234,8 +239,24 @@ beyond the budget are dropped and logged rather than forwarded. Flags `--interac
 `--interaction-timeout-ms=` / `--max-interactions-per-task=` override for one session.
 
 `hello.execution` reports the effective local policy (`permissionPolicy`, `externalSandbox`,
-`interactionEnabled`, `interactionTimeoutMs`, `maxInteractionsPerTask`) so the platform can decide whether
-to ask for full and whether to expect interactions at all.
+`interactionEnabled`, `interactionTimeoutMs`, `maxInteractionsPerTask`, `approvalLedgerEnabled`) so the
+platform can decide whether to ask for full and whether to expect interactions at all.
+
+**Persistent approvals are off by default** and only start from a human answer:
+
+```toml
+approval_ledger_enabled = false   # true to remember "always allow" answers
+approval_ttl_ms = 604800000       # 7 days (clamped 1 min – 90 days)
+```
+
+When on, an interactive `allow_always` answer is stored with tenant/principal/agent/tool/resource/scope and
+an expiry — but **only if the responder holds `approval:persist` in addition to `task:approve`**; without it
+the answer still applies to the current session, it is just not remembered (audited as `approval_grant`
+with `outcome=denied`). Later requests are auto-approved **only** when all three hold: the mode is
+`default`, the request really offers a persistent allow option, and the fingerprint (agent + tool kind +
+normalized resource) matches an unexpired record. `full` mode never uses the ledger, and model text or tool
+titles never create or widen an approval. Inspect and revoke with `agent-bridge approvals list` /
+`agent-bridge approvals revoke <approvalId>` (audited as `approval_hit` / `approval_revoke`).
 
 ACP: `codebuddy-cli`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`, `grok-cli`, and
 `trae-cli` declare native ACP and prefer it for tasks/conversations. `codex` uses the
@@ -383,6 +404,7 @@ should degrade on this list rather than guessing from a CLI version:
 | `interaction-url` | `get_interaction_url`; URLs kept in process memory with a short TTL |
 | `permission-mode` | `run_task.permissionMode` is understood (local `permission_policy` can still deny it) |
 | `artifact-inline` | `get_artifact` can inline artifact content (over 1 MB returns `too_large`; use chunked download) |
+| `approval-ledger` | Persistent approvals: an interactive "always allow" can be remembered (default mode, fingerprint match, expiry) and revoked with `agent-bridge approvals revoke` |
 
 ### Step stream (`task_step`)
 

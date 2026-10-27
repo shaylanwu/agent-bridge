@@ -25,6 +25,8 @@ export const SERVICE_SCOPES = [
   'task:cancel',
   'task:read',
   'task:approve',
+  /** 允许把人工的「永久允许」写进持久授权账本（比 task:approve 更敏感：影响未来任务） */
+  'approval:persist',
   'task:respond',
   'device:read',
 ] as const;

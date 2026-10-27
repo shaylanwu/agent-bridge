@@ -5,6 +5,7 @@
  * 新增命令 = 在 `src/commands/` 加一个文件 + 在这里加一行，入口文件零改动。
  */
 
+import { cmdApprovals } from '../commands/approvals.js';
 import { cmdConnect } from '../commands/connect.js';
 import { cmdDaemon } from '../commands/daemon.js';
 import { cmdLogout } from '../commands/logout.js';
@@ -25,6 +26,7 @@ export const COMMANDS: Record<string, CommandFn> = {
   status: cmdStatus,
   logout: cmdLogout,
   services: cmdServices,
+  approvals: cmdApprovals,
   daemon: cmdDaemon,
 };
 

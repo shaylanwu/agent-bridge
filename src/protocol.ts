@@ -35,6 +35,12 @@ export const PROTOCOL_CAPABILITIES = [
   'permission-mode',
   /** 支持 get_artifact 内联取回（超限回 too_large，走分块下载） */
   'artifact-inline',
+  /**
+   * 支持持久授权账本：本机开启后，人工选择 persistent allow 会被记住（限 default 模式、
+   * 指纹匹配、带过期），可用 `agent-bridge approvals revoke` 撤销。
+   * 声明它不等于一定会记住 —— 还要求响应方具备 `approval:persist`。
+   */
+  'approval-ledger',
 ] as const;
 
 /** 平台下发的字符串字段长度上限（防畸形报文，也防日志/审计被撑爆） */
@@ -423,6 +429,11 @@ export interface ExecutionCapability {
   interactionEnabled: boolean;
   interactionTimeoutMs: number;
   maxInteractionsPerTask: number;
+  /**
+   * 本机是否启用持久授权账本（`approval-ledger` 能力的运行态开关）。
+   * 开启时 interactive 的 persistent allow 会被记住，并可自动命中后续 default 模式请求。
+   */
+  approvalLedgerEnabled?: boolean;
 }
 
 /**

@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { assertDeviceId } from '../core/device-identity.js';
+import { DEFAULT_APPROVAL_TTL_MS } from '../core/permission-ledger.js';
 import { writeAtomicFile } from './atomic-file.js';
 
 /**
@@ -60,6 +61,14 @@ export interface BridgeConfig {
   interactionTimeoutMs?: number;
   /** 单任务交互次数上限（缺省 16） */
   maxInteractionsPerTask?: number;
+  /**
+   * 是否启用持久授权账本（1.0，缺省 false）。
+   * 开启后，人工选择 persistent allow（allow_always）且响应方具备 `approval:persist` 时，
+   * 该授权落库并可在后续 default 模式任务中命中；关闭时一律只在本会话内有效。
+   */
+  approvalLedgerEnabled?: boolean;
+  /** 持久授权有效期（毫秒，缺省 7 天；见 DEFAULT_APPROVAL_TTL_MS） */
+  approvalTtlMs?: number;
   /** waiting_user 会话空闲多久自动关闭（毫秒，缺省 0 = 不自动关闭） */
   sessionIdleMs?: number;
   /** 控制面 principal JWT（可选；缺省不启用） */
@@ -214,6 +223,25 @@ export const DEFAULT_DIFF_MAX_BYTES = 256 * 1024;
 const DIFF_MIN_BYTES = 1024;
 const DIFF_MAX_CEILING = 8 * 1024 * 1024;
 
+/**
+ * 持久授权账本开关（1.0）：缺省 **关闭**。
+ *
+ * 理由和交互开关一致 —— 账本会替用户在未来任务里自动点「允许」，
+ * 这种能力必须由本机显式打开，不能被平台或用例顺手开启。
+ */
+export function resolveApprovalLedgerEnabled(fromConfig?: boolean, override?: boolean): boolean {
+  return override === true || fromConfig === true;
+}
+
+/** 持久授权有效期：默认 7 天，夹 1 分钟 ~ 90 天（永不过期的授权等于没有撤销入口） */
+export function resolveApprovalTtlMs(fromConfig?: number, override?: number): number {
+  const raw = process.env['AGENT_BRIDGE_APPROVAL_TTL_MS'];
+  const env = raw === undefined || raw.trim() === '' ? undefined : Number(raw);
+  const pick = [override, env, fromConfig].find((v) => typeof v === 'number' && Number.isFinite(v));
+  const ttl = pick === undefined ? DEFAULT_APPROVAL_TTL_MS : (pick as number);
+  return Math.min(90 * 24 * 60 * 60 * 1000, Math.max(60_000, Math.floor(ttl)));
+}
+
 /** 解析顺序：`AGENT_BRIDGE_DIFF_MAX_BYTES` > config.toml 的 `diff_max_bytes` > 默认 256 KB */
 export function resolveDiffMaxBytes(fromConfig?: number): number {
   const rawEnv = process.env['AGENT_BRIDGE_DIFF_MAX_BYTES'];
@@ -353,6 +381,8 @@ function serializeConfig(cfg: BridgeConfig): string {
   if (cfg.interactionEnabled !== undefined) out['interaction_enabled'] = cfg.interactionEnabled;
   if (cfg.interactionTimeoutMs !== undefined) out['interaction_timeout_ms'] = cfg.interactionTimeoutMs;
   if (cfg.maxInteractionsPerTask !== undefined) out['max_interactions_per_task'] = cfg.maxInteractionsPerTask;
+  if (cfg.approvalLedgerEnabled !== undefined) out['approval_ledger_enabled'] = cfg.approvalLedgerEnabled;
+  if (cfg.approvalTtlMs !== undefined) out['approval_ttl_ms'] = cfg.approvalTtlMs;
   if (cfg.mcp !== undefined) {
     const servers: Record<string, unknown> = {};
     for (const [name, server] of Object.entries(cfg.mcp.servers)) {
@@ -475,6 +505,17 @@ export function loadConfig(): BridgeConfig | null {
     file,
     1,
   );
+  const approvalLedgerEnabled = optionalBoolean(
+    raw['approval_ledger_enabled'] ?? raw['approvalLedgerEnabled'],
+    'approval_ledger_enabled',
+    file,
+  );
+  const approvalTtlMs = optionalNumber(
+    raw['approval_ttl_ms'] ?? raw['approvalTtlMs'],
+    'approval_ttl_ms',
+    file,
+    1,
+  );
   const label = optionalString(raw, 'label', file);
 
   const cpValue = raw['control_plane'];
@@ -568,6 +609,8 @@ export function loadConfig(): BridgeConfig | null {
     ...(interactionEnabled !== undefined ? { interactionEnabled } : {}),
     ...(interactionTimeoutMs !== undefined ? { interactionTimeoutMs } : {}),
     ...(maxInteractionsPerTask !== undefined ? { maxInteractionsPerTask } : {}),
+    ...(approvalLedgerEnabled !== undefined ? { approvalLedgerEnabled } : {}),
+    ...(approvalTtlMs !== undefined ? { approvalTtlMs } : {}),
     ...(mcp !== undefined ? { mcp } : {}),
     ...(jwt !== undefined ? { jwt } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),

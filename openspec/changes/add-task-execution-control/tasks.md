@@ -181,7 +181,11 @@
 - [ ] 9.5 每 Session 串行 Turn + 可配置排队/背压；native steer 只有声明才启用；重复 messageId 幂等
 - [ ] 9.6 12 适配器至少实现 replay-session 多轮底线；native/resume 增强；single-turn 仅实测例外；
        replay 用完整 transcript，超限 context_exhausted；live interaction 如实声明
-- [ ] 9.7 持久 approval ledger：scope/expiry/tenant/principal，撤销与审计；不因模型文本自动授权
+- [x] 9.7 持久 approval ledger：scope/expiry/tenant/principal，撤销与审计；不因模型文本自动授权
+  - `core/permission-ledger.ts`（判定纯函数）+ `approvals` 表读写 + `agent-bridge approvals list|revoke|purge`
+  - 默认关闭（`approval_ledger_enabled`）；写入需 `task:approve + approval:persist`；命中需 default 模式 +
+    请求真实提供 persistent 选项 + 指纹匹配；full 一律不用账本
+  - 未覆盖：codex app-server 的审批尚未接账本（目前只接 ACP 通道）
 - [ ] 9.8 ACP/MCP URL Elicitation、auth-required、Safe URL、secret 不落库/日志；Form 仍禁 secret
 - [ ] 9.9 Artifact CAS、元数据 SQLite、引用计数、删除回收；入站隔离/可选扫描/quarantine；出站仅可信事件
 - [ ] 9.10 artifact_transfer_start/ack/chunk/complete/result/abort；offset+chunkSha256+整文件 sha256，断点续传/流控/磁盘不足

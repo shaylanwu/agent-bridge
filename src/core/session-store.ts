@@ -10,6 +10,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import type { InteractionKind } from '../protocol.js';
+import type { ApprovalRecord } from './permission-ledger.js';
 
 export type SessionMode = 'task' | 'conversation';
 export type SessionPhase = 'queued' | 'running' | 'waiting_interaction' | 'waiting_user' | 'settled';
@@ -250,10 +251,42 @@ interface ArtifactRow {
   created_at: string;
 }
 
+interface ApprovalRow {
+  tenant_id: string;
+  approval_id: string;
+  principal_id: string;
+  agent_type: string;
+  tool: string;
+  action: string;
+  resource: string;
+  scope: string;
+  fingerprint: string;
+  expires_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
 const now = (): string => new Date().toISOString();
 
 function parseJson<T>(raw: string): T {
   return JSON.parse(raw) as T;
+}
+
+function toApproval(row: ApprovalRow): ApprovalRecord {
+  return {
+    tenantId: row.tenant_id,
+    approvalId: row.approval_id,
+    principalId: row.principal_id,
+    agentType: row.agent_type,
+    tool: row.tool,
+    action: row.action,
+    resource: row.resource,
+    scope: row.scope,
+    fingerprint: row.fingerprint,
+    expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+    revokedAt: row.revoked_at ?? undefined,
+  };
 }
 
 function toSession(row: SessionRow): SessionRecord {
@@ -1050,6 +1083,105 @@ export class SessionStore {
       )
       .get(tenantId, sessionId, requestId) as InteractionRow | undefined;
     return row ? toInteraction(row) : undefined;
+  }
+
+  // ---------- 持久授权账本（approvals） ----------
+
+  /**
+   * 写入一条持久授权。同指纹重复授权时**覆盖旧记录**（重新计时并清除撤销标记），
+   * 否则用户「先撤销、再允许一次」会被历史记录反噬。
+   */
+  addApproval(input: Omit<ApprovalRecord, 'createdAt' | 'revokedAt'> & { createdAt?: string }): ApprovalRecord {
+    const createdAt = input.createdAt ?? now();
+    this.db
+      .prepare(
+        `INSERT INTO approvals
+           (tenant_id, approval_id, principal_id, agent_type, tool, action, resource, scope,
+            fingerprint, expires_at, created_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT (tenant_id, approval_id) DO UPDATE SET
+           expires_at = excluded.expires_at,
+           created_at = excluded.created_at,
+           revoked_at = NULL`,
+      )
+      .run(
+        input.tenantId,
+        input.approvalId,
+        input.principalId,
+        input.agentType,
+        input.tool,
+        input.action,
+        input.resource,
+        input.scope,
+        input.fingerprint,
+        input.expiresAt ?? null,
+        createdAt,
+      );
+    const saved = this.getApproval(input.tenantId, input.approvalId);
+    if (!saved) throw new SessionStoreError('session_conflict', `授权写入失败：${input.approvalId}`);
+    return saved;
+  }
+
+  getApproval(tenantId: string, approvalId: string): ApprovalRecord | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM approvals WHERE tenant_id = ? AND approval_id = ?')
+      .get(tenantId, approvalId) as ApprovalRow | undefined;
+    return row ? toApproval(row) : undefined;
+  }
+
+  /**
+   * 按指纹找一条可用授权（未撤销、未过期）。
+   * 返回最近的到期时间那条：多条同指纹时以最新的为准。
+   */
+  findApproval(
+    tenantId: string,
+    agentType: string,
+    fingerprint: string,
+    at: number = Date.now(),
+  ): ApprovalRecord | undefined {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM approvals
+          WHERE tenant_id = ? AND agent_type = ? AND fingerprint = ? AND revoked_at IS NULL
+          ORDER BY created_at DESC`,
+      )
+      .all(tenantId, agentType, fingerprint) as ApprovalRow[];
+    for (const row of rows) {
+      const rec = toApproval(row);
+      if (!rec.expiresAt || Date.parse(rec.expiresAt) > at) return rec;
+    }
+    return undefined;
+  }
+
+  listApprovals(tenantId = DEFAULT_TENANT, includeRevoked = false): ApprovalRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM approvals WHERE tenant_id = ?${includeRevoked ? '' : ' AND revoked_at IS NULL'}
+         ORDER BY created_at DESC`,
+      )
+      .all(tenantId) as ApprovalRow[];
+    return rows.map(toApproval);
+  }
+
+  /** 撤销：只置 revoked_at，不删行 —— 审计要能回溯「曾经授权过什么」 */
+  revokeApproval(tenantId: string, approvalId: string, at: string = now()): boolean {
+    const res = this.db
+      .prepare(
+        'UPDATE approvals SET revoked_at = ? WHERE tenant_id = ? AND approval_id = ? AND revoked_at IS NULL',
+      )
+      .run(at, tenantId, approvalId);
+    return res.changes > 0;
+  }
+
+  /** 清理过期记录（保留撤销记录，它们本身是审计线索） */
+  purgeExpiredApprovals(tenantId = DEFAULT_TENANT, at: number = Date.now()): number {
+    const cutoff = new Date(at).toISOString();
+    const res = this.db
+      .prepare(
+        'DELETE FROM approvals WHERE tenant_id = ? AND expires_at IS NOT NULL AND expires_at <= ? AND revoked_at IS NULL',
+      )
+      .run(tenantId, cutoff);
+    return res.changes;
   }
 
   putArtifact(input: Omit<ArtifactRecord, 'createdAt'> & { createdAt?: string }): ArtifactRecord {
