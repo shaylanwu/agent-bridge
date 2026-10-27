@@ -31,10 +31,11 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
 import { agentDefOf, resolveBin } from '../adapters/agent-adapters.js';
 import { captureWorktreeDiff, type DiffCapture } from '../infra/git.js';
-import { chunkLog, type PermissionMode, type StopReason, type TaskStatus } from '../protocol.js';
+import { chunkLog, type PermissionMode, type SnapshotPartialMessage, type StopReason, type TaskStatus } from '../protocol.js';
 import { buildWinCommandLine, isWinShim } from '../adapters/win-exec.js';
 import { createStepParser, type ParsedStep, type PlanItem, type StepFormat } from '../adapters/step-parsers.js';
 import { BridgeError, type BridgeErrorCode } from './errors.js';
+import { PartialMessageTracker, acpChunkText, claudeBlockText, codexDeltaText } from './partial-messages.js';
 import { decidePermissionMode, permissionEnvFor, type PermissionPolicyName } from './permission-policy.js';
 
 export interface RunTaskRequest {
@@ -269,9 +270,30 @@ export class TaskSupervisor {
   /** 最近一次提交生效的队列上限（上限本是请求级字段，水位上报取最近值） */
   private lastMaxQueued = DEFAULT_MAX_QUEUED;
   private readonly capacityListeners = new Set<(s: CapacitySnapshot) => void>();
+  /**
+   * 运行中任务的半截文本（`task_snapshot.partialMessages`）。
+   * 只放内存、只放**当前**回合，终态即清 —— 理由见 `core/partial-messages.ts` 的注释。
+   */
+  private readonly partials = new PartialMessageTracker();
 
   constructor(maxConcurrent = DEFAULT_MAX_TASKS) {
     this.maxTasks = maxConcurrent > 0 ? Math.floor(maxConcurrent) : DEFAULT_MAX_TASKS;
+  }
+
+  /**
+   * 半截消息读取入口（`get_task` 用）。
+   * 放在实例上而不是模块级变量：调度状态必须可实例化，两个调度域不能互相串数据。
+   */
+  listPartialMessages(taskId: string): SnapshotPartialMessage[] {
+    return this.partials.list(taskId);
+  }
+
+  /**
+   * 三条流式通道（ACP `agent_message_chunk` / codex `item/agentMessage/delta` /
+   * claude stream `text` block）的唯一写入口 —— 收敛到一个方法，才不会有的通道记、有的忘。
+   */
+  recordPartialText(taskId: string, text: string): void {
+    this.partials.append(taskId, text);
   }
 
   get runningCount(): number {
@@ -363,6 +385,10 @@ export class TaskSupervisor {
     // 幂等去重在最前：重发一律回放，不重复校验、不重复 spawn
     const dup = this.byId.get(req.taskId);
     if (dup) return this.replay(dup, hooks);
+
+    // 新一次运行从干净桶开始：同一 taskId 被重试/复用时，不能带上一次的半截文本。
+    // 放在 dup 之后 —— 回放路径不该清掉正在跑的那个任务的累积。
+    this.partials.clear(req.taskId);
 
     const def = agentDefOf(req.agentType);
     if (!def) {
@@ -639,8 +665,12 @@ export class TaskSupervisor {
         for (const block of blocks) {
           if (!block || typeof block !== 'object') continue;
           const item = block as Record<string, unknown>;
-          if (item['type'] === 'text' && typeof item['text'] === 'string') {
-            entry.hooks.onLog('stdout', item['text']);
+          const blockText = claudeBlockText(item);
+          if (blockText !== undefined) {
+            entry.hooks.onLog('stdout', blockText);
+            // claude stream-json 给的是整条 assistant 消息（不是 token 增量），
+            // 但相对「回合终态」它仍是半截 —— 刷新后照样该看得到
+            this.recordPartialText(entry.req.taskId, blockText);
           }
           if (!entry.hooks.onStep) continue;
           if (item['type'] === 'tool_use' && typeof item['name'] === 'string') {
@@ -759,8 +789,11 @@ export class TaskSupervisor {
     const method = String(notification['method'] ?? '');
     const params = (notification['params'] ?? {}) as Record<string, unknown>;
     if (method === 'item/agentMessage/delta') {
-      const delta = params['delta'];
-      if (typeof delta === 'string') entry.hooks.onLog('stdout', delta);
+      const delta = codexDeltaText(notification);
+      if (delta !== undefined) {
+        entry.hooks.onLog('stdout', delta);
+        this.recordPartialText(entry.req.taskId, delta);
+      }
       return;
     }
     if (method !== 'item/started' && method !== 'item/completed') return;
@@ -901,9 +934,11 @@ export class TaskSupervisor {
   private onAcpUpdate(entry: Entry, update: Record<string, unknown>): void {
     const kind = String(update['sessionUpdate'] ?? '');
     if (kind === 'agent_message_chunk') {
-      const content = update['content'] as Record<string, unknown> | undefined;
-      if (content?.['type'] === 'text' && typeof content['text'] === 'string') {
-        entry.hooks.onLog('stdout', content['text']);
+      const text = acpChunkText(update);
+      if (text !== undefined) {
+        entry.hooks.onLog('stdout', text);
+        // 真正的流式增量（ACP）：同时喂给半截消息累积器，刷新后才能看到这半段
+        this.recordPartialText(entry.req.taskId, text);
       }
       return;
     }
@@ -965,6 +1000,8 @@ export class TaskSupervisor {
     if (entry.state === 'settled') return;
     if (entry.timer) clearTimeout(entry.timer);
     if (entry.killTimer) clearTimeout(entry.killTimer);
+    // 终态之后半截文本就该消失：平台该读事件里的 complete，而不是 pm_ 桶里那半段
+    this.partials.clear(entry.req.taskId);
 
     // 权限模式回显：终态必须带（平台据此区分「按 full 跑的」与「按 default 跑的」）
     if (info.permissionMode === undefined) info = { ...info, permissionMode: entry.permissionMode };

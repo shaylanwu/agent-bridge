@@ -365,6 +365,9 @@ State transitions, and the only message that carries terminal results: exit code
 | `events` | array&lt;object&gt; |  |  |
 | `oldestEventSeq` | `integer` |  |  |
 | `latestEventSeq` | `integer` |  |  |
+| `hasMoreBefore` | `boolean` |  |  |
+| `prunedThrough` | `integer` |  |  |
+| `partialMessages` | array&lt;object&gt; |  |  |
 | `eventWindow` | `object` |  |  |
 | `errorCode` | `string` |  |  |
 
@@ -909,6 +912,7 @@ Platform → bridge. Requests cancellation of a running task.
 | `taskId` | `string` | ✓ |  |
 | `requestId` | `string` |  |  |
 | `afterEventSeq` | `integer` |  |  |
+| `beforeEventSeq` | `integer` |  |  |
 | `limit` | `integer` |  |  |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |

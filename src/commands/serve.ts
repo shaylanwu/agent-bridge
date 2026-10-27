@@ -102,6 +102,7 @@ async function runServe(flags: Flags): Promise<void> {
       // 与平台下发的任务共用同一个 supervisor：并发上限不会因多开一条通道而翻倍
       startTask: (req, hooks) => startTask(req, hooks),
       respondInteraction: (msg) => session.respondInteraction(msg),
+      partialMessages: (taskId) => session.partialMessages(taskId),
       scan: (opts) => scanAgents(opts),
       log,
       verify: verifyWithUi,

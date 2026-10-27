@@ -373,6 +373,9 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 | `events` | array&lt;object&gt; |  |  |
 | `oldestEventSeq` | `integer` |  |  |
 | `latestEventSeq` | `integer` |  |  |
+| `hasMoreBefore` | `boolean` |  | 窗口起点之前还有内容（尾部窗口在长会话上为 true，回翻控制器据此继续往前取）。 |
+| `prunedThrough` | `integer` |  | 历史裁剪水位；未裁剪的会话不带此字段。请求游标小于它时 errorCode=session_history_pruned。 |
+| `partialMessages` | array&lt;object&gt; |  | 本回合已吐出但还没定稿的助手文本（只在内存里、不落库）；中途重连时用来避免空白。 终态之后为空数组或缺失 —— 那时该读 events 里的 complete。没有流式文本通道的适配器 （headless）此处为空，属如实缺省。 |
 | `eventWindow` | `object` |  | 事件窗口完整性；gaps 为空数组表示序号连续。 |
 | `errorCode` | `string` |  |  |
 
@@ -918,7 +921,7 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
 
 ### get_task — 补取任务历史
 
-按 afterEventSeq 返回有界窗口；终态后仍可调用，需 task:read scope。
+补取任务历史。不给游标回尾部窗口（最新 limit 条）；afterEventSeq 升序补洞； beforeEventSeq 回翻（严格小于游标的最新 limit 条，输出仍升序）；两者互斥。终态后仍可调用，需 session:read。
 
 **字段**
 
@@ -929,6 +932,7 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
 | `taskId` | `string` | ✓ |  |
 | `requestId` | `string` |  | 会原样带回 task_snapshot |
 | `afterEventSeq` | `integer` |  |  |
+| `beforeEventSeq` | `integer` |  | 与 afterEventSeq 互斥；同时出现回 protocol_incompatible。 |
 | `limit` | `integer` |  |  |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |

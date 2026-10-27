@@ -6,6 +6,7 @@ import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
 import { dispatchGetTask, type TaskDispatchOptions } from '../src/app/task-dispatch.js';
+import { PartialMessageTracker } from '../src/core/partial-messages.js';
 import type { ClientMessage } from '../src/protocol.js';
 
 const cleanups: Array<() => void> = [];
@@ -20,7 +21,7 @@ interface Harness {
   sent: ClientMessage[];
 }
 
-function harness(): Harness {
+function harness(extra: Partial<TaskDispatchOptions> = {}): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-snapshot-'));
   const store = new SessionStore(join(dir, 'state.db'));
   cleanups.push(() => {
@@ -39,6 +40,7 @@ function harness(): Harness {
     requireServiceToken: false,
     store,
     log: () => undefined,
+    ...extra,
   };
   return { store, options, sent };
 }
@@ -183,5 +185,50 @@ describe('get_task 的三个 not-found 语义', () => {
     const id = seedSession(store, 'sess_noprune', 5);
     dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'r11', afterEventSeq: 0 }, options);
     expect(lastSnapshot(sent).prunedThrough).toBeUndefined();
+  });
+});
+
+describe('快照里的半截消息（partialMessages）', () => {
+  it('没接累积器时不带该字段 —— 不假装「接了但没有文本」', () => {
+    const { store, options, sent } = harness();
+    const id = seedSession(store, 'sess_pm_none', 3);
+    dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'pm1' }, options);
+    expect(lastSnapshot(sent).partialMessages).toBeUndefined();
+  });
+
+  it('接了累积器但还没吐出文本：仍是空字段（空数组不占位）', () => {
+    const { store, options, sent } = harness({ partialMessages: () => [] });
+    const id = seedSession(store, 'sess_pm_empty', 3);
+    dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'pm2' }, options);
+    expect(lastSnapshot(sent).partialMessages).toBeUndefined();
+  });
+
+  it('运行中给出已累积的半截文本（刷新后不至于白屏）', () => {
+    const tracker = new PartialMessageTracker();
+    tracker.append('sess_pm_live', '我正在读配置，', { at: '2026-10-27T00:00:00.000Z' });
+    tracker.append('sess_pm_live', '马上就好');
+    const { store, options, sent } = harness({ partialMessages: (taskId) => tracker.list(taskId) });
+    const id = seedSession(store, 'sess_pm_live', 3);
+
+    dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'pm3' }, options);
+    const snapshot = lastSnapshot(sent);
+    expect(snapshot.partialMessages).toHaveLength(1);
+    expect(snapshot.partialMessages?.[0]).toMatchObject({
+      messageId: 'pm_sess_pm_live',
+      role: 'agent',
+      text: '我正在读配置，马上就好',
+    });
+  });
+
+  it('终态清空：清完之后快照不再带半截文本', () => {
+    const tracker = new PartialMessageTracker();
+    tracker.append('sess_pm_settled', '半截');
+    const { store, options, sent } = harness({ partialMessages: (taskId) => tracker.list(taskId) });
+    const id = seedSession(store, 'sess_pm_settled', 3);
+    store.closeSession(id, 'success', 'done');
+    tracker.clear(id);
+
+    dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'pm4' }, options);
+    expect(lastSnapshot(sent).partialMessages).toBeUndefined();
   });
 });

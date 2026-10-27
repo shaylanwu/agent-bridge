@@ -302,6 +302,19 @@ one session.
 | `afterEventSeq` | ascending events **strictly after** the cursor | filling a gap after a reconnect |
 | `beforeEventSeq` | the newest `limit` events **strictly before** the cursor, ascending | paging history backwards |
 
+**Half-finished text travels in `partialMessages`**, not in events. Assistant text is normally persisted
+only once, as a `state: "complete"` `task_message` at the end of the turn, so a reload mid-turn would show
+nothing at all. The snapshot therefore carries the assistant text accumulated so far, per turn, with a
+`pm_<taskId>` id (deliberately not a `msg_*` idempotency key) and a 32 KiB cap (`truncated` once hit). It is
+**memory only and never written to SQLite**: streaming chunks are token-sized, persisting them would drown the
+event table and let retention evict real events. The buckets are cleared when the turn settles, so after a
+terminal status read the `complete` message from events instead. Adapters with no streaming text channel
+(headless) simply return nothing — an honest gap, not a bug.
+
+Note the asymmetry: the bridge does **not** push `task_message` frames with `state: "delta"` today. Live
+streaming is only exposed as `task_log` chunks plus `task_step`; `partialMessages` in the snapshot is the
+only canonical, structured view of in-flight text. Treat `delta` as reserved rather than something to wait for.
+
 `hasMoreBefore` tells you whether anything exists before the returned window (the tail page sets it to
 `true` on a long session). When a cursor points into reclaimed history, `get_task` still answers
 `found: true` but adds `errorCode: "session_history_pruned"` plus `prunedThrough`, meaning "the older part is

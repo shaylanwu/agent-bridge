@@ -30,7 +30,13 @@ import type { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
 import { SESSIONS_HTML } from './control-plane-sessions-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
-import type { ClientMessage, AgentListItem, TaskPhase, InteractionResponseCommand } from '../protocol.js';
+import type {
+  ClientMessage,
+  AgentListItem,
+  TaskPhase,
+  InteractionResponseCommand,
+  SnapshotPartialMessage,
+} from '../protocol.js';
 import {
   verifyServiceToken,
   type ServiceTokenRecord,
@@ -74,6 +80,12 @@ export interface ControlPlaneDeps {
     errorCode?: string;
   };
   log: SessionLog;
+  /**
+   * 半截消息读取（1.0）：与 WS 的 `task_snapshot.partialMessages` 同源，
+   * 否则「本地面板能看到正在写的半句、远程平台看不到」这种不对称会很难解释。
+   * 不注入时不带该字段。
+   */
+  partialMessages?: (taskId: string) => SnapshotPartialMessage[];
   /** 能力清单（与 `hello.capabilities` 同源） */
   capabilities: readonly string[];
   version: string;
@@ -922,7 +934,8 @@ export async function startControlPlane(
         limit: Number.isFinite(limitRaw) ? Math.min(1000, Math.max(1, Math.floor(limitRaw))) : 200,
         tenantId: ctx.tenantId,
       });
-      json(ctx.res, 200, snapshot);
+      const partial = deps.partialMessages?.(id) ?? [];
+      json(ctx.res, 200, { ...snapshot, ...(partial.length ? { partialMessages: partial } : {}) });
     } catch {
       problem(ctx.res, 404, 'internal', `未找到会话：${id}`);
     }
@@ -960,6 +973,8 @@ export async function startControlPlane(
       session: snapshot.session,
       oldestEventSeq: snapshot.oldestEventSeq,
       latestEventSeq: snapshot.latestEventSeq,
+      // 首帧就是「现在的样子」，半截文本正是它比事件回放多出来的那点信息
+      partialMessages: deps.partialMessages?.(id) ?? [],
     });
 
     // 慢消费者断线后可能落后 >1000 条；分批按 eventSeq 追平，避免一次性截断造成缺口。

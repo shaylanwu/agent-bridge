@@ -144,7 +144,16 @@
       ④ `get_task` 对 `cursor < prunedThrough` 回 `found: true` + `errorCode: session_history_pruned`
          + `prunedThrough`；对 tombstone 命中回 `session_deleted`，从未存在回 `task_not_found`。
       测试：`test/session-retention.test.ts`（19 例）+ `test/task-snapshot-cursors.test.ts`（11 例）。
-      **剩余** partialMessages）
+      **2026-10-27 补齐 partialMessages（本项完成）**：
+      `core/partial-messages.ts` 的 `PartialMessageTracker` 挂在 `TaskSupervisor` **实例字段**上（不是模块级），
+      三条流式通道统一经 `recordPartialText()` 写入 —— ACP `agent_message_chunk`、codex
+      `item/agentMessage/delta`、claude stream `text` block（文本提取各抽成纯函数便于单测）。
+      **只在内存、绝不写 SQLite**：token 级 chunk 落库会把事件表淹掉、并让 retention 反过来挤掉真事件，
+      而它本来就不是可恢复状态。每任务一个桶（`pm_<taskId>`，刻意区别于 `msg_*` 幂等键）、32 KiB 上限、
+      终态与「同 taskId 重新提交」都清空。快照无该内容时**不带字段**（不假装"接了但没有文本"）。
+      同时把契约里那句「bridge 发 delta」改成实际口径：**1.0 只发 complete，不推 delta 帧**，`delta` 是保留位。
+      测试：`test/partial-messages.test.ts`（12 例）+ `test/supervisor-partials.test.ts`（5 例）
+      + 快照 4 例。
 
 ## 6. 外部接口与文档
 

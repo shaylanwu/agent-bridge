@@ -138,16 +138,19 @@ task_log SHALL 保留为调试通道，SHALL NOT 被文档宣称为稳定消息�
 task_log 与 task_interaction_result 不占 eventSeq，后者用 requestId+resultSeq 排序并可在任务终态后回传。
 task_step 的 seq 仍表示步骤序号，不得与 eventSeq 混用。每个 feed 事件首次发出时分配一次，
 重放保持，新事件严格 +1。终态 task_status 的 eventSeq 必须大于所有已发出的 canonical feed 事件。
-task_message SHALL 支持 delta/complete，complete 携带权威完整 part；只有完整消息的适配器可只发 complete。
+task_message SHALL 支持 delta/complete 两种 state，complete 携带权威完整 part。**1.0 的实际口径**：
+bridge 只发 complete（每条落库消息一条），**不推送 delta 帧** —— 正在生成中的文本改由
+`task_snapshot.partialMessages` 暴露（只在内存、不落库、终态即清）。`delta` 为保留位，平台不得等它。
 
 feed SHALL 同时受条数和字节预算限制。淘汰最旧事件时 SHALL 记录显式 gap（fromEventSeq/toEventSeq/reason），
 SHALL NOT 静默造成时间线空洞。adapter 在终态前 SHALL 有界 flush 最终消息/附件，终态 task_status 的 eventSeq
 SHALL 大于所有 feed 事件；收尾失败 SHALL 在终态标记 feedIncomplete。
 
-#### Scenario: 文本增量与完成
+#### Scenario: 半截文本（1.0 口径）
 
-- **WHEN** adapter 产生同一 messageId/partIndex 的文本增量
-- **THEN** bridge 发 delta，最后发 complete 完整文本；客户端可用 complete 替换累积内容
+- **WHEN** 任务运行中平台重新 get_task
+- **THEN** 快照带 `partialMessages`（本回合已累积但未定稿的助手文本，`pm_<taskId>`，上限 32 KiB 后置
+  `truncated`）；终态之后该字段为空，平台以事件里的 complete 为准；bridge 不为此推送 delta 帧
 
 #### Scenario: 富工具步骤
 

@@ -17,6 +17,7 @@ import {
   ProtocolError,
   type ClientMessage,
   type InteractionResponseCommand,
+  type SnapshotPartialMessage,
 } from '../protocol.js';
 import type { TaskHandle } from '../runner.js';
 import { createBridgeClient } from '../transport/bridge-client.js';
@@ -109,6 +110,11 @@ export interface BridgeSession {
    * 而不是回读 SQLite 猜（鉴权失败不落库，回读会误判成 pending）。
    */
   respondInteraction: (msg: InteractionResponseCommand) => InteractionOutcome;
+  /**
+   * 半截消息读取（1.0）：`task_snapshot.partialMessages` 与 HTTP 快照共用的同一个源，
+   * 避免「本地面板能看到正在写的半句、远程平台看不到」。
+   */
+  partialMessages: (taskId: string) => SnapshotPartialMessage[];
 }
 
 export function createSession(opts: SessionOptions): BridgeSession {
@@ -153,6 +159,8 @@ export function createSession(opts: SessionOptions): BridgeSession {
     residentSessions,
     idleTimeoutMs: opts.sessionIdleMs,
     idleTimers,
+    // 半截消息的唯一真源是 supervisor 实例（三条流式通道都汇到那儿），这里只做读取转发
+    partialMessages: (taskId: string) => defaultSupervisor.listPartialMessages(taskId),
   });
   // client 的 onOpen/onMessage 里要用到 emitter，而 emitter 又要用到 client.send ——
   // 互相依赖只能在"连接建立后才会回调"这个前提下用后赋值解决（与实现顺序无关，回调天然晚于同步构造）
@@ -465,5 +473,6 @@ export function createSession(opts: SessionOptions): BridgeSession {
       return true;
     },
     respondInteraction: (msg) => dispatchInteractionResponse(msg, dispatchOptions(emitter)),
+    partialMessages: (taskId) => defaultSupervisor.listPartialMessages(taskId),
   };
 }

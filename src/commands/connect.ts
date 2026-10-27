@@ -84,6 +84,7 @@ async function runConnect(flags: Flags): Promise<void> {
           artifactsForTenant: (tenantId) => session.artifactsForTenant(tenantId),
           startTask: (req, hooks) => startTask(req, hooks),
           respondInteraction: (msg) => session.respondInteraction(msg),
+          partialMessages: (taskId) => session.partialMessages(taskId),
           scan: (opts) => scanAgents(opts),
           log,
           verify: verifyWithUi,

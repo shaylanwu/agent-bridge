@@ -271,12 +271,21 @@ event_retention_max_events = 5000   # 单会话事件上限（0 = 全留，上�
 | `afterEventSeq` | 严格大于游标、升序 | 断线重连后补洞 |
 | `beforeEventSeq` | 严格小于游标的最新 `limit` 条，升序 | 往回翻历史 |
 
-`hasMoreBefore` 说明返回窗口之前还有没有内容（长会话的尾部窗口会是 `true`）。游标落在被裁剪的区间时，
-`get_task` 仍回 `found: true`，但附 `errorCode: "session_history_pruned"` 与 `prunedThrough`，
+`hasMoreBefore` 说明返回窗口之前还有没有内容（长会话的尾部窗口会是 `true`）。游标落在被裁剪的区间时，`get_task` 仍回 `found: true`，但附 `errorCode: "session_history_pruned"` 与 `prunedThrough`，
 含义是「更早的部分已回收，这里才是保留起点」，不是「任务到此为止」。同时给 `afterEventSeq` 与
 `beforeEventSeq` 会被明确拒绝（`protocol_incompatible`），不会静默挑一个。`close_session` 之后会话**仍可读**，
 只有被删除的才回 `session_deleted`（410），而删除只能由 `agent-bridge sessions purge` 触发：
 `task_not_found` 是「从没存在过」，`session_deleted` 是「放弃重试、别再发」。
+
+**半截文本走 `partialMessages`，不走事件表**。助手文本通常只在回合结束时作为一条 `state: "complete"`
+的 `task_message` 落库，中途刷新会一个字都看不到。所以快照额外带「本回合已累积的助手文本」，id 是
+`pm_<taskId>`（刻意不是 `msg_*` 幂等键），上限 32 KiB（到顶置 `truncated`）。它**只在内存里、绝不写 SQLite**：
+流式 chunk 是 token 级的，落库会让事件表被文本淹掉、retention 反过来把真事件挤掉。回合终态即清空 ——
+那时该读事件里的 complete。没有流式文本通道的适配器（headless）这里就是空的，属如实缺省。
+
+需要说清的不对称：bridge 目前**不**推送 `state: "delta"` 的 `task_message`。实时流只有 `task_log` 分片
+与 `task_step`；结构化地看「正在写的文本」只有快照里的 `partialMessages`。`delta` 请当作保留位，
+不要等它。
 
 ACP：`codebuddy-cli`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、`grok-cli`、
 `trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。

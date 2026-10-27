@@ -25,7 +25,7 @@ import {
 import { startTask, type TaskHandle } from '../runner.js';
 import type { ApprovalLookupInput, ApprovalLookupResult } from '../core/task-supervisor.js';
 import { ARTIFACT_INLINE_MAX_BYTES } from '../protocol.js';
-import type { PermissionMode, ServerMessage, TaskStatus } from '../protocol.js';
+import type { PermissionMode, ServerMessage, SnapshotPartialMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
 import { writeAudit } from '../infra/audit.js';
 import { canRunAcp } from '../adapters/acp-codebuddy.js';
@@ -71,6 +71,11 @@ export interface TaskDispatchOptions {
   artifactRootDir?: string;
   /** 持久 Session/Turn/Event 权威源 */
   store: SessionStore;
+  /**
+   * 半截消息读取（1.0，可选）：注入 `supervisor.listPartialMessages`。
+   * 缺省时不带该字段，而不是回一个假的空数组 —— 没接通道 ≠ 接收道了但没有文本。
+   */
+  partialMessages?: (taskId: string) => SnapshotPartialMessage[];
   /**
    * 持久授权账本（1.0）：缺省关闭。开启后人工的 persistent allow 才会落库，
    * 后续 default 模式下同指纹请求可自动命中。
@@ -459,6 +464,10 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
       })),
       oldestEventSeq: snapshot.oldestEventSeq,
       latestEventSeq: snapshot.latestEventSeq,
+      ...(() => {
+        const partial = o.partialMessages?.(msg.taskId) ?? [];
+        return partial.length ? { partialMessages: partial } : {};
+      })(),
       hasMoreBefore: snapshot.hasMoreBefore ?? false,
       ...(prunedThrough > 0 ? { prunedThrough } : {}),
       // 缺口必须一起给：平台拿到连续的 [oldest, latest] 不代表中间没丢

@@ -712,7 +712,28 @@ components:
           items: { type: object, additionalProperties: true }
         oldestEventSeq: { type: integer }
         latestEventSeq: { type: integer }
+        hasMoreBefore:
+          type: boolean
+          description: 窗口起点之前还有内容（与 WS 的 task_snapshot 同义）
+        prunedThrough:
+          type: integer
+          description: 历史裁剪水位；未裁剪的会话不带该字段
+        partialMessages:
+          type: array
+          description: >-
+            本回合已吐出但未定稿的助手文本（内存态，不落库）；终态后为空或缺失。
+            仅当控制面注入了半截消息读取时出现，与 WS 的 task_snapshot.partialMessages 同源。
+          items: { $ref: '#/components/schemas/PartialMessage' }
       required: [session, turns, events, interactions, artifacts]
+    PartialMessage:
+      type: object
+      properties:
+        messageId: { type: string, description: '形如 pm_<taskId>，不是 msg_* 幂等键' }
+        role: { type: string, enum: [user, agent, system] }
+        text: { type: string }
+        updatedAt: { type: string, format: date-time }
+        truncated: { type: boolean, description: 已达 32 KiB 上限，后续增量不再累积 }
+      required: [messageId, role, text, updatedAt]
     AgentListItem:
       type: object
       properties:

@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
+import { PartialMessageTracker } from '../src/core/partial-messages.js';
 import { ArtifactTransferManager } from '../src/core/artifact-transfer.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
 import { startControlPlane, type ControlPlaneDeps } from '../src/transport/control-plane.js';
@@ -384,6 +385,42 @@ describe('本地回环控制面', () => {
     });
     expect(snapshot.status).toBe(200);
     expect(snapshot.json<{ events: unknown[] }>().events).toHaveLength(1);
+    plane.close();
+  });
+
+  it('/v1/sessions/{id}/snapshot 带 half-finished 文本（与 WS 同源）', async () => {
+    const store = new SessionStore(':memory:');
+    store.createSession({ sessionId: 'bt_partial', mode: 'task', agentType: 'codex', cwd: process.cwd() });
+    store.appendEvent({ sessionId: 'bt_partial', type: 'task_log', payload: { i: 1 } });
+    const tracker = new PartialMessageTracker();
+    tracker.append('bt_partial', '正在写第二段');
+    const plane = await start({
+      store,
+      verify: () => ({ ok: true }),
+      partialMessages: (taskId) => tracker.list(taskId),
+    });
+
+    const res = await call(plane.port, 'GET', '/v1/sessions/bt_partial?afterEventSeq=0', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(res.status).toBe(200);
+    const body = res.json<{ partialMessages?: { messageId: string; text: string }[] }>();
+    expect(body.partialMessages?.[0]).toMatchObject({
+      messageId: 'pm_bt_partial',
+      text: '正在写第二段',
+    });
+    plane.close();
+  });
+
+  it('没注入半截消息读取时快照不带该字段（不假装空数组）', async () => {
+    const store = new SessionStore(':memory:');
+    store.createSession({ sessionId: 'bt_no_partial', mode: 'task', agentType: 'codex', cwd: process.cwd() });
+    const plane = await start({ store, verify: () => ({ ok: true }) });
+    const res = await call(plane.port, 'GET', '/v1/sessions/bt_no_partial?afterEventSeq=0', {
+      headers: { authorization: 'Bearer abs_x_y' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.json<Record<string, unknown>>()).not.toHaveProperty('partialMessages');
     plane.close();
   });
 

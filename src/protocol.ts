@@ -251,6 +251,14 @@ export type ClientMessage =
        */
       prunedThrough?: number;
       /**
+       * 半截消息（1.0）：本回合**已经吐出来但还没定稿**的助手文本，只在内存里、不落库。
+       *
+       * 存在意义是「刷新后别显示空白」：助手文本通常在回合结束才作为一条 `state: 'complete'` 落库，
+       * 中途重连时事件里查不到任何文本。终态之后该数组为空 —— 那时该读事件里的 complete。
+       * 没有流式文本通道的适配器（headless）这里就是空数组，属如实缺省，不是漏报。
+       */
+      partialMessages?: SnapshotPartialMessage[];
+      /**
        * 结果码（受控错误码）。`found: false` 时区分三种情况：
        * `task_not_found`（从未存在）、`session_deleted`（tombstone 命中，内容已删且 ID 不复用）、
        * `session_history_pruned`（存在但请求的游标落在已裁剪区间）。
@@ -401,6 +409,20 @@ export type ClientMessage =
   | { type: 'scan_result'; requestId?: string; agents: AgentListItem[]; scannedAt: string };
 
 export type TaskStatus = 'running' | 'success' | 'failed' | 'cancelled' | 'timeout';
+
+/**
+ * 快照里的半截消息（1.0）。**不是** wire 消息，只是 `task_snapshot.partialMessages` 的元素。
+ *
+ * `messageId` 形如 `pm_<taskId>`，刻意区别于落库消息的 `msg_*` 幂等键：半截文本会被 complete 顶替，
+ * 给它同构 ID 会诱导平台拿它去重。`truncated` 表示已到上限（32 KiB），后面的增量不会再累积。
+ */
+export interface SnapshotPartialMessage {
+  messageId: string;
+  role: 'user' | 'agent' | 'system';
+  text: string;
+  updatedAt: string;
+  truncated?: boolean;
+}
 
 /** 过程阶段：waiting_* 仍属于 running，不是终态 */
 export type TaskPhase = 'queued' | 'running' | 'waiting_interaction' | 'waiting_user';

@@ -270,6 +270,27 @@ channels:
               type: integer
               minimum: 0
               description: 历史裁剪水位；未裁剪的会话不带此字段。请求游标小于它时 errorCode=session_history_pruned。
+            partialMessages:
+              type: array
+              description: >-
+                本回合已吐出但还没定稿的助手文本（只在内存里、不落库）；中途重连时用来避免空白。
+                终态之后为空数组或缺失 —— 那时该读 events 里的 complete。没有流式文本通道的适配器
+                （headless）此处为空，属如实缺省。
+              items:
+                type: object
+                required: [messageId, role, text, updatedAt]
+                properties:
+                  messageId:
+                    type: string
+                    description: >-
+                      形如 pm_<taskId>。刻意区别于落库消息的 msg_* 幂等键：半截文本会被 complete 顶替，
+                      不要拿它做去重或与 MsgId 对等。
+                  role: { type: string, enum: [user, agent, system] }
+                  text: { type: string }
+                  updatedAt: { type: string, format: date-time }
+                  truncated:
+                    type: boolean
+                    description: 已达上限（32 KiB），后续增量不再累积。
             eventWindow:
               type: object
               description: 事件窗口完整性；gaps 为空数组表示序号连续。
