@@ -204,10 +204,9 @@ Process uptime, registry task counts, sessions and memory; requires device:read.
       "kind": "string",
       "display": "string",
       "status": "ready",
-      "version": "string",
-      "path": "string",
-      "installedButBroken": true,
-      "steps": true
+      "credentialSource": "string",
+      "capability": "non_interactive",
+      "logo": "string"
     }
   ],
   "scannedAt": "string"

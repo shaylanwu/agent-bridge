@@ -887,3 +887,4 @@ components:
         - session_history_pruned
         - task_not_found
         - artifact_not_found
+        - session_not_continuable

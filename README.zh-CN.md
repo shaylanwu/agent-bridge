@@ -521,6 +521,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | `device_busy` | 并发与队列都满 |
 | `timeout` / `cancelled` | 超时（含排队超时）/ 被取消 |
 | `agent_error` | CLI 非 0 退出，或进程启动失败 |
+| `session_not_continuable` | 该工具没有任何续接回合的通道（`executionModes[].continuation` 为 `single-turn`），`sessionMode = conversation` 在**创建时**即被拒绝 |
 | `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | 服务令牌四类失败 |
 | `protocol_incompatible` / `internal` | 版本不匹配 / bridge 自身异常 |
 

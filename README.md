@@ -568,6 +568,7 @@ v1. **But if a message carries a token, it must verify** — there is no "presen
 | `device_busy` | Concurrency limit and queue both full |
 | `timeout` / `cancelled` | Timed out (including while queued) / cancelled |
 | `agent_error` | Non-zero CLI exit, or the process failed to start |
+| `session_not_continuable` | The tool has no way to continue a session (`executionModes[].continuation` is `single-turn`), so `sessionMode = conversation` is refused at creation |
 | `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | Service-token failures |
 | `protocol_incompatible` / `internal` | Version mismatch / bridge-side fault |
 

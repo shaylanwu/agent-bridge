@@ -736,14 +736,48 @@ components:
       required: [messageId, role, text, updatedAt]
     AgentListItem:
       type: object
+      description: |
+        与 WS `agent_list` 的 AgentListItem 同一份对象（控制面不自造精简视图，否则字段一多就会漂移）。
+      required: [kind, display, status, capability]
       properties:
         kind: { type: string }
         display: { type: string }
         status: { type: string, enum: [ready, installed_no_cred, not_installed] }
         version: { type: [string, 'null'] }
         path: { type: [string, 'null'] }
+        credentialSource:
+          type: string
+          description: 凭据来源（`env:NAME` / `file:~/.codex/auth.json` / `platform`），不含密钥
+        capability:
+          type: string
+          enum: [non_interactive, interactive_only]
+          description: 0.x 展示标签，仅为旧平台保留；能力以 `executionModes` 为准
         installedButBroken: { type: boolean }
+        logo: { type: string, description: 品牌图标 data URI（24×24 单色），按 kind 缓存 }
         steps: { type: boolean, description: 是否支持 task_step 步骤流 }
+        executionModes:
+          type: array
+          description: |
+            按执行模式列出的能力。每项含 `continuation`（native-session / resume-session /
+            replay-session / single-turn），说明后续回合怎么接回本会话；
+            `single-turn` 的工具无法创建 conversation（创建时回 session_not_continuable）。
+          items:
+            type: object
+            required: [mode, permissionModes, interactionKinds, feedKinds, continuation]
+            properties:
+              mode: { type: string, enum: [headless, acp-stdio] }
+              permissionModes:
+                type: array
+                items: { type: string, enum: [default, full] }
+              interactionKinds:
+                type: array
+                items: { type: string, enum: [permission, form, auth-url] }
+              feedKinds:
+                type: array
+                items: { type: string, enum: [messages, steps, artifacts] }
+              continuation:
+                type: string
+                enum: [native-session, resume-session, replay-session, single-turn]
     CreateTask:
       type: object
       properties:

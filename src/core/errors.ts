@@ -38,6 +38,9 @@ export const BRIDGE_ERROR_CODES = [
   // 进受控表只是把它们钉住：自由串会随文案漂，平台没法稳定分支。
   'task_not_found', // taskId 从未存在，或不属于该租户
   'artifact_not_found', // artifactId 未知或已淘汰
+  // conversation 创建前就拒：该工具没有任何可续接回合的通道（continuation=single-turn）。
+  // 在 message_ack 上早就用它了，这里钉住，让 run_task 的拒绝也能被程序化分支。
+  'session_not_continuable',
 ] as const;
 
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
@@ -88,6 +91,8 @@ export const ERROR_HTTP_STATUS: Record<BridgeErrorCode, number> = {
   session_history_pruned: 410,
   task_not_found: 404,
   artifact_not_found: 404,
+  // 会话形态与请求不符（工具不支持多轮），换个参数就能成功 ⇒ 409 而不是 400
+  session_not_continuable: 409,
 };
 
 /** RFC 9457 `application/problem+json` 对象 */

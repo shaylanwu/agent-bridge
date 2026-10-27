@@ -204,10 +204,9 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
       "kind": "string",
       "display": "string",
       "status": "ready",
-      "version": "string",
-      "path": "string",
-      "installedButBroken": true,
-      "steps": true
+      "credentialSource": "string",
+      "capability": "non_interactive",
+      "logo": "string"
     }
   ],
   "scannedAt": "string"
