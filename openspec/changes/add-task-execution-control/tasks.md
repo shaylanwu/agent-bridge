@@ -227,6 +227,10 @@
 
 - [ ] 9.1 引入必需依赖 better-sqlite3/WAL（不依赖实验性 node:sqlite），Storage 接口 + migration + 完整性自检；
        启动失败必须拒绝 1.0，不降级 memory
+  - 已落地：`core/session-store.ts`（WAL / `foreign_keys` / `busy_timeout` / `user_version` 迁移 + 事务）、
+    打开时 `PRAGMA quick_check` 自检（`integrityCheck`，缺省开启）、构造失败释放句柄并抛出、**不降级内存库**。
+    健康检查 `GET /v1/health?integrity=quick` 可随时重跑并回 `db: { ok, detail? }`。
+  - 口径：`quick_check` 抓**结构**损坏（页头/b-tree/索引），正文被改写的字节抓不到 —— 实测 22 MB 库 19 ms（跳过 1.7 ms）。
 - [ ] 9.2 新增 SQLite 表：sessions/turns/messages/events/interactions/results/artifacts/transfers/approvals/idempotency/principals/audit
 - [ ] 9.3 eventSeq 与业务状态同事务提交；事件先落库再推送；崩溃恢复 active turn 为 interrupted、waiting_user 保留
 - [ ] 9.4 Session/Turn：conversation/task 模式、waiting_user、send_message/message_ack/close_session/cancel_turn

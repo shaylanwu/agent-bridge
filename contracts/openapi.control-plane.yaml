@@ -42,8 +42,19 @@ paths:
     get:
       tags: [device]
       summary: Liveness / readiness / version
-      description: The only route that needs no token — safe for container and CI probes.
+      description: |
+        The only route that needs no token — safe for container and CI probes.
+        The state DB runs `PRAGMA quick_check` on open and refuses to start when it fails
+        (a corrupt file that still opens would otherwise fail mid-task). Pass
+        `?integrity=quick` to re-run that check now; it reads the whole DB, so it stays off
+        the default probe path.
       security: []
+      parameters:
+        - name: integrity
+          in: query
+          required: false
+          schema: { type: string, enum: [quick] }
+          description: Re-run the state-DB integrity check and include `db` in the response.
       responses:
         '200':
           description: OK
@@ -55,6 +66,13 @@ paths:
                   status: { type: string, const: ok }
                   version: { type: string }
                   ready: { type: boolean }
+                  db:
+                    type: object
+                    description: Present only when `?integrity=quick` was requested.
+                    properties:
+                      ok: { type: boolean }
+                      detail: { type: string, description: First few problems reported by quick_check }
+                    required: [ok]
                   controlPlane:
                     type: object
                     properties:

@@ -351,6 +351,9 @@ export async function startControlPlane(
   const handleHealth = (ctx: RouteContext): void => {
     const counts = deps.registry.counts();
     const queued = counts.queued;
+    // 完整性自检要读整库，不能挂在 CI 反复轮询的默认路径上 —— 只有显式 ?integrity=quick 才跑
+    const integrity =
+      ctx.url.searchParams.get('integrity') === 'quick' ? deps.store.checkIntegrity() : undefined;
     json(ctx.res, 200, {
       status: 'ok',
       version: deps.version,
@@ -359,6 +362,7 @@ export async function startControlPlane(
       ready: queued < deps.defaults.maxQueued,
       tasks: { tracked: records.size, running: counts.running, queued },
       capacity: { maxTasks: deps.defaults.maxConcurrent, maxQueued: deps.defaults.maxQueued },
+      ...(integrity ? { db: integrity } : {}),
     });
   };
 

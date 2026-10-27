@@ -401,21 +401,30 @@ function toArtifact(row: ArtifactRow): ArtifactRecord {
   };
 }
 
+export interface SessionStoreOptions {
+  /**
+   * 单会话事件保留上限（0/缺省 = 不裁剪）。
+   * 裁剪是**惰性**的：每写入 100 条检查一次，不做定时任务 —— 长会话不必等进程重启才瘦身，
+   * 也不会因为每条事件都跑一次 DELETE 把热路径拖慢。
+   */
+  retentionMaxEvents?: number;
+  /**
+   * 打开时跑一次 `PRAGMA quick_check`（缺省开启）。
+   *
+   * 为什么必须在**打开时**做：损坏的 SQLite 文件往往能正常 open、也能过 schema 检查，
+   * 但会在跑到一半时读页失败 —— 那种故障现场（任务跑了一半报内部错误）几乎无法排查。
+   * 自检很快（quick_check 不校验索引一致性），换来的是「启动就拒绝」而不是「中途炸」。
+   * 已知需要跳过时（超大库、只读校验场景）显式传 false。
+   */
+  integrityCheck?: boolean;
+}
+
 export class SessionStore {
   private readonly db: Database.Database;
-  /** 单会话事件保留上限（0 = 不裁剪） */
   private readonly retentionMaxEvents: number;
   private closed = false;
 
-  /**
-   * @param options.retentionMaxEvents 单会话事件保留上限（0/缺省 = 不裁剪）。
-   *   裁剪是**惰性**的：每写入 100 条检查一次，不做定时任务 —— 长会话不必等进程重启才瘦身，
-   *   也不会因为每条事件都跑一次 DELETE 把热路径拖慢。
-   */
-  constructor(
-    dbPath: string,
-    options: { retentionMaxEvents?: number } = {},
-  ) {
+  constructor(dbPath: string, options: SessionStoreOptions = {}) {
     this.retentionMaxEvents = Math.max(0, Math.floor(options.retentionMaxEvents ?? 0));
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
     const opened = new Database(dbPath);
@@ -424,6 +433,8 @@ export class SessionStore {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.db.pragma('busy_timeout = 5000');
+      // 在迁移之前自检：库坏了就当场拒绝，不要让 migrate 用半读得通的页去建表
+      if (options.integrityCheck !== false) this.assertIntegrity(dbPath);
       this.migrate();
     } catch (error) {
       // 构造失败必须释放句柄；否则损坏库/权限错误会留下锁，测试和重启都清不掉文件。
@@ -435,6 +446,36 @@ export class SessionStore {
       throw new Error(
         `打开状态库失败（${dbPath}）：${(error as Error).message}；请检查文件是否损坏或权限是否可写`,
       );
+    }
+  }
+
+  /**
+   * `PRAGMA quick_check`：正常返回只有一行 `ok`，有问题时每行一条描述。
+   * 内部版直接抛；对外版 `checkIntegrity()` 返回结果，供健康检查与运维排查使用。
+   */
+  private assertIntegrity(dbPath: string): void {
+    const problems = this.integrityProblems();
+    if (problems.length === 0) return;
+    throw new Error(
+      `完整性自检失败（${dbPath}）：${problems.slice(0, 3).join('; ')}` +
+        (problems.length > 3 ? ` 等 ${problems.length} 项` : ''),
+    );
+  }
+
+  private integrityProblems(): string[] {
+    const rows = this.db.pragma('quick_check') as Array<Record<string, unknown>>;
+    return rows
+      .map((row) => String(Object.values(row)[0] ?? ''))
+      .filter((text) => text !== '' && text !== 'ok');
+  }
+
+  /** 立即跑一次完整性自检（健康检查用）。库已关闭时返回 ok=false 而不是抛 */
+  checkIntegrity(): { ok: boolean; detail?: string } {
+    try {
+      const problems = this.integrityProblems();
+      return problems.length === 0 ? { ok: true } : { ok: false, detail: problems.slice(0, 3).join('; ') };
+    } catch (error) {
+      return { ok: false, detail: (error as Error).message };
     }
   }
 

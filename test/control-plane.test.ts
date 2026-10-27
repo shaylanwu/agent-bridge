@@ -153,6 +153,16 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('/v1/health 默认不跑整库自检；?integrity=quick 才带上 db 字段', async () => {
+    const plane = await start();
+    const plain = await call(plane.port, 'GET', '/v1/health');
+    // 自检要读整库，不能挂在 CI 反复轮询的默认路径上
+    expect(plain.json<{ db?: unknown }>().db).toBeUndefined();
+    const deep = await call(plane.port, 'GET', '/v1/health?integrity=quick');
+    expect(deep.json<{ db: { ok: boolean } }>().db).toEqual({ ok: true });
+    plane.close();
+  });
+
   it('/v1/metrics 需要鉴权并输出 Prometheus 文本', async () => {
     const plane = await start({
       verify: (token) =>

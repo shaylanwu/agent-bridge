@@ -60,9 +60,16 @@ description: Every endpoint of the optional loopback control plane — generated
 
 **Liveness / readiness / version**
 
-The only route that needs no token — safe for container and CI probes.
+The only route that needs no token — safe for container and CI probes. The state DB runs `PRAGMA quick_check` on open and refuses to start when it fails (a corrupt file that still opens would otherwise fail mid-task). Pass `?integrity=quick` to re-run that check now; it reads the whole DB, so it stays off the default probe path.
 
 **Auth**：No token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `integrity` | query | `quick` |  | Re-run the state-DB integrity check and include `db` in the response. |
+
 
 **Responses**
 

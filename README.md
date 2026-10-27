@@ -304,6 +304,15 @@ number is never re-issued after its row was reclaimed. Only events are trimmed: 
 interactions are the evidence that the task happened and stay. `--event-retention-max-events=` overrides for
 one session.
 
+**The state DB runs `PRAGMA quick_check` when it is opened** (`SessionStore`'s `integrityCheck`, on by
+default, can be disabled). Not for tidiness: a corrupt SQLite file usually **opens fine** and even reads its
+schema, then fails on a page read halfway through a task — the crime scene is "task failed with an internal
+error", which is nearly impossible to diagnose. The check moves that to startup: a failing database refuses to
+start, and the bridge never silently degrades to an in-memory store. Measured on a 22 MB database: ~19 ms
+with the check, 1.7 ms without. Be precise about what it buys: `quick_check` catches **structural** damage
+(page headers, b-tree, indexes); bytes flipped inside a text value are not validated. Re-check any time with
+`GET /v1/health?integrity=quick`, which returns `db: { ok, detail? }`.
+
 `get_task` therefore has three cursor shapes, and they mean different things:
 
 | request | returns | use it for |
@@ -617,7 +626,7 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | Method | Path | Scope |
 | --- | --- | --- |
 | GET | `/` | — (Web dashboard shell; data flows through /v1/*) |
-| GET | `/v1/health` | — (liveness/readiness/version) |
+| GET | `/v1/health` | — (liveness/readiness/version; `?integrity=quick` also re-runs the state-DB check) |
 | GET | `/v1/metrics` | `device:read` (Prometheus text) |
 | GET | `/v1/whoami` | `device:read` (JWT principal / service identity) |
 | GET | `/v1/capabilities` | `device:read` |

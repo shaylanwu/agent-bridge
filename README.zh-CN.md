@@ -271,6 +271,13 @@ event_retention_max_events = 5000   # 单会话事件上限（0 = 全留，上�
 所以 `eventSeq` 始终单调递增，被裁掉的号**不会重新发放**。只裁事件：turns / artifacts / interactions 是
 「任务发生过」的证据，一律保留。启动参数 `--event-retention-max-events=` 可临时覆盖。
 
+**打开状态库时先跑一次 `PRAGMA quick_check`**（`SessionStore` 的 `integrityCheck`，缺省开启，可显式关闭）。
+理由不是洁癖：损坏的 SQLite 文件通常**能正常打开**、schema 也读得出来，只是跑到一半读页失败 ——
+那种现场是「任务执行到一半报内部错误」，几乎无法排查。自检把故障提前到启动：不合格就拒绝启动，
+不降级到内存库。实测 22 MB 库自检耗时约 19 ms（跳过则 1.7 ms），所以默认开。
+口径要精确：`quick_check` 抓的是**结构**损坏（页头、b-tree、索引），正文里被改写的字节它不校验。
+随时复查：`GET /v1/health?integrity=quick` 会重跑一次并在响应里带 `db: { ok, detail? }`。
+
 因此 `get_task` 有三种游标形态，语义各不相同：
 
 | 请求 | 返回 | 用途 |
@@ -568,7 +575,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | 方法 | 路径 | scope |
 | --- | --- | --- |
 | GET | `/` | 无（Web 任务面板壳；数据走 /v1/*） |
-| GET | `/v1/health` | 无（存活/就绪/版本） |
+| GET | `/v1/health` | 无（存活/就绪/版本；`?integrity=quick` 顺带重跑状态库自检） |
 | GET | `/v1/metrics` | `device:read`（Prometheus 文本） |
 | GET | `/v1/whoami` | `device:read`（JWT principal / 服务身份） |
 | GET | `/v1/capabilities` | `device:read` |
