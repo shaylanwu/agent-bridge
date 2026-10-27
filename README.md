@@ -224,6 +224,23 @@ through the channel above; only a tool with no continuation channel replays the 
 platforms — most `interactive_only` entries do run headless here. **Treat `executionModes` as
 authoritative** and use `capability` only for copy.
 
+### `executionModes` field format
+
+Each entry describes one execution mode of one agent. Absent field = "headless only, capability identical
+to the legacy label"; every dimension is reported **per mode** because a tool's headless and ACP behaviour
+differ:
+
+| field | values | meaning |
+| --- | --- | --- |
+| `mode` | `headless`, `acp-stdio` | how the task is executed |
+| `permissionModes` | `default`, `full` | permission modes this mode can actually serve; if `full` is missing, a `full` request is rejected before spawn (`permission_mode_unsupported`) — never downgraded |
+| `interactionKinds` | `permission`, `form`, `auth-url` | interaction kinds this mode can relay; `[]` is a hard "cannot ask", not "unknown" — do not wait for a question |
+| `feedKinds` | `messages`, `steps`, `artifacts` | canonical feed dimensions actually extracted in this mode |
+
+`capabilities` in `hello` is build-level ("this binary can do it"), `execution` is machine-level policy
+("this install allows it"), `executionModes` is per-agent ("this tool, in this mode, really can"). The
+platform needs all three to pick a combination that will not fail mid-task.
+
 **Interactions (permission prompts / forms / auth URLs) are off by default.** While off, the bridge never
 sends a `task_interaction_request`; upstream sees no answer and settles the request as declined/cancelled —
 which beats making the platform wait for a question that will never arrive:
@@ -400,7 +417,9 @@ should degrade on this list rather than guessing from a CLI version:
 | `task-snapshot`  | Supports `get_task` / `task_snapshot` replay by eventSeq                                    |
 | `session-control`| Supports `close_session` / `cancel_turn` with `session_ack`                                  |
 | `session-multi-turn` | Supports `send_message` / `message_ack`; conversation stays in waiting_user between turns |
+| `session-feed`   | `task_message` / `task_step` / `task_artifact` share one `eventSeq` feed across turns; `get_task` fills gaps and pages history — no need to parse `task_log` |
 | `task-interaction` | Permission/Form/URL requests, responses, results and expiry |
+| `elicitation-form` | Relays agent form requests (`session/request_form` and ACP `elicitation/create`) and returns the structured answer |
 | `artifact-upload` | Inbound chunked upload with SHA-256, CAS and task_artifact |
 | `artifact-download` | Chunked download from CAS (ready/chunk/ack/result) |
 | `interaction-url` | `get_interaction_url`; URLs kept in process memory with a short TTL |

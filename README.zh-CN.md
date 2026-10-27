@@ -200,6 +200,22 @@ canonical transcript。
 标成 `interactive_only` 的多数工具在这里其实能跑 headless。**能力以 `executionModes` 为准**，
 `capability` 只用于文案。
 
+### `executionModes` 字段口径
+
+每个元素描述某个工具的一种执行模式。字段缺省 = 「只有 headless，能力等同旧标签」；所有维度都**逐模式**
+上报，因为同一工具的 headless 与 ACP 能做的事实上不一样：
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `mode` | `headless`、`acp-stdio` | 这个模式怎么跑 |
+| `permissionModes` | `default`、`full` | 该模式真正能提供的权限模式；不含 `full` 时，`full` 请求在 spawn 前被拒（`permission_mode_unsupported`），不会降级 |
+| `interactionKinds` | `permission`、`form`、`auth-url` | 该模式能中转的交互种类；`[]` 是「不能问」，不是「未知」——平台不要等 |
+| `feedKinds` | `messages`、`steps`、`artifacts` | 该模式实际能提取的 canonical 维度 |
+
+三者是三层不同的事实：`hello.capabilities` 是**构建能力**（这个二进制能不能做）、`hello.execution` 是
+**本机策略**（这台机器允不允许）、`executionModes` 是**逐工具能力**（这个工具、这个模式下真的能做）。
+平台要三者一起看，才能挑出不会跑到一半才失败的组合。
+
 **交互（权限确认 / 表单 / 授权 URL）默认关闭**：关着时 bridge 不会向平台发任何
 `task_interaction_request`，上游拿不到回答会自行按拒绝或取消处理 —— 这比让平台干等一个永远不会来的问题要好：
 
@@ -367,7 +383,9 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 | `task-snapshot`  | 支持 `get_task` / `task_snapshot` 按 eventSeq 补取历史        |
 | `session-control`| 支持 `close_session` / `cancel_turn` 与 `session_ack` 回执    |
 | `session-multi-turn` | 支持 `send_message` / `message_ack`，conversation 回合间保持 waiting_user |
+| `session-feed`   | 跨回合 canonical 会话流：`task_message` / `task_step` / `task_artifact` 共用一条 `eventSeq`，可用 `get_task` 补洞与回翻，不必解析 `task_log` |
 | `task-interaction` | 支持权限/Form/URL 交互请求、回复、结果与过期处理 |
+| `elicitation-form` | 支持中转 agent 表单请求（`session/request_form` 与标准 ACP `elicitation/create`），结构化答案原路回传 |
 | `artifact-upload` | 支持入站附件分块上传、SHA-256、CAS 与 task_artifact |
 | `artifact-download` | 支持从 CAS 分块下载附件（ready/chunk/ack/result） |
 | `interaction-url` | 支持 `get_interaction_url`，URL 仅进程内短期保存 |

@@ -27,7 +27,18 @@ export const PROTOCOL_CAPABILITIES = [
   'task-snapshot',
   'session-control',
   'session-multi-turn',
+  /**
+   * 跨回合的 canonical 会话流：task_message / task_step / task_artifact 共用一条 eventSeq，
+   * 可用 get_task（afterEventSeq / beforeEventSeq）补洞与回翻，平台不必解析 task_log。
+   */
+  'session-feed',
   'task-interaction',
+  /**
+   * 支持把 agent 的结构化表单请求转成交互：CodeBuddy 的 `session/request_form` 与标准 ACP
+   * `elicitation/create` 都收，人工填写的结构化 answer 原路回传。声明它表示 bridge 能中转，
+   * 具体哪个工具会弹表单仍以 `executionModes[].interactionKinds` 为准。
+   */
+  'elicitation-form',
   'artifact-upload',
   'artifact-download',
   'interaction-url',

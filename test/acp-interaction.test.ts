@@ -306,4 +306,91 @@ describe('ACP form interaction', () => {
     expect(asked).toBe('Pick an environment');
     expect(JSON.parse(result.text)).toEqual({ action: 'accept', content: { env: 'staging' } });
   });
+
+  // CodeBuddy 用扩展方法 session/request_form；标准 ACP 的工具用 elicitation/create。
+  // 两条都得能收，否则「ACP 下能弹表单」对非 CodeBuddy 工具就是空话。
+  const FAKE_ELICITATION_ACP = String.raw`
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+let promptId = null;
+let caps = null;
+const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.method === 'initialize') {
+    caps = m.params && m.params.clientCapabilities;
+    send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1 } });
+    return;
+  }
+  if (m.method === 'session/new') { send({ jsonrpc: '2.0', id: m.id, result: { sessionId: 'sess_elic' } }); return; }
+  if (m.method === 'session/prompt') {
+    promptId = m.id;
+    send({ jsonrpc: '2.0', id: 902, method: 'elicitation/create', params: {
+      sessionId: 'sess_elic',
+      message: 'Pick a region',
+      requestedSchema: { type: 'object', properties: { region: { type: 'string' } }, required: ['region'] },
+    }});
+    return;
+  }
+  if (m.id === 902) {
+    send({ jsonrpc: '2.0', method: 'session/update', params: {
+      sessionId: 'sess_elic',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ caps: caps, result: m.result }) } },
+    }});
+    send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+    return;
+  }
+  if (m.method === 'session/cancel') process.exit(0);
+});
+`;
+
+  const runElicitation = async (
+    dir: string,
+    onForm?: (request: { message: string; requestedSchema: Record<string, unknown> }) => {
+      action: 'accept';
+      content: Record<string, unknown>;
+    },
+  ): Promise<{ caps: Record<string, unknown> | null; result: { action: string } }> => {
+    const script = join(dir, 'fake-acp-elicitation.cjs');
+    writeFileSync(script, FAKE_ELICITATION_ACP);
+    const result = await runAcpPrompt({
+      cwd: dir,
+      prompt: 'pick region',
+      spec: { command: process.execPath, args: [script], sanitizeHostEnv: false },
+      timeoutMs: 15_000,
+      ...(onForm ? { onForm } : {}),
+    });
+    return JSON.parse(result.text) as { caps: Record<string, unknown> | null; result: { action: string } };
+  };
+
+  const makeTempDir = (label: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), `agent-bridge-acp-${label}-`));
+    cleanups.push(() => {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      } catch {
+        /* Windows 下子进程句柄释放可能滞后；临时目录可留给系统清理 */
+      }
+    });
+    return dir;
+  };
+
+  it('标准 elicitation/create 回送 accept content，并声明 elicitation 能力', async () => {
+    const dir = makeTempDir('elicitation');
+    const seen: string[] = [];
+    const payload = await runElicitation(dir, (request) => {
+      seen.push(request.message);
+      return { action: 'accept', content: { region: 'cn-north' } };
+    });
+    expect(seen).toEqual(['Pick a region']);
+    expect(payload.caps).toMatchObject({ elicitation: {} });
+    expect(payload.result).toEqual({ action: 'accept', content: { region: 'cn-north' } });
+  });
+
+  it('没接表单回调时既不声明 elicitation，也回 cancel（不假装能问）', async () => {
+    const dir = makeTempDir('elicitation-off');
+    const payload = await runElicitation(dir);
+    expect(payload.caps).not.toHaveProperty('elicitation');
+    expect(payload.result).toEqual({ action: 'cancel' });
+  });
 });

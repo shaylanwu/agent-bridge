@@ -36,11 +36,14 @@
 
 ## 2. 共同协议与配置内核
 
-- [ ] 2.1 `PROTOCOL_VERSION=1`；新增 permission-mode/task-interaction/elicitation-form/session-feed/task-snapshot/artifact-inline capabilities
-      （2026-10-27 已落：`permission-mode` / `task-interaction` / `task-snapshot` / `artifact-inline` / `artifact-upload` /
-      `artifact-download` / `interaction-url`；**剩余** `elicitation-form`（MCP elicitation 未接通用 Form 通道）、
-      `session-feed`（canonical feed 已按 task_message/task_step/task_artifact 发出，但能力名尚未声明，
-      待 step parsers 覆盖 12 个工具后再声明））
+- [x] 2.1 `PROTOCOL_VERSION=1`；新增 permission-mode/task-interaction/elicitation-form/session-feed/task-snapshot/artifact-inline capabilities
+      （2026-10-27 补齐最后两个：`elicitation-form` —— 原先只认 CodeBuddy 扩展方法 `session/request_form`，
+      标准 ACP 的 `elicitation/create` 根本没接，等于对非 CodeBuddy 工具空口声明；现在两条入口共用一段处理，
+      并且只在真的接了表单回调（`onForm` 存在 = 交互开关开且任务允许交互）时才在 initialize 里声明
+      `clientCapabilities.elicitation`，否则不声明也不假装能问。`session-feed` —— 12 个工具的 step parser
+      已全覆盖（claude-json×5 / codex-json / dsh-json / gemini-json / opencode-json×2 / kimi-json / mcode-json），
+      声明前置条件满足；canonical feed 早就在发，此前只是没在能力清单里说出来。PROTOCOL_VERSION 不递增
+      —— 纯新增能力字符串，属「新增能力 = 加字符串」那条规则。目前 20 项能力。）
 - [x] 2.2 新增 PermissionMode、ExecutionMode/InteractionKind/FeedKind、hello.execution、AgentListItem.executionModes
       （2026-10-27：`PermissionMode` / `ExecutionModeName` / `InteractionKind` / `FeedKind` 类型已入 protocol；
       `hello.execution` 上报 permissionPolicy/externalSandbox/interactionEnabled/interactionTimeoutMs/maxInteractionsPerTask；

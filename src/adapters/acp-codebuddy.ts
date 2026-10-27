@@ -210,7 +210,11 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
       }
       return;
     }
-    if (method === 'session/request_form') {
+    // 表单有两个入口，语义一致（accept/decline/cancel + content），只是来源不同：
+    //  - `session/request_form`：CodeBuddy 扩展方法，可能带 expiresAt 与自带 requestId；
+    //  - `elicitation/create`：标准 ACP elicitation，requestId 只能由我们生成。
+    // 之前只认前者，等于把「标准 ACP 的工具能弹表单」这件事说成了已支持 —— 现在两条都收。
+    if (method === 'session/request_form' || method === 'elicitation/create') {
       const requestId =
         typeof params['requestId'] === 'string' && params['requestId']
           ? params['requestId']
@@ -348,7 +352,12 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
     const initialized = (await request('initialize', {
       protocolVersion: 1,
       clientInfo: { name: 'agent-bridge', version: '1.0.0' },
-      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+      clientCapabilities: {
+        fs: { readTextFile: true, writeTextFile: true },
+        // 只有真正接了表单回调（= 本机交互开关打开且任务允许交互）才声明 elicitation。
+        // 声明了却回不了，agent 会发出 elicitation 然后拿到 cancel —— 不如一开始不声明。
+        ...(opts.onForm ? { elicitation: {} } : {}),
+      },
     })) as { authMethods?: Array<{ id?: string }> };
     const methods = new Set(
       (initialized.authMethods ?? [])
