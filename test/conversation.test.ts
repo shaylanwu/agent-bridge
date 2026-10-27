@@ -145,6 +145,50 @@ describe('conversation turns', () => {
     expect(request.prompt).toBe('second turn');
   });
 
+  it('有原生续接参数且能走 ACP 的工具，另备一份 transcript 给 ACP 兜底', () => {
+    const { store, deps } = setup();
+    store.createSession({
+      sessionId: 'bt_conv_replay',
+      mode: 'conversation',
+      agentType: 'ds-harness',
+      cwd: '/tmp/work',
+      phase: 'waiting_user',
+    });
+    store.updateSession('bt_conv_replay', { nativeSessionId: 'sess_dsh_1' });
+    store.appendMessage({
+      sessionId: 'bt_conv_replay',
+      messageId: 'msg_prev_user',
+      role: 'user',
+      text: '上一轮问题',
+    });
+    store.appendMessage({
+      sessionId: 'bt_conv_replay',
+      messageId: 'msg_prev_agent',
+      role: 'agent',
+      text: '上一轮回答',
+    });
+
+    dispatchConversationMessage(
+      {
+        type: 'send_message',
+        taskId: 'bt_conv_replay',
+        messageId: 'msg_next',
+        parts: [{ kind: 'text', text: '这一轮新问题' }],
+      },
+      deps,
+    );
+
+    const request = runnerMocks.startTask.mock.calls[0]?.[0] as {
+      prompt?: string;
+      replayPrompt?: string;
+    };
+    // 续上了就只发新文本；续不上时 ACP 用 replayPrompt 顶上去，历史不丢
+    expect(request.prompt).toBe('这一轮新问题');
+    expect(request.replayPrompt).toContain('上一轮问题');
+    expect(request.replayPrompt).toContain('上一轮回答');
+    expect(request.replayPrompt).toContain('这一轮新问题');
+  });
+
   it('steer 在 active Turn 上转发，不新建 Turn', async () => {
     const { store, sent, deps } = setup();
     store.createSession({
@@ -278,5 +322,26 @@ describe('conversation turns', () => {
       errorCode: 'message_conflict',
     });
     expect(runnerMocks.startTask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('conversation 准入', () => {
+  it('未知工具当场拒绝，不留半开的 session、也不 spawn', () => {
+    const { store, sent, deps } = setup();
+    dispatchConversationRun({
+      type: 'run_task',
+      taskId: 'bt_conv_unknown',
+      agentType: 'no-such-tool',
+      cwd: '/tmp/work',
+      args: [],
+      prompt: 'hi',
+      sessionMode: 'conversation',
+    }, deps);
+    expect(sent.find((m) => m.type === 'task_status')).toMatchObject({
+      status: 'failed',
+      errorCode: 'tool_not_installed',
+    });
+    expect(store.getSession('bt_conv_unknown')).toBeUndefined();
+    expect(runnerMocks.startTask).not.toHaveBeenCalled();
   });
 });

@@ -201,6 +201,13 @@ ACP 模式恒为 `default`（走原生权限确认，不用绕过参数），所
 不会悄悄降级。后续 `send_message` 回合按上表的通道续会话；只有完全没有续会话通道的工具才会重放
 canonical transcript。
 
+有两条内部通道**不单列为 `executionMode`**，因为通道是 bridge 自选的（`run_task` 没有 `executionMode` 字段）：
+codex 的会话走 app-server `thread/resume`，Claude/Qoder 走常驻 stream-json 进程。它们写在上表里而不编码成
+`executionMode` 取值，并且**至少不弱于**它替代的那个模式所声明的 continuation —— 声明只会保守，不会夸大。
+7 个本机无凭据工具的 ACP `native-session` 依据是 ACP 规范 + `codebuddy`/`ds-harness` 的实测，不是逐个实测；
+若某个 agent 连 `session/load` 与 `session/resume` 都不认，该回合会开新会话**并把完整 transcript 当首轮
+prompt 发过去**，不会出现「看着成功、其实历史没了」的新会话。
+
 `AgentListItem.capability`（`non_interactive` / `interactive_only`）是留给旧平台的 0.x 展示标签 ——
 标成 `interactive_only` 的多数工具在这里其实能跑 headless。**能力以 `executionModes` 为准**，
 `capability` 只用于文案。
@@ -216,6 +223,7 @@ canonical transcript。
 | `permissionModes` | `default`、`full` | 该模式真正能提供的权限模式；不含 `full` 时，`full` 请求在 spawn 前被拒（`permission_mode_unsupported`），不会降级 |
 | `interactionKinds` | `permission`、`form`、`auth-url` | 该模式能中转的交互种类；`[]` 是「不能问」，不是「未知」——平台不要等 |
 | `feedKinds` | `messages`、`steps`、`artifacts` | 该模式实际能提取的 canonical 维度 |
+| `continuation` | `native-session`、`resume-session`、`replay-session`、`single-turn` | 后续回合怎么接回本会话：会话由 agent 持有（`session/load`、`session/resume`、app-server `thread/resume`）、靠 CLI 的续接参数接上、把完整持久 transcript 当 prompt 重放、或 CLI 根本不接受后续 prompt。这里 12 个工具**至少都是 `replay-session`**；若某工具是 `single-turn`，`sessionMode = conversation` 会在**创建时**回 `session_not_continuable`，不会先接受再失败 |
 
 三者是三层不同的事实：`hello.capabilities` 是**构建能力**（这个二进制能不能做）、`hello.execution` 是
 **本机策略**（这台机器允不允许）、`executionModes` 是**逐工具能力**（这个工具、这个模式下真的能做）。

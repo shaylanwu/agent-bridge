@@ -15,7 +15,7 @@ import type { SessionStore, SessionRecord, SessionPhase, TurnRecord } from '../c
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionLog } from './session-log.js';
 import { authorizeService } from './service-gate.js';
-import { agentDefOf } from '../adapters/agent-adapters.js';
+import { agentCanContinue, agentDefOf } from '../adapters/agent-adapters.js';
 import { canRunAcp } from '../adapters/acp-codebuddy.js';
 import { ClaudeResident } from './claude-resident.js';
 
@@ -100,6 +100,15 @@ export function startConversationTurn(
     def?.resumeArgs && session.nativeSessionId
       ? def.resumeArgs.map((arg) => arg.replaceAll('{{sessionId}}', session.nativeSessionId as string))
       : [];
+  /**
+   * 有原生续接参数时 prompt 只有「本轮新说的话」—— 一旦 ACP 续会话没成功，
+   * 新会话就只剩这句话，历史悄无声息地没了。这里备一份完整 transcript 给它兜底。
+   * 没有续接参数的工具本来就把 transcript 当 prompt，无需重复准备。
+   */
+  const replayPrompt =
+    resumeArgs.length > 0 && def?.acp && canRunAcp(def.acp) && prompt
+      ? transcriptOf(deps, sessionId)
+      : undefined;
   const onStatus = (status: TaskStatus, info?: TaskFinishInfo): void => {
     const runningPhase = phaseOf(status, info);
     try {
@@ -304,6 +313,7 @@ export function startConversationTurn(
         acpSpec: def?.acp,
         appServer: session.agentType === 'codex' && Boolean(prompt),
         nativeSessionId: session.nativeSessionId,
+        replayPrompt,
       },
       hooks,
     );
@@ -445,6 +455,31 @@ export function dispatchConversationRun(msg: RunTaskMessage, deps: ConversationD
       taskId: msg.taskId,
       status: 'running',
       phase: wirePhase(existing.phase),
+    });
+    return;
+  }
+
+  // 没有可续通道的工具不能开 conversation：先接受再失败比当场拒绝更糟（spec「不支持的 conversation」）。
+  // 未知工具单列出来 —— 用 session_not_continuable 报「打错名字」会把排查方向带偏。
+  if (!agentDefOf(msg.agentType)) {
+    deps.emitter.emit({
+      type: 'task_status',
+      taskId: msg.taskId,
+      status: 'failed',
+      error: `不支持的工具：${msg.agentType}`,
+      errorCode: 'tool_not_installed',
+      requestedBy: msg.requestedBy,
+    });
+    return;
+  }
+  if (!agentCanContinue(msg.agentType)) {
+    deps.emitter.emit({
+      type: 'task_status',
+      taskId: msg.taskId,
+      status: 'failed',
+      error: `该工具不支持多轮会话（continuation = single-turn）：${msg.agentType}`,
+      errorCode: 'session_not_continuable',
+      requestedBy: msg.requestedBy,
     });
     return;
   }

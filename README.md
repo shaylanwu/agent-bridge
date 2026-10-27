@@ -225,6 +225,15 @@ ACP mode is always `default` (it uses native permission prompts instead of a byp
 is either served by headless or rejected — never silently downgraded. A later `send_message` turn resumes
 through the channel above; only a tool with no continuation channel replays the canonical transcript.
 
+Two internal channels are **not** separately requestable modes, because the bridge picks the channel itself
+(`run_task` has no `executionMode` field): codex conversations run over app-server `thread/resume`, and
+Claude/Qoder conversations over a resident stream-json process. They are described in the table instead of
+being encoded as `executionMode` values, and each is at least as capable as the continuation declared for the
+mode it replaces — the declaration never overstates. ACP `native-session` for the seven agents without local
+credentials rests on the ACP spec plus the `codebuddy`/`ds-harness` probes, not on per-tool measurement; if an
+agent rejects both `session/load` and `session/resume`, the turn opens a new session **with the full transcript
+as its first prompt** — never a fresh session that silently lost the history.
+
 `AgentListItem.capability` (`non_interactive` / `interactive_only`) is a 0.x display label kept for old
 platforms — most `interactive_only` entries do run headless here. **Treat `executionModes` as
 authoritative** and use `capability` only for copy.
@@ -241,6 +250,7 @@ differ:
 | `permissionModes` | `default`, `full` | permission modes this mode can actually serve; if `full` is missing, a `full` request is rejected before spawn (`permission_mode_unsupported`) — never downgraded |
 | `interactionKinds` | `permission`, `form`, `auth-url` | interaction kinds this mode can relay; `[]` is a hard "cannot ask", not "unknown" — do not wait for a question |
 | `feedKinds` | `messages`, `steps`, `artifacts` | canonical feed dimensions actually extracted in this mode |
+| `continuation` | `native-session`, `resume-session`, `replay-session`, `single-turn` | how a later turn reattaches to this session: the agent holds it (`session/load`, `session/resume`, app-server `thread/resume`), a CLI resume flag reattaches it, the full persisted transcript is replayed as the prompt, or the CLI cannot take a follow-up at all. Every tool here is at least `replay-session`; `single-turn` would make `sessionMode = conversation` fail at creation with `session_not_continuable` instead of being accepted and then failing |
 
 `capabilities` in `hello` is build-level ("this binary can do it"), `execution` is machine-level policy
 ("this install allows it"), `executionModes` is per-agent ("this tool, in this mode, really can"). The

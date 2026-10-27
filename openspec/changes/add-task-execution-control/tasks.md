@@ -233,6 +233,11 @@
 - [ ] 9.5 每 Session 串行 Turn + 可配置排队/背压；native steer 只有声明才启用；重复 messageId 幂等
 - [ ] 9.6 12 适配器至少实现 replay-session 多轮底线；native/resume 增强；single-turn 仅实测例外；
        replay 用完整 transcript，超限 context_exhausted；live interaction 如实声明
+  - 已落地 `executionModes[].continuation`：headless 有 `resumeArgs` 的 4 个（claude/codebuddy/dsh/qoder）声明
+    `resume-session`，其余 8 个声明 `replay-session`；9 个 ACP 工具一律 `native-session`。`single-turn` 目前无工具声明。
+  - conversation 准入：未知工具回 `tool_not_installed`，没有任何可续模式的工具回 `session_not_continuable`，
+    都在建 Session 之前拒绝（`agentCanContinue()` + `conversation.ts`）。
+  - 未覆盖：`context_exhausted` 未实现 —— 没有模型上下文预算表就无法判定「超限」，宁可不报也不虚报。
 - [x] 9.7 持久 approval ledger：scope/expiry/tenant/principal，撤销与审计；不因模型文本自动授权
   - `core/permission-ledger.ts`（判定纯函数）+ `approvals` 表读写 + `agent-bridge approvals list|revoke|purge`
   - 默认关闭（`approval_ledger_enabled`）；写入需 `task:approve + approval:persist`；命中需 default 模式 +

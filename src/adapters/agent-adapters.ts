@@ -15,6 +15,7 @@ import type {
   AgentCapability,
   AgentListItem,
   AgentStatus,
+  ContinuationKind,
   ExecutionModeCapability,
   FeedKind,
   InteractionKind,
@@ -307,6 +308,8 @@ export function executionModesFor(def: AgentDef, externalSandbox = false): Execu
   // steps 只有声明了步骤解析器才真的产出 task_step；artifacts 是任务级双向通道，两种模式都有
   const headlessFeed: FeedKind[] = ['messages', ...(def.steps !== undefined ? (['steps'] as FeedKind[]) : []), 'artifacts'];
   const admitted = fullModeAdmitted({ kind: def.kind, fullArgs: def.fullArgs, externalSandbox });
+  // headless 要么靠 CLI 的续接参数接上原生会话，要么拿完整 transcript 重放 —— 后者是 12/12 的底线
+  const headlessContinuation: ContinuationKind = def.resumeArgs ? 'resume-session' : 'replay-session';
   const modes: ExecutionModeCapability[] = [
     {
       mode: 'headless',
@@ -315,6 +318,7 @@ export function executionModesFor(def: AgentDef, externalSandbox = false): Execu
       // headless 是一次性执行，没有回问通道
       interactionKinds: [],
       feedKinds: headlessFeed,
+      continuation: headlessContinuation,
     },
   ];
   if (def.acp) {
@@ -326,13 +330,30 @@ export function executionModesFor(def: AgentDef, externalSandbox = false): Execu
       interactionKinds: def.acpInteractionKinds ?? ['permission', 'form'],
       // ACP 的 agent_message_chunk → messages、tool_call → steps；artifacts 暂无 ACP 来源
       feedKinds: ['messages', 'steps'],
+      // ACP 会话由 agent 持有，bridge 只回传 ID（实测 9/9 都能续：session/load 或 session/resume）
+      continuation: 'native-session',
     });
   }
   return modes;
 }
 
-// ---------- 可执行文件解析 ----------
+/**
+ * 这些执行模式里是否存在能续接回合的一档 = 该工具能不能开 conversation。
+ *
+ * 判据是「任一模式可续」而不是「headless 可续」：同一工具可能 headless 单轮、ACP 能续，
+ * 平台只给了 agentType、并没有指定通道，取任一模式可续才是如实回答。
+ */
+export function canContinue(modes: ExecutionModeCapability[]): boolean {
+  return modes.some((m) => m.continuation !== 'single-turn');
+}
 
+/** 该 agentType 是否支持多轮会话；未知工具返回 false 由调用方按「未知工具」单独处理 */
+export function agentCanContinue(kind: string): boolean {
+  const def = agentDefOf(kind);
+  return def ? canContinue(executionModesFor(def)) : false;
+}
+
+// ---------- 可执行文件解析 ----------
 const WIN_EXTS = ['.cmd', '.exe', '.bat', ''];
 /** Windows 上真正能 spawn 的可执行扩展名（无扩展名的 shim 是 bash 脚本，Node 起不来） */
 const WIN_EXEC_RE = /\.(exe|cmd|bat)$/i;

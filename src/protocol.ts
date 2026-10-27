@@ -456,12 +456,26 @@ export type InteractionKind = 'permission' | 'form' | 'auth-url';
 /** canonical feed 维度：未验证的维度不得声明（避免平台把 task_log 当稳定 UI 协议） */
 export type FeedKind = 'messages' | 'steps' | 'artifacts';
 
+/**
+ * 该模式如何续接上一回合（1.0）。平台据此判断「能不能开 conversation」——
+ * 声明 `single-turn` 的工具在创建 conversation 时就会被拒，而不是先接受再失败。
+ *
+ * - `native-session`：agent 自己持有会话，bridge 只回传会话 ID（ACP `session/load` /
+ *   `session/resume`、codex app-server `thread/resume`）。历史在 agent 侧，进程按回合回收。
+ * - `resume-session`：靠 CLI 的续接参数（`--resume` / `--session-id`）接上同一个原生会话。
+ * - `replay-session`：新进程 + 完整持久 transcript 作为 prompt。**任何工具都必须至少做到这一档**。
+ * - `single-turn`：CLI 物理上不接受后续 prompt。仅在有实测证据时才允许声明。
+ */
+export type ContinuationKind = 'native-session' | 'resume-session' | 'replay-session' | 'single-turn';
+
 export interface ExecutionModeCapability {
   mode: ExecutionModeName;
   /** 该模式下可用的权限模式集合（不含 full = 请求 full 时必须在 spawn 前拒绝） */
   permissionModes: PermissionMode[];
   interactionKinds: InteractionKind[];
   feedKinds: FeedKind[];
+  /** 该模式下的会话续接方式（12/12 至少 `replay-session`） */
+  continuation: ContinuationKind;
 }
 
 /**

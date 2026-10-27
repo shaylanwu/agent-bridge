@@ -10,10 +10,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AGENTS, executionModesFor } from '../src/adapters/agent-adapters.js';
+import { AGENTS, agentCanContinue, canContinue, executionModesFor } from '../src/adapters/agent-adapters.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { knownStopReason } from '../src/core/task-supervisor.js';
 import { assertServerMessage, ProtocolError } from '../src/protocol.js';
+import type { ContinuationKind, ExecutionModeCapability } from '../src/protocol.js';
 
 const stores: SessionStore[] = [];
 const dirs: string[] = [];
@@ -76,6 +77,59 @@ describe('executionModes', () => {
       expect(headless.feedKinds.includes('steps')).toBe(def.steps !== undefined);
       expect(headless.feedKinds).toContain('messages');
     }
+  });
+
+  it('每个模式都声明 continuation，且 12/12 至少到 replay-session 底线', () => {
+    const allowed: ContinuationKind[] = ['native-session', 'resume-session', 'replay-session', 'single-turn'];
+    for (const def of AGENTS) {
+      for (const mode of executionModesFor(def)) {
+        expect(allowed).toContain(mode.continuation);
+        // single-turn 只有在 CLI 物理上接不了后续 prompt 时才允许声明，目前一个都没有
+        expect(mode.continuation).not.toBe('single-turn');
+      }
+    }
+  });
+
+  it('headless 的续接方式与 resumeArgs 一一对应', () => {
+    for (const def of AGENTS) {
+      const headless = executionModesFor(def)[0];
+      // 有原生续接参数 → 接上同一个会话；没有 → 把完整 transcript 当 prompt 重放
+      expect(headless.continuation).toBe(def.resumeArgs ? 'resume-session' : 'replay-session');
+    }
+    expect(AGENTS.filter((def) => def.resumeArgs).map((def) => def.kind).sort()).toEqual([
+      'claude-code',
+      'codebuddy-cli',
+      'ds-harness',
+      'qoder-cli',
+    ]);
+  });
+
+  it('ACP 模式一律 native-session（会话在 agent 侧，bridge 只回传 ID）', () => {
+    for (const def of AGENTS.filter((agent) => agent.acp)) {
+      const acp = executionModesFor(def).find((mode) => mode.mode === 'acp-stdio');
+      expect(acp?.continuation).toBe('native-session');
+    }
+  });
+
+  it('canContinue：任一模式可续即可续，全 single-turn 才算不可续', () => {
+    const cap = (continuation: ContinuationKind): ExecutionModeCapability => ({
+      mode: 'headless',
+      permissionModes: ['default'],
+      interactionKinds: [],
+      feedKinds: ['messages'],
+      continuation,
+    });
+    expect(canContinue([cap('replay-session')])).toBe(true);
+    expect(canContinue([cap('native-session')])).toBe(true);
+    expect(canContinue([cap('single-turn')])).toBe(false);
+    // headless 单轮但 ACP 能续 —— 平台只给 agentType，取任一模式可续才是如实回答
+    expect(canContinue([cap('single-turn'), cap('native-session')])).toBe(true);
+    expect(canContinue([])).toBe(false);
+  });
+
+  it('agentCanContinue：真实工具都可续，未知工具返回 false 交给调用方单独报错', () => {
+    for (const def of AGENTS) expect(agentCanContinue(def.kind)).toBe(true);
+    expect(agentCanContinue('no-such-tool')).toBe(false);
   });
 });
 

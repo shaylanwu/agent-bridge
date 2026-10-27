@@ -120,6 +120,11 @@ export interface AcpPromptOptions {
   timeoutMs?: number;
   /** 已存在的 native session：优先 session/load，失败再 session/new */
   nativeSessionId?: string;
+  /**
+   * 续会话**没成功**时的兜底 prompt（通常是完整 transcript）。
+   * 不传就沿用 `prompt` —— 但那意味着「新会话里只剩这一轮说的那句话」，历史静默丢失。
+   */
+  replayPrompt?: string;
   signal?: AbortSignal;
   onUpdate?: (update: Record<string, unknown>) => void;
   onPermission?: (request: AcpPermissionRequest) => Promise<string | undefined> | string | undefined;
@@ -390,6 +395,10 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
         }
       }
     }
+    // 续上了的会话用「本轮新说的话」；**试过续但没续上**就必须把完整历史塞进首轮 prompt，
+    // 否则新会话看着像正常回合，实际把之前所有上下文丢了 —— 这种失败看不出来。
+    const attemptedResume = Boolean(opts.nativeSessionId);
+    const resumedOk = Boolean(sessionId);
     if (!sessionId) {
       const newSession = (await request('session/new', {
         cwd: resolve(opts.cwd),
@@ -398,9 +407,11 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
       sessionId = newSession.sessionId ?? '';
     }
     if (!sessionId) throw new Error('ACP session/new 未返回 sessionId');
+    const promptText =
+      !attemptedResume || resumedOk ? opts.prompt : (opts.replayPrompt ?? opts.prompt);
     const result = (await request(
       'session/prompt',
-      { sessionId, prompt: [{ type: 'text', text: opts.prompt }] },
+      { sessionId, prompt: [{ type: 'text', text: promptText }] },
       timeoutMs,
     )) as { stopReason?: string; _meta?: Record<string, unknown> };
     stopReason = result.stopReason ?? 'end_turn';

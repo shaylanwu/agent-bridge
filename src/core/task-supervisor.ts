@@ -66,6 +66,11 @@ export interface RunTaskRequest {
   acpSpec?: AcpAgentSpec;
   /** ACP 续接已有 native session */
   nativeSessionId?: string;
+  /**
+   * ACP 续接失败时的兜底 prompt（完整 transcript）。
+   * 只有「本来要续、结果没续上」才会用到 —— 否则新会话会静默丢掉此前全部上下文。
+   */
+  replayPrompt?: string;
   /** 请求的权限模式（1.0）；缺省由本机 permission_policy 决定 */
   permissionMode?: PermissionMode;
   /** 本机权限策略（缺省 default） */
@@ -831,6 +836,7 @@ export class TaskSupervisor {
       spec: entry.req.acpSpec,
       timeoutMs: timeoutOf(entry.req),
       nativeSessionId: entry.req.nativeSessionId,
+      replayPrompt: entry.req.replayPrompt,
       signal: controller.signal,
       onUpdate: (update) => this.onAcpUpdate(entry, update),
       onPermission: (request) => {

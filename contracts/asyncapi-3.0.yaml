@@ -837,10 +837,11 @@ components:
           description: |
             按执行模式列出的能力（缺省 = 只有 headless 且等于 legacy capability）。
             新平台以它为准：某模式的 permissionModes 不含 full，就别请求 full（bridge 会在 spawn 前拒绝）；
-            interactionKinds 为空表示该模式不能回问。
+            interactionKinds 为空表示该模式不能回问；continuation 说明后续回合怎么接回本会话，
+            single-turn 的工具开 conversation 会在创建时回 session_not_continuable。
           items:
             type: object
-            required: [mode, permissionModes, interactionKinds, feedKinds]
+            required: [mode, permissionModes, interactionKinds, feedKinds, continuation]
             properties:
               mode: { type: string, enum: [headless, acp-stdio] }
               permissionModes:
@@ -852,6 +853,14 @@ components:
               feedKinds:
                 type: array
                 items: { type: string, enum: [messages, steps, artifacts] }
+              continuation:
+                type: string
+                enum: [native-session, resume-session, replay-session, single-turn]
+                description: |
+                  native-session = 会话由 agent 持有，bridge 只回传 ID（ACP session/load|resume、app-server thread/resume）；
+                  resume-session = 靠 CLI 续接参数接上同一个原生会话；
+                  replay-session = 新进程 + 完整持久 transcript 当 prompt（12/12 的底线）；
+                  single-turn = CLI 不接受后续 prompt，不能开 conversation。
     ErrorCode:
       type: string
       description: 受控错误码（与 src/core/errors.ts 的 BRIDGE_ERROR_CODES 同源）
