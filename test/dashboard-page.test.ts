@@ -86,17 +86,29 @@ describe('Web 面板结构化日志模型', () => {
     expect(events(c)[0]).toMatchObject({ state: 'done', detail: 'done' });
   });
 
-  it('gemini / dsh：tool_result 按 tool_id/callId 配对', () => {
-    const gemini = makeContext();
-    feed(gemini, { type: 'tool_use', tool_name: 'read_file', tool_id: 'g1', parameters: { path: 'a.ts' } });
-    feed(gemini, { type: 'tool_result', tool_id: 'g1', status: 'success', output: 'content' });
-    expect(events(gemini)).toHaveLength(1);
-    expect(events(gemini)[0]).toMatchObject({ state: 'done', detail: 'content' });
+  it('agy / dsh：tool 步骤按 step_index/callId 配对', () => {
+    const agy = makeContext();
+    feed(agy, { event: 'step_update', step_update: { step_index: 4, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'echo hi' } } } });
+    feed(agy, { event: 'step_update', step_update: { step_index: 4, state: 'DONE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'echo hi' }, output: 'content' } } });
+    expect(events(agy)).toHaveLength(1);
+    expect(events(agy)[0]).toMatchObject({ state: 'done', detail: 'content' });
 
     const dsh = makeContext();
     feed(dsh, { type: 'tool_call', callId: 'd1', name: 'bash', arguments: { command: 'ls' } });
     feed(dsh, { type: 'tool_result', callId: 'd1', output: 'ok' });
     expect(events(dsh)).toHaveLength(1);
+  });
+
+  it('agy：result SUCCESS → 执行完成，status≠SUCCESS → 错误卡', () => {
+    const ok = makeContext();
+    feed(ok, { event: 'result', result: { status: 'SUCCESS', response: 'pong' } });
+    expect(events(ok)).toHaveLength(1);
+    expect(events(ok)[0]).toMatchObject({ kind: 'status', state: 'done', detail: 'pong' });
+
+    const err = makeContext();
+    feed(err, { event: 'result', result: { status: 'ERROR', error: 'authentication failed or timed out' } });
+    expect(events(err)).toHaveLength(1);
+    expect(events(err)[0]).toMatchObject({ kind: 'error', state: 'error' });
   });
 
   it('kimi：OpenAI tool_calls 与 role:tool 配对', () => {

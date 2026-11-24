@@ -508,6 +508,27 @@ function errorEvent(title,detail,ref,raw,at) { return evt('error',title,detail,'
 /* 7 族 CLI 事件 → 统一事件卡。tool_use/tool_result 按 ref 合并，不重复占行。 */
 function consumeObject(o) {
   var type=o.type||'',raw=rawOf(o),at=atOf(o),msg=o.message||{},content=msg.content;
+  /* agy（Antigravity CLI）stream-json：{"event":"init"|"step_update"|"result",…同名负载}；
+     tool 步骤 ACTIVE/DONE 按 step_index 合并为一行；text_delta 增量不逐条上屏（终态 result 自带全文）。 */
+  if(o.event) {
+    var ev=o.event;
+    if(ev==='init'){pushEvent(statusEvent('会话已启动','',raw,at));return;}
+    if(ev==='step_update') {
+      var p=o.step_update||{};
+      if(p.step_type!=='tool')return;
+      var ti=p.tool_info||{};
+      if(p.state==='DONE')pushEvent(evt(ti.error?'error':'tool',p.tool_name||'工具结果',textOf(ti.output)||inputSummary(ti.parameters),ti.error?'error':'done',String(p.step_index),raw,at));
+      else pushEvent(toolEvent(p.tool_name||'tool',ti.parameters,'live',String(p.step_index),raw,at));
+      return;
+    }
+    if(ev==='result') {
+      var r=o.result||{};
+      if(r.status==='SUCCESS')pushEvent(statusEvent('执行完成',textOf(r.response),raw,at,'done'));
+      else pushEvent(errorEvent('执行失败',textOf(r.error||r.response),null,raw,at));
+      return;
+    }
+    return;
+  }
   if(type==='assistant'&&Array.isArray(content)) {
     content.forEach(function(b){
       if(b.type==='tool_use')pushEvent(toolEvent(b.name,b.input,'live',b.id,raw,at));

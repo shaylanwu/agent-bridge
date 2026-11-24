@@ -9,7 +9,7 @@ import { createSign, generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { JwtVerifier } from '../src/infra/jwt.js';
 import { request as httpRequest } from 'node:http';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Emitter } from '../src/core/emitter.js';
@@ -295,6 +295,31 @@ describe('本地回环控制面', () => {
     plane.close();
   });
 
+  it('cancel 是独立 scope：只有 task:read+task:create 不足以取消（403 insufficient_scope）', async () => {
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ jwt: verifier });
+    const now = Math.floor(Date.now() / 1000);
+    const tokenCreateOnly = sign({
+      sub: 'u',
+      tenant_id: 'tenant_d',
+      scope: 'task:read task:create',
+      exp: now + 3600,
+    });
+    const created = await call(plane.port, 'POST', '/v1/tasks', {
+      headers: { authorization: `Bearer ${tokenCreateOnly}` },
+      body: { agentType: 'codex', cwd: '/tmp' },
+    });
+    expect(created.status).toBe(201);
+    const taskId = created.json<{ taskId: string }>().taskId;
+    // create 能创建，但取消需要 task:cancel —— create 不隐含 cancel
+    const cancelNoScope = await call(plane.port, 'POST', `/v1/tasks/${taskId}:cancel`, {
+      headers: { authorization: `Bearer ${tokenCreateOnly}` },
+    });
+    expect(cancelNoScope.status).toBe(403);
+    expect(cancelNoScope.json<{ code?: string }>().code).toBe('insufficient_scope');
+    plane.close();
+  });
+
   it('JWT 会话读取按 tenant 隔离，跨租户快照 404', async () => {
     const { sign, verifier } = jwtFixture();
     const store = new SessionStore(':memory:');
@@ -367,6 +392,47 @@ describe('本地回环控制面', () => {
     expect(second.taskId).toBe(first.taskId);
     expect(second.idempotentReplay).toBe(true);
     plane.close();
+  });
+
+  it('Idempotency-Key 在控制面重启后仍重放，异参 409 且不重复执行', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-http-idempotency-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    let executions = 0;
+    const startTask = (req: RunTaskRequest, hooks: TaskHooks): TaskHandle => {
+      executions += 1;
+      hooks.onStatus('success', { exitCode: 0 });
+      return { taskId: req.taskId, cancel: () => undefined, done: Promise.resolve('success' as const) };
+    };
+    try {
+      const firstPlane = await start({ store, startTask, verify: () => ({ ok: true }) });
+      const request = {
+        body: { agentType: 'codex', cwd: process.cwd(), prompt: 'persist me' },
+        headers: { authorization: 'Bearer abs_x_y', 'idempotency-key': 'restart-key' },
+      };
+      const created = await call(firstPlane.port, 'POST', '/v1/tasks', request);
+      const taskId = created.json<{ taskId: string }>().taskId;
+      firstPlane.close();
+
+      const secondPlane = await start({ store, startTask, verify: () => ({ ok: true }) });
+      const replay = await call(secondPlane.port, 'POST', '/v1/tasks', request);
+      expect(replay.status).toBe(200);
+      expect(replay.json<{ taskId: string; idempotentReplay: boolean; state: string }>()).toMatchObject({
+        taskId,
+        idempotentReplay: true,
+        state: 'success',
+      });
+      const conflict = await call(secondPlane.port, 'POST', '/v1/tasks', {
+        ...request,
+        body: { ...request.body, prompt: 'changed' },
+      });
+      expect(conflict.status).toBe(409);
+      expect(conflict.json<{ code: string }>().code).toBe('idempotency_conflict');
+      expect(executions).toBe(1);
+      secondPlane.close();
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('GET /sessions 提供免令牌页面壳（数据仍需令牌）', async () => {

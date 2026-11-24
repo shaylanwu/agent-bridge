@@ -30,6 +30,7 @@ import type { ArtifactTransferManager } from '../core/artifact-transfer.js';
 import { DASHBOARD_HTML } from './control-plane-page.js';
 import { SESSIONS_HTML } from './control-plane-sessions-page.js';
 import { OFFICE_MIME_TYPES, renderOfficePreview } from './office-preview.js';
+import { createGatewayHandlers, type GatewayAgentInfo, type GatewayConversationOps } from './gateway.js';
 import type {
   ClientMessage,
   AgentListItem,
@@ -46,14 +47,11 @@ import {
 import { writeAudit } from '../infra/audit.js';
 import type { RunTaskRequest, TaskFinishInfo, TaskHandle, TaskHooks } from '../core/task-supervisor.js';
 import type { TaskStatus } from '../protocol.js';
-import { DEFAULT_TENANT } from '../core/session-store.js';
+import { DEFAULT_TENANT, fingerprintIdempotency } from '../core/session-store.js';
 import type { JwtPrincipal, JwtVerifier } from '../infra/jwt.js';
 
 /** 请求体上限：控制面只收任务参数，1 MB 足够，超了直接 413 */
 const MAX_BODY_BYTES = 1024 * 1024;
-/** 幂等键上限（有界，插入顺序淘汰） */
-const MAX_IDEMPOTENCY_KEYS = 1000;
-
 export interface ControlPlaneDeps {
   /** 唯一上行出口：控制面**订阅**它来看全部任务事件，不另开一条出口 */
   emitter: Emitter;
@@ -72,13 +70,13 @@ export interface ControlPlaneDeps {
    * 响应一次交互（HTTP 通道）。由 `startSession` 注入，内部复用 WS 的同一套判定；
    * 不注入时 `/v1/interactions/{id}:respond` 回 501，而不是假装成功。
    */
-  respondInteraction?: (msg: InteractionResponseCommand) => {
+  respondInteraction?: (msg: InteractionResponseCommand) => Promise<{
     ok: boolean;
     state?: string;
     responseId?: string;
     resultSeq?: number;
     errorCode?: string;
-  };
+  }>;
   log: SessionLog;
   /**
    * 半截消息读取（1.0）：与 WS 的 `task_snapshot.partialMessages` 同源，
@@ -101,6 +99,12 @@ export interface ControlPlaneDeps {
     /** 本机是否声明 CodeBuddy full 运行在外部沙箱内 */
     externalSandbox?: boolean;
   };
+  /**
+   * conversation 编排（add-acp-session-memory）：由 `startSession` 注入
+   * （BridgeSession.conversation）。与 WS 通道同一份 dispatchOptions——鉴权/账本/审计/
+   * 续接状态（residentSessions）单一真源。不注入时 ACP 网关的 session/prompt 报 501。
+   */
+  conversation?: GatewayConversationOps;
   /** 令牌校验器（默认 `infra/service-token`；注入以便单测） */
   verify?: (
     token: string | undefined,
@@ -108,6 +112,11 @@ export interface ControlPlaneDeps {
   ) => VerifyResult;
   /** 可选 principal JWT 校验器；请求按 principal.tenantId 隔离读取 */
   jwt?: JwtVerifier;
+  /**
+   * 网关（A2A/ACP）静态 agent 表：commands 层从适配器 AGENTS 表读出。
+   * 缺省用空表 —— 网关只在 settings.gateway.enabled 时挂路由，此字段只是 card 的 skills 数据源。
+   */
+  gatewayAgents?: readonly GatewayAgentInfo[];
 }
 
 export interface ControlPlaneSettings {
@@ -120,6 +129,18 @@ export interface ControlPlaneSettings {
   port: number;
   /** 要求 scope 令牌（默认 true；关掉 = 本机任意程序可调用） */
   requireToken?: boolean;
+  /**
+   * A2A / ACP 网关（add-a2a-acp-gateway 提案）：**默认关闭**。
+   * 未启用时 `/a2a`、`/acp` 与 `/.well-known/agent-card.json` 不挂路由（404，不暴露存在性）。
+   * 网关不另开端口：listen 红线限定在本文件，回环绑定与纵深防御对网关同样生效。
+   */
+  gateway?: {
+    enabled?: boolean;
+    /** A2A 协议表面（enabled 后默认 true） */
+    a2a?: boolean;
+    /** ACP 协议表面（enabled 后默认 true） */
+    acp?: boolean;
+  };
 }
 
 export interface ControlPlaneInstance {
@@ -230,7 +251,6 @@ export async function startControlPlane(
   /** 任务台账：控制面下发的 + 平台下发的（同一进程下都经 emitter，视图统一） */
   const records = new Map<string, TaskRecord>();
   const order: string[] = [];
-  const idempotency = new Map<string, string>();
   const tenantOf = (ctx: RouteContext): string => ctx.tenantId ?? DEFAULT_TENANT;
   const visibleRecord = (ctx: RouteContext, id: string): TaskRecord | undefined => {
     const rec = records.get(id);
@@ -278,6 +298,52 @@ export async function startControlPlane(
       updatedAt: new Date().toISOString(),
     });
   });
+
+  // ---------- A2A / ACP 网关（add-a2a-acp-gateway；默认关闭） ----------
+  // 网关是本控制面上的一个协议表面：listen 红线限定本文件，回环绑定/纵深防御天然生效。
+  // baseUrl 惰性求值：port=0 自动分配时 listen 回调里才能拿到真实端口。
+  let actualBaseUrl = `http://${settings.host}:${settings.port}`;
+  const gatewayA2aEnabled =
+    settings.gateway?.enabled === true && settings.gateway.a2a !== false;
+  const gatewayAcpEnabled =
+    settings.gateway?.enabled === true && settings.gateway.acp !== false;
+  const gateway = gatewayA2aEnabled || gatewayAcpEnabled
+    ? createGatewayHandlers({
+        store: deps.store,
+        registry: deps.registry,
+        emitter: deps.emitter,
+        version: deps.version,
+        log: deps.log,
+        baseUrl: () => actualBaseUrl,
+        agents: deps.gatewayAgents ?? [],
+        // ACP 交互响应通道：与 /v1/interactions/{id}:respond 同一条 dispatch 路径
+        respondInteraction: deps.respondInteraction,
+        // conversation 编排（add-acp-session-memory）：ACP session/prompt 的多轮续接
+        conversation: deps.conversation,
+        // 网关与 POST /v1/tasks、:cancel 共用同一条编排（createTaskCore / cancelTaskCore）：
+        // 并发上限、权限策略、幂等语义、上行出口单一真源
+        ops: {
+          createTask: (input) => {
+            const { record, replay } = createTaskCore({
+              tenantId: input.tenantId,
+              agentType: input.agentType,
+              cwd: input.cwd,
+              args: [],
+              prompt: input.prompt,
+              timeoutMs: input.timeoutMs,
+              requestedBy: input.requestedBy,
+              idempotencyKey: input.idempotencyKey,
+              idempotencyFingerprint: input.idempotencyFingerprint,
+              // 网关的幂等域独立于 HTTP（A2A messageId / ACP 会话与 HTTP Idempotency-Key 不互撞）
+              idempotencyScope: 'gateway:task:create',
+            });
+            return { taskId: record.taskId, replay };
+          },
+          // 惰性转发：cancelTaskCore 在下方才定义，闭包引用在请求期才求值
+          cancelTask: (id, tenantId) => cancelTaskCore(id, tenantId),
+        },
+      })
+    : undefined;
 
   /**
    * 鉴权：`scope` 传数组表示**任一命中即可**（如 `['session:read','task:read']`）。
@@ -427,77 +493,117 @@ export async function startControlPlane(
     json(ctx.res, 200, { agents, scannedAt: new Date().toISOString() });
   };
 
-  const handleCreateTask = (ctx: RouteContext): void => {
-    const body = (ctx.body ?? {}) as Record<string, unknown>;
-    const agentType = str(body['agentType']);
-    const cwd = str(body['cwd']);
-    if (!agentType || !cwd) {
-      problem(ctx.res, 400, 'protocol_incompatible', '缺 agentType 或 cwd');
-      return;
-    }
+  /** 任务创建核心入参（HTTP /v1/tasks 与 A2A 网关共用同一条编排） */
+  interface CreateTaskInput {
+    tenantId: string;
+    agentType: string;
+    cwd: string;
+    args: string[];
+    prompt?: string;
+    timeoutMs?: number;
+    captureDiff?: boolean;
+    permissionMode?: 'default' | 'full';
+    requestedBy?: string;
+    purpose?: string;
+    /** 幂等键（HTTP 用 Idempotency-Key；A2A 网关用 messageId） */
+    idempotencyKey?: string;
+    /** 幂等指纹（canonical JSON）；同 key 异参 → idempotency_conflict */
+    idempotencyFingerprint: unknown;
+    /** 幂等 scope（区分通道，避免两条通道的 key 互相碰撞） */
+    idempotencyScope: string;
+  }
 
-    // 幂等：同一 key 重复提交返回同一 taskId（网络重试不至于跑两遍）
-    const idemRaw = ctx.req.headers['idempotency-key'];
-    const idemHeader = Array.isArray(idemRaw) ? idemRaw[0] : idemRaw;
-    const idem = idemHeader ? `${tenantOf(ctx)}:${idemHeader}` : undefined;
-    if (idem) {
-      const known = idempotency.get(idem);
-      if (known) {
-        const rec = records.get(known);
-        if (rec) {
-          json(ctx.res, 200, { ...view(rec), idempotentReplay: true });
-          return;
-        }
-      }
-    }
-
-    const taskId = `bt_${randomBytes(6).toString('hex')}`;
-    const record: TaskRecord = {
-      taskId,
-      tenantId: tenantOf(ctx),
-      agentType,
-      cwd,
-      state: 'running',
-      requestedBy: str(body['requestedBy']),
-      purpose: str(body['purpose']),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+  /**
+   * 任务创建核心：allocate（SQLite 会话/回合）→ registry 登记 → startTask（supervisor 调度）。
+   * `POST /v1/tasks` 与 A2A `SendMessage` 都走这里 —— 并发上限、权限策略、上行出口单一真源。
+   * 返回 `replay: true` 表示同幂等键重放（未重复执行副作用）。
+   * 抛出：`SessionStoreError('idempotency_conflict')`（同 key 异参）；`startTask` 的受控拒绝（device_busy 等）。
+   */
+  const createTaskCore = (input: CreateTaskInput): { record: TaskRecord; replay: boolean } => {
+    const allocate = (): TaskRecord => {
+      const allocated: TaskRecord = {
+        taskId: `bt_${randomBytes(6).toString('hex')}`,
+        tenantId: input.tenantId,
+        agentType: input.agentType,
+        cwd: input.cwd,
+        state: 'running',
+        requestedBy: input.requestedBy,
+        purpose: input.purpose,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      deps.store.createSession({
+        sessionId: allocated.taskId,
+        tenantId: allocated.tenantId,
+        mode: 'task',
+        agentType: input.agentType,
+        cwd: input.cwd,
+        phase: 'queued',
+      });
+      deps.store.createTurn({
+        sessionId: allocated.taskId,
+        tenantId: allocated.tenantId,
+        status: 'queued',
+        execution: {
+          args: input.args,
+          prompt: input.prompt,
+          timeoutMs: input.timeoutMs,
+          captureDiff: input.captureDiff ?? deps.defaults.captureDiffByDefault,
+          permissionMode: input.permissionMode,
+          requestedBy: input.requestedBy,
+          purpose: input.purpose,
+        },
+      });
+      return allocated;
     };
+    let record: TaskRecord;
+    if (input.idempotencyKey) {
+      const saved = deps.store.runIdempotent<TaskRecord>(
+        {
+          tenantId: input.tenantId,
+          scope: input.idempotencyScope,
+          key: input.idempotencyKey,
+          fingerprint: fingerprintIdempotency(input.idempotencyFingerprint),
+        },
+        allocate,
+      );
+      record = saved.value;
+      if (saved.replay) return { record, replay: true };
+    } else {
+      record = allocate();
+    }
+    const taskId = record.taskId;
     remember(record);
     deps.registry.register(taskId, {
-      agentType,
-      cwd,
+      agentType: input.agentType,
+      cwd: input.cwd,
       source: 'control-plane',
-      tenantId: ctx.tenantId ?? DEFAULT_TENANT,
+      tenantId: input.tenantId,
     });
-    if (idem) {
-      idempotency.set(idem, taskId);
-      if (idempotency.size > MAX_IDEMPOTENCY_KEYS) {
-        const oldest = idempotency.keys().next().value;
-        if (oldest !== undefined) idempotency.delete(oldest);
-      }
-    }
 
-    const captureDiff = body['captureDiff'] === true || deps.defaults.captureDiffByDefault;
     const handle = deps.startTask(
       {
         taskId,
-        agentType,
-        cwd,
-        args: Array.isArray(body['args']) ? body['args'].filter((a): a is string => typeof a === 'string') : [],
-        prompt: str(body['prompt']),
-        timeoutMs: typeof body['timeoutMs'] === 'number' ? body['timeoutMs'] : undefined,
+        agentType: input.agentType,
+        cwd: input.cwd,
+        args: input.args,
+        prompt: input.prompt,
+        timeoutMs: input.timeoutMs,
         allowedCwd: deps.defaults.allowedCwd,
         maxConcurrent: deps.defaults.maxConcurrent,
         maxQueued: deps.defaults.maxQueued,
-        captureDiff,
+        captureDiff: input.captureDiff ?? deps.defaults.captureDiffByDefault,
         diffMaxBytes: deps.defaults.diffMaxBytes,
         // 权限：平台/本地调用方可以请求，但本机策略同样适用（受管参数模式不会被本地通道绕过）
-        permissionMode: body['permissionMode'] === 'full' ? 'full' : body['permissionMode'] === 'default' ? 'default' : undefined,
+        permissionMode: input.permissionMode,
         permissionPolicy: deps.defaults.permissionPolicy,
         externalSandbox: deps.defaults.externalSandbox,
       },
       {
+        onBeforeLaunch: () => {
+          const turn = deps.store.getActiveTurn(taskId, input.tenantId);
+          return turn ? deps.store.claimTurnForLaunch(taskId, turn.turnId, input.tenantId) : false;
+        },
         onLog: (_stream, data) =>
           deps.emitter.emit({ type: 'task_log', taskId, stream: _stream, data, isAnsi: hasAnsi(data) }),
         // 步骤流（B 批次）：控制面任务与平台任务同口径上行
@@ -509,7 +615,63 @@ export async function startControlPlane(
           deps.registry.updatePlan(taskId, items);
         },
         onStatus: (status: TaskStatus, info?: TaskFinishInfo) => {
-          deps.registry.updateStatus(taskId, status, info);
+          try {
+            // 最终回答先落 canonical task_message，再落终态（与 WS dispatch 同口径：
+            // 平台/网关按 eventSeq 可完整重建；HTTP 与网关通道此前缺这段导致 history 为空）
+            if (status !== 'running' && info?.result?.trim()) {
+              const at = new Date().toISOString();
+              const messageId = `msg_${taskId}_final`;
+              const messageEvent = deps.store.appendEvent({
+                sessionId: taskId,
+                tenantId: input.tenantId,
+                type: 'task_message',
+                payload: {
+                  messageId,
+                  role: 'agent',
+                  state: 'complete',
+                  text: info.result,
+                  at,
+                },
+              });
+              deps.emitter.emit({
+                type: 'task_message',
+                taskId,
+                messageId,
+                role: 'agent',
+                state: 'complete',
+                text: info.result,
+                eventSeq: messageEvent.eventSeq,
+                at,
+              });
+            }
+            const turn = deps.store.getActiveTurn(taskId, input.tenantId);
+            const phase = status === 'running' ? info?.phase ?? 'running' : 'settled';
+            deps.store.updateSession(taskId, { phase }, input.tenantId);
+            if (turn) {
+              deps.store.updateTurn(taskId, turn.turnId, {
+                status: status === 'running' && phase === 'queued' ? 'queued' : status,
+                startedAt: status === 'running' && phase !== 'queued' ? new Date().toISOString() : turn.startedAt,
+                finishedAt: status === 'running' ? turn.finishedAt : new Date().toISOString(),
+              }, input.tenantId);
+            }
+            deps.store.appendEvent({
+              sessionId: taskId,
+              tenantId: input.tenantId,
+              type: 'task_status',
+              payload: {
+                status,
+                phase,
+                exitCode: info?.exitCode,
+                error: info?.error,
+                errorCode: info?.errorCode,
+                permissionMode: info?.permissionMode,
+              },
+            });
+            if (status !== 'running') deps.store.closeSession(taskId, status, info?.error, input.tenantId);
+          } catch (error) {
+            deps.log('error', `[control-plane] 持久化任务状态失败 ${taskId}：${(error as Error).message}`);
+          }
+            deps.registry.updateStatus(taskId, status, info);
           const prev = records.get(taskId) ?? record;
           remember({
             ...prev,
@@ -521,7 +683,6 @@ export async function startControlPlane(
             errorCode: info?.errorCode,
             diff: info?.diff,
             changedFiles: info?.changedFiles,
-            diffTruncated: info?.diffTruncated,
             updatedAt: new Date().toISOString(),
           });
           // 控制面下发的任务同样经 Emitter 上行：平台侧视图不出现"半边失踪"
@@ -549,8 +710,52 @@ export async function startControlPlane(
     void handle.done.then(() => undefined);
     // 以**最新**台账为准：startTask 可能同步就把终态回调了（此时 record 还是 running）
     remember({ ...(records.get(taskId) ?? record), handle });
+    return { record: records.get(taskId) ?? record, replay: false };
+  };
 
-    json(ctx.res, 201, { ...view(records.get(taskId) ?? record), events: `/v1/tasks/${taskId}/events` });
+  const handleCreateTask = (ctx: RouteContext): void => {
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const agentType = str(body['agentType']);
+    const cwd = str(body['cwd']);
+    if (!agentType || !cwd) {
+      problem(ctx.res, 400, 'protocol_incompatible', '缺 agentType 或 cwd');
+      return;
+    }
+
+    // SQLite 是唯一权威：同 key 同 body 重放原 taskId，异参冲突；进程重启/记录数量均不失效。
+    const idemRaw = ctx.req.headers['idempotency-key'];
+    const idemHeader = Array.isArray(idemRaw) ? idemRaw[0] : idemRaw;
+    try {
+      const { record, replay } = createTaskCore({
+        tenantId: tenantOf(ctx),
+        agentType,
+        cwd,
+        args: Array.isArray(body['args']) ? body['args'].filter((a): a is string => typeof a === 'string') : [],
+        prompt: str(body['prompt']),
+        timeoutMs: typeof body['timeoutMs'] === 'number' ? body['timeoutMs'] : undefined,
+        captureDiff: body['captureDiff'] === true || deps.defaults.captureDiffByDefault,
+        permissionMode: body['permissionMode'] === 'full' ? 'full' : body['permissionMode'] === 'default' ? 'default' : undefined,
+        requestedBy: str(body['requestedBy']),
+        purpose: str(body['purpose']),
+        idempotencyKey: idemHeader ?? undefined,
+        idempotencyFingerprint: body,
+        idempotencyScope: 'http:task:create',
+      });
+      if (replay) {
+        const persisted = deps.store.getSession(record.taskId, record.tenantId);
+        const current = records.get(record.taskId) ??
+          (persisted ? { ...record, state: persisted.status, updatedAt: persisted.updatedAt } : record);
+        json(ctx.res, 200, { ...view(current), idempotentReplay: true });
+        return;
+      }
+      json(ctx.res, 201, { ...view(records.get(record.taskId) ?? record), events: `/v1/tasks/${record.taskId}/events` });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'idempotency_conflict') {
+        problem(ctx.res, 409, 'idempotency_conflict', '同一 Idempotency-Key 的请求内容不同');
+        return;
+      }
+      throw error;
+    }
   };
 
   const handleListTasks = (ctx: RouteContext): void => {
@@ -705,6 +910,24 @@ export async function startControlPlane(
     ctx.res.end(readFileSync(abs));
   };
 
+  /**
+   * 取消核心：HTTP `:cancel` 与 A2A `CancelTask` 共用。
+   * - `not_found`：跨租户/不存在/本进程未跟踪（对网关统一按 -32001 处理）
+   * - `terminal`：已终态（HTTP 幂等 200；A2A 按规范回 TaskNotCancelableError）
+   * - `not_owned`：不是本地通道（控制面/网关）下发的，无权替平台做决定
+   * - `cancelled`：已向 supervisor 发取消（SIGTERM → 2s → SIGKILL），终态经 Emitter 回传
+   */
+  const cancelTaskCore = (id: string, tenantId: string): 'not_found' | 'terminal' | 'not_owned' | 'cancelled' => {
+    const rec = records.get(id);
+    if (!rec || (rec.tenantId ?? DEFAULT_TENANT) !== tenantId) return 'not_found';
+    if (rec.state === 'success' || rec.state === 'failed' || rec.state === 'cancelled' || rec.state === 'timeout') {
+      return 'terminal';
+    }
+    if (!rec.handle) return 'not_owned';
+    rec.handle.cancel();
+    return 'cancelled';
+  };
+
   const handleCancel = (ctx: RouteContext, id: string): void => {
     const rec = visibleRecord(ctx, id);
     if (!rec) {
@@ -722,7 +945,7 @@ export async function startControlPlane(
       return;
     }
     // 真正的取消走 supervisor（SIGTERM → 2s → SIGKILL）；终态由它经 Emitter 回传，不在这里代发
-    rec.handle.cancel();
+    cancelTaskCore(id, tenantOf(ctx));
     json(ctx.res, 200, view(rec));
   };
 
@@ -776,6 +999,7 @@ export async function startControlPlane(
     if (!authorize(ctx, SESSION_READ)) return;
     const STATES: InteractionState[] = [
       'pending',
+      'submitting',
       'accepted',
       'declined',
       'cancelled',
@@ -816,7 +1040,7 @@ export async function startControlPlane(
    * （form / auth-url）；随后 dispatch 内部再按同一规则复核一次 —— 两条通道共用一套判定，
    * 不能因为“从 HTTP 来的”就放宽。
    */
-  const handleInteractionRespond = (ctx: RouteContext, requestId: string): void => {
+  const handleInteractionRespond = async (ctx: RouteContext, requestId: string): Promise<void> => {
     const rec = deps.store.findInteractionByRequestId(requestId, ctx.tenantId);
     if (!rec) {
       problem(ctx.res, 404, 'internal', `未找到交互：${requestId}`);
@@ -848,11 +1072,12 @@ export async function startControlPlane(
     const raw = Array.isArray(header) ? header[0] : header;
     const token = raw?.startsWith('Bearer ') ? raw.slice(7).trim() : undefined;
 
-    const outcome = respond({
+    const outcome = await respond({
       type: 'task_interaction_response',
       taskId: rec.sessionId,
       requestId,
       responseId,
+      tenantId: rec.tenantId,
       state,
       ...(payload ? { payload } : {}),
       ...(token ? { serviceToken: token } : {}),
@@ -866,8 +1091,10 @@ export async function startControlPlane(
           ? { status: 404, code: 'internal' as BridgeErrorCode }
           : reason === 'interaction_already_resolved'
             ? { status: 409, code: 'protocol_incompatible' as BridgeErrorCode }
-            : reason === 'interaction_expired'
-              ? { status: 410, code: 'timeout' as BridgeErrorCode }
+          : reason === 'interaction_expired'
+            ? { status: 410, code: 'timeout' as BridgeErrorCode }
+            : reason === 'interaction_delivery_unknown'
+              ? { status: 500, code: 'interaction_delivery_unknown' as BridgeErrorCode }
               : reason === 'insufficient_scope' ||
                   reason === 'unauthorized' ||
                   reason === 'invalid_token' ||
@@ -1127,6 +1354,24 @@ export async function startControlPlane(
         }
 
         if (path === '/v1/health') return handleHealth(ctx);
+
+        // A2A / ACP 网关（默认关闭）：未启用时这些路径落到底部 404 —— 不暴露存在性。
+        // agent card 免鉴权（静态描述，无任务数据，与面板页壳同口径）；/a2a、/acp 逐方法鉴权。
+        if (gateway) {
+          if (path === '/.well-known/agent-card.json' && gatewayA2aEnabled) {
+            gateway.agentCard(ctx);
+            return;
+          }
+          if (path === '/a2a' && req.method === 'POST' && gatewayA2aEnabled) {
+            gateway.a2a(ctx, (scope) => authorize(ctx, scope));
+            return;
+          }
+          if (path === '/acp' && req.method === 'POST' && gatewayAcpEnabled) {
+            gateway.acp(ctx, (scope) => authorize(ctx, scope));
+            return;
+          }
+        }
+
         if (path === '/v1/whoami' && req.method === 'GET') {
           if (!authorize(ctx, 'device:read')) return;
           json(res, 200, {
@@ -1174,7 +1419,7 @@ export async function startControlPlane(
         }
         const interactionRespondMatch = /^\/v1\/interactions\/([^/:]+):respond$/.exec(path);
         if (interactionRespondMatch && req.method === 'POST') {
-          return handleInteractionRespond(ctx, decodeURIComponent(interactionRespondMatch[1] ?? ''));
+          return await handleInteractionRespond(ctx, decodeURIComponent(interactionRespondMatch[1] ?? ''));
         }
         const interactionMatch = /^\/v1\/interactions\/([^/:]+)$/.exec(path);
         if (interactionMatch && req.method === 'GET') {
@@ -1274,7 +1519,15 @@ export async function startControlPlane(
     server.listen(settings.port, settings.host, () => {
       const addr = server.address();
       const port = typeof addr === 'object' && addr ? addr.port : settings.port;
+      actualBaseUrl = `http://${settings.host}:${port}`;
       deps.log('info', `[control-plane] 回环控制面已启动 http://${settings.host}:${port}`);
+      if (gateway) {
+        const surfaces = [
+          ...(gatewayA2aEnabled ? ['POST /a2a（agent card 见 /.well-known/agent-card.json）'] : []),
+          ...(gatewayAcpEnabled ? ['POST /acp（ACP v1 over HTTP）'] : []),
+        ];
+        if (surfaces.length) deps.log('info', `[control-plane] 网关已启用：${surfaces.join('，')} @ ${actualBaseUrl}`);
+      }
       resolve({
         port,
         url: `http://${settings.host}:${port}`,
