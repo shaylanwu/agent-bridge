@@ -14,6 +14,22 @@
  * 解析器是纯函数状态机：feed() 内部维持行缓冲，只处理完整行；非 JSON 行快速跳过。
  */
 
+/**
+ * 富 toolCall（4.8）：工具调用的规范化子集 —— kind 用 ACP 的
+ * read/edit/delete/move/search/execute/think/fetch/switch_mode/other；
+ * content 是有界 text/diff/terminal 块（单块 16KB，由生成处截断、上行出口脱敏）；
+ * rawInput/rawOutput 默认不上行 —— 只有 locations 的路径与 content 的输出摘要。
+ */
+export interface ParsedToolCall {
+  toolCallId?: string;
+  name: string;
+  kind?: 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'switch_mode' | 'other';
+  title?: string;
+  status?: string;
+  locations?: Array<{ path?: string; line?: number }>;
+  content?: Array<{ kind: 'text' | 'diff' | 'terminal'; text: string }>;
+}
+
 export interface ParsedStep {
   /** 动作名：Bash / Edit / Read / command_execution / file_change…（依工具而定） */
   action: string;
@@ -24,13 +40,24 @@ export interface ParsedStep {
   ok?: boolean;
   /** 源事件关联 id（started/finished 配对） */
   ref?: string;
+  /** 富 toolCall（4.8）：无法可靠提取的适配器省略，只保留 legacy 字段 */
+  toolCall?: ParsedToolCall;
 }
+
+/** 中间 agent 消息（4.7）：messageId 优先用 CLI 原生 ID，缺省由调用方生成稳定 ID */
+export interface ParsedAgentMessage {
+  messageId?: string;
+  text: string;
+}
+
+/** 单个 content 块的字符上限（design「有界 text/diff/terminal」；超限截断，不扫描全文） */
+const TOOL_CONTENT_MAX = 16_384;
 
 export type StepFormat =
   | 'claude-json'
   | 'codex-json'
   | 'opencode-json'
-  | 'gemini-json'
+  | 'agy-json'
   | 'kimi-json'
   | 'dsh-json'
   | 'mcode-json';
@@ -63,6 +90,18 @@ export interface StepParser {
   feed(chunk: string): ParsedStep[];
   /** 终态时的最终回答文本（从各自 result/final 事件提取；没有则 undefined） */
   finalText?(): string | undefined;
+  /**
+   * 中间 agent 消息（4.7）：headless 结构化输出里已定稿的 assistant 文本
+   *（此前只埋在 task_log）。drain 语义 —— 取走即清空，重复调用不重复给。
+   * 只有能可靠区分 assistant 文本的格式实现（claude-json 已实测）；未实测格式不猜。
+   */
+  drainMessages?(): ParsedAgentMessage[];
+  /**
+   * 终态语义裁决（可选；agy 引入）：有些 CLI 退出码 0 也可能是「优雅的部分完成」
+   * （agy 官方文档：--print-timeout 到期以 0 结束），只有流内 status 才是真相。
+   * ok:false 时 supervisor 推翻「退出码 0 = 成功」按失败结算。
+   */
+  finalOutcome?(): { ok: boolean; error?: string; result?: string } | undefined;
   /** 最近一次 TodoWrite 类工具调用给出的待办计划快照（无计划能力/未调用则 undefined） */
   plan?(): PlanItem[] | undefined;
 }
@@ -95,20 +134,103 @@ function forEachJsonLine(buffer: { rest: string }, chunk: string, onLine: (obj: 
 
 // ---------- claude / codebuddy：stream-json ----------
 
+/** claude 工具名 → ACP kind（4.8 富 toolCall；未列出的工具归 other，不猜） */
+const CLAUDE_TOOL_KINDS: Record<string, NonNullable<ParsedToolCall['kind']>> = {
+  Read: 'read',
+  Edit: 'edit',
+  Write: 'edit',
+  NotebookEdit: 'edit',
+  MultiEdit: 'edit',
+  Delete: 'delete',
+  Move: 'move',
+  Glob: 'search',
+  Grep: 'search',
+  Bash: 'execute',
+  Think: 'think',
+  WebFetch: 'fetch',
+  WebSearch: 'fetch',
+};
+
+/** tool_use.input 里的路径字段 → locations 包装（file_path 优先，与 labelOfInput 同源字段；无命中给空对象） */
+function locationsOfInput(input: unknown): { locations?: Array<{ path?: string }> } {
+  if (!input || typeof input !== 'object') return {};
+  const o = input as Record<string, unknown>;
+  for (const k of ['file_path', 'path', 'notebook_path'] as const) {
+    const v = o[k];
+    if (typeof v === 'string' && v) return { locations: [{ path: v }] };
+  }
+  return {};
+}
+
+/**
+ * claude 系 tool_use → 富 toolCall（supervisor 的常驻 stream 通道复用同一映射；
+ * headless 解析器内部直接内联同款构造）。
+ */
+export function claudeToolCallOf(
+  name: string,
+  id: unknown,
+  input: unknown,
+): { toolCallId?: string; name: string; kind: NonNullable<ParsedToolCall['kind']>; status: string } & {
+  locations?: Array<{ path?: string }>;
+} {
+  return {
+    ...(typeof id === 'string' && id ? { toolCallId: id } : {}),
+    name,
+    kind: CLAUDE_TOOL_KINDS[name] ?? 'other',
+    status: 'pending',
+    ...locationsOfInput(input),
+  };
+}
+
+/** tool_result.content → 有界块（Bash 类输出映射 terminal；其余 text）。字符串/块数组都收。 */
+function toolResultContent(raw: unknown): Array<{ kind: 'text' | 'terminal'; text: string }> | undefined {
+  const pieces: string[] = [];
+  if (typeof raw === 'string') pieces.push(raw);
+  else if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === 'string') pieces.push(item);
+      else if (item && typeof item === 'object' && typeof (item as Record<string, unknown>)['text'] === 'string') {
+        pieces.push((item as Record<string, unknown>)['text'] as string);
+      }
+    }
+  }
+  const text = pieces.join('\n');
+  if (!text) return undefined;
+  return [{ kind: 'terminal', text: text.length > TOOL_CONTENT_MAX ? `${text.slice(0, TOOL_CONTENT_MAX - 1)}…` : text }];
+}
+
 function createClaudeParser(): StepParser {
   const buffer = { rest: '' };
   // 最终回答：result 事件的 result 字段优先；兜底最后一条 assistant text 块
   let lastText: string | undefined;
   // 待办计划：TodoWrite 的 input.todos 快照（每次调用覆盖）
   let plan: PlanItem[] | undefined;
+  let outcome: { ok: boolean; error?: string; result?: string } | undefined;
+  // 中间 agent 消息（4.7）：按 assistant 消息聚合 text 块，drain 即清空
+  const pendingMessages: ParsedAgentMessage[] = [];
   return {
     feed(chunk) {
       const out: ParsedStep[] = [];
       forEachJsonLine(buffer, chunk, (o) => {
-        const content = (o['message'] as Record<string, unknown> | undefined)?.['content'];
-        if (o['type'] === 'result' && typeof o['result'] === 'string') lastText = o['result'] as string;
+        const message = o['message'] as Record<string, unknown> | undefined;
+        const content = message?.['content'];
+        if (o['type'] === 'result') {
+          const resultText = typeof o['result'] === 'string' ? (o['result'] as string) : undefined;
+          if (resultText !== undefined) lastText = resultText;
+          const subtype = typeof o['subtype'] === 'string' ? (o['subtype'] as string) : undefined;
+          const failed = o['is_error'] === true || (subtype !== undefined && subtype !== 'success');
+          const detail =
+            (typeof o['error'] === 'string' && (o['error'] as string)) || resultText || subtype || '未知终态错误';
+          outcome = {
+            ok: !failed,
+            ...(failed ? { error: `CLI result${subtype ? ` ${subtype}` : ''}：${detail}` } : {}),
+            ...(resultText ? { result: resultText } : {}),
+          };
+        }
         if (!Array.isArray(content)) return;
         if (o['type'] === 'assistant') {
+          const nativeId = typeof message?.['id'] === 'string' ? (message?.['id'] as string) : undefined;
+          let textParts: string[] = [];
           for (const b of content) {
             if (b?.type === 'tool_use' && typeof b.name === 'string') {
               plan = planOfInput(b.name, b.input) ?? plan;
@@ -117,19 +239,44 @@ function createClaudeParser(): StepParser {
                 label: labelOfInput(b.input),
                 state: 'started',
                 ref: typeof b.id === 'string' ? b.id : undefined,
+                toolCall: {
+                  ...(typeof b.id === 'string' ? { toolCallId: b.id } : {}),
+                  name: b.name,
+                  kind: CLAUDE_TOOL_KINDS[b.name] ?? 'other',
+                  ...(typeof b.title === 'string' ? { title: b.title } : {}),
+                  status: 'pending',
+                  ...locationsOfInput(b.input),
+                  // rawInput 不上行：只有上面的 locations 路径与 label 摘要
+                },
               });
             } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
               lastText = b.text;
+              textParts.push(b.text as string);
             }
+          }
+          // 同一条 assistant 消息的多个 text 块聚合为一条中间消息（CLI 原生 id 作幂等键）
+          if (textParts.length > 0) {
+            pendingMessages.push({
+              ...(nativeId ? { messageId: nativeId } : {}),
+              text: textParts.join('\n\n'),
+            });
           }
         } else if (o['type'] === 'user') {
           for (const b of content) {
             if (b?.type === 'tool_result') {
+              const ref = typeof b['tool_use_id'] === 'string' ? (b['tool_use_id'] as string) : undefined;
+              const resultContent = toolResultContent(b['content']);
               out.push({
                 action: 'tool_result',
                 state: 'finished',
                 ok: b['is_error'] !== true,
-                ref: typeof b['tool_use_id'] === 'string' ? (b['tool_use_id'] as string) : undefined,
+                ref,
+                toolCall: {
+                  ...(ref ? { toolCallId: ref } : {}),
+                  name: 'tool_result',
+                  status: b['is_error'] === true ? 'failed' : 'completed',
+                  ...(resultContent ? { content: resultContent } : {}),
+                },
               });
             }
           }
@@ -138,6 +285,8 @@ function createClaudeParser(): StepParser {
       return out;
     },
     finalText: () => lastText,
+    drainMessages: () => pendingMessages.splice(0),
+    finalOutcome: () => outcome,
     plan: () => plan,
   };
 }
@@ -241,45 +390,73 @@ function createOpencodeParser(): StepParser {
   };
 }
 
-// ---------- gemini：stream-json ----------
-// 官方文档口径（本机缺凭据未实测事件流）：init / message / tool_use / tool_result / result。
-// 字段名两种写法并存（name+args 与 tool_name+parameters），解析器兼容两者。
+// ---------- agy（Antigravity CLI）：-p --output-format stream-json ----------
+// 官方 headless 文档 + 1.4.10 本机实测信封一致：{"event":"init"|"step_update"|"result",…同名负载}。
+// tool 步骤两态（ACTIVE/DONE）按 step_index 配对；result.status 枚举里只有 SUCCESS 算完成 ——
+// 退出码 0 也可能是 --print-timeout 的优雅部分完成，finalOutcome 负责推翻假成功。
+// init 的 conversation_id 在信封顶层，supervisor 既有 onSession 正则直接命中，无需新机制。
 
-function createGeminiParser(): StepParser {
+/** agy 参数对象的摘要键（`CommandLine` 是 agy 特有大小写，通用 labelOfInput 不含） */
+function agyLabelOfParameters(parameters: unknown): string | undefined {
+  if (!parameters || typeof parameters !== 'object') return labelOfInput(parameters);
+  const o = parameters as Record<string, unknown>;
+  const cl = o['CommandLine'];
+  if (typeof cl === 'string' && cl.trim()) return cl;
+  return labelOfInput(parameters);
+}
+
+function createAgyParser(): StepParser {
   const buffer = { rest: '' };
-  // 最终回答：最后一条 assistant message 的 content
-  let lastText: string | undefined;
-  let plan: PlanItem[] | undefined;
+  // 最终回答：result.response 优先；agent_response 的 text_delta 增量拼接兜底
+  let deltaText: string | undefined;
+  let finalResponse: string | undefined;
+  // 终态裁决：见过 result 事件才有发言权（没见过 = 该流没有 status 语义，不推翻退出码）
+  let outcome: { ok: boolean; error?: string; result?: string } | undefined;
   return {
     feed(chunk) {
       const out: ParsedStep[] = [];
       forEachJsonLine(buffer, chunk, (o) => {
-        const type = o['type'];
-        if (type === 'tool_use') {
-          const action = (o['tool_name'] ?? o['name']) as string | undefined;
-          if (typeof action !== 'string') return;
-          plan = planOfInput(action, o['parameters'] ?? o['args'] ?? o['input']) ?? plan;
+        const event = o['event'];
+        if (event === 'step_update') {
+          const p = o['step_update'] as Record<string, unknown> | undefined;
+          if (!p || p['step_type'] !== 'tool') {
+            if (p?.['step_type'] === 'agent_response' && typeof p['text_delta'] === 'string') {
+              deltaText = (deltaText ?? '') + (p['text_delta'] as string);
+            }
+            return;
+          }
+          const state = p['state'];
+          if (state !== 'ACTIVE' && state !== 'DONE') return;
+          const done = state === 'DONE';
+          // ACTIVE 就带 parameters（官方实样）：started 步骤立即显示命令行，不必等 DONE
+          const toolInfo = p['tool_info'] as Record<string, unknown> | undefined;
           out.push({
-            action,
-            label: labelOfInput(o['parameters'] ?? o['args'] ?? o['input']),
-            state: 'started',
-            ref: (o['tool_id'] ?? o['id']) as string | undefined,
+            action: typeof p['tool_name'] === 'string' ? (p['tool_name'] as string) : 'tool',
+            label: agyLabelOfParameters(toolInfo?.['parameters']),
+            state: done ? 'finished' : 'started',
+            ...(done ? { ok: toolInfo?.['error'] == null } : {}),
+            ref: p['step_index'] === undefined ? undefined : String(p['step_index']),
           });
-        } else if (type === 'tool_result') {
-          out.push({
-            action: 'tool_result',
-            state: 'finished',
-            ok: o['status'] !== 'error',
-            ref: (o['tool_id'] ?? o['id']) as string | undefined,
-          });
-        } else if (type === 'message' && o['role'] === 'assistant' && typeof o['content'] === 'string') {
-          lastText = o['content'] as string;
+        } else if (event === 'result') {
+          const r = o['result'] as Record<string, unknown> | undefined;
+          if (!r) return;
+          const response = typeof r['response'] === 'string' ? (r['response'] as string) : undefined;
+          if (response && response.trim()) finalResponse = response;
+          const status = String(r['status'] ?? '');
+          const errMsg = typeof r['error'] === 'string' && r['error'] ? (r['error'] as string) : undefined;
+          outcome = {
+            ok: status === 'SUCCESS',
+            ...(status !== 'SUCCESS'
+              ? { error: `Antigravity CLI status=${status || 'unknown'}${errMsg ? `：${errMsg}` : ''}` }
+              : {}),
+            ...(finalResponse ? { result: finalResponse } : {}),
+          };
         }
       });
       return out;
     },
-    finalText: () => lastText,
-    plan: () => plan,
+    finalText: () => finalResponse ?? deltaText,
+    finalOutcome: () => outcome,
   };
 }
 
@@ -349,11 +526,21 @@ function createDshParser(): StepParser {
   // 最终回答：final 事件的 text
   let lastText: string | undefined;
   let plan: PlanItem[] | undefined;
+  let outcome: { ok: boolean; error?: string; result?: string } | undefined;
   return {
     feed(chunk) {
       const out: ParsedStep[] = [];
       forEachJsonLine(buffer, chunk, (o) => {
         const type = o['type'];
+        if (type === 'status' && o['phase'] === 'turn_end') {
+          const reason = o['reason'] as Record<string, unknown> | undefined;
+          if (reason?.['kind'] === 'error') {
+            const error = reason['error'] as Record<string, unknown> | undefined;
+            const code = typeof error?.['code'] === 'string' ? `${error['code']}: ` : '';
+            const message = typeof error?.['message'] === 'string' ? error['message'] : 'DSH 回合失败';
+            outcome = { ok: false, error: `DSH ${code}${message}` };
+          }
+        }
         if (type === 'final' && typeof o['text'] === 'string') lastText = o['text'] as string;
         if (type === 'tool_call') {
           const action = (o['name'] ?? o['tool']) as string | undefined;
@@ -377,6 +564,7 @@ function createDshParser(): StepParser {
       return out;
     },
     finalText: () => lastText,
+    finalOutcome: () => outcome,
     plan: () => plan,
   };
 }
@@ -406,8 +594,13 @@ function createMcodeParser(): StepParser {
         if (type !== 'item.started' && type !== 'item.completed') return;
         const item = o['item'] as Record<string, unknown> | undefined;
         if (!item) return;
-        if (type === 'item.completed' && item['type'] === 'agent_message' && typeof item['content'] === 'string') {
-          lastText ??= item['content'] as string;
+        if (
+          type === 'item.completed' &&
+          item['type'] === 'agent_message' &&
+          typeof item['content'] === 'string' &&
+          (item['content'] as string).trim()
+        ) {
+          lastText = item['content'] as string;
         }
         if (item['type'] !== 'tool_call') return;
         const call = item['toolCall'] as Record<string, unknown> | undefined;
@@ -433,7 +626,7 @@ function createMcodeParser(): StepParser {
 export function createStepParser(format: StepFormat): StepParser {
   if (format === 'claude-json') return createClaudeParser();
   if (format === 'codex-json') return createCodexParser();
-  if (format === 'gemini-json') return createGeminiParser();
+  if (format === 'agy-json') return createAgyParser();
   if (format === 'kimi-json') return createKimiParser();
   if (format === 'dsh-json') return createDshParser();
   if (format === 'mcode-json') return createMcodeParser();

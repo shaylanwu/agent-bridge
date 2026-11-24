@@ -7,7 +7,7 @@
  *  - 凭据只判「环境变量 / 凭据文件是否存在」，读到即停，内容不落内存更不上传
  */
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -19,6 +19,7 @@ import type {
   ExecutionModeCapability,
   FeedKind,
   InteractionKind,
+  PermissionMode,
 } from '../protocol.js';
 import { fullModeAdmitted } from '../core/permission-policy.js';
 import { logoDataUri } from './agent-logos.js';
@@ -34,6 +35,14 @@ export interface AgentDef {
   altBins?: string[];
   /** 免安装：走 npx 拉起（当前只有 dsh） */
   npxSpec?: string;
+  /**
+   * 该工具跑 taskArgs 所需的最低版本。
+   *
+   * 用途是**如实反映**：装了但版本不够时，`agent_list` 报 `installedButBroken`
+   * 而不是「就绪」，免得平台派任务下来才在 stderr 里看到 `unknown option`。
+   * 只在这一条上生效，不改 taskArgs（否则会为了兼容旧版砍掉新版能力）。
+   */
+  minVersion?: string;
   capability: AgentCapability;
   /** 非交互任务参数模板，`{{prompt}}` 由 runner 替换 */
   taskArgs: string[];
@@ -43,12 +52,21 @@ export interface AgentDef {
    * 只有 bridge 采样这套 argv，平台不能传自定义 args（受管参数模式）。
    */
   fullArgs?: string[];
+  /**
+   * full 模式的完整 argv 模板；仅在「简单追加 fullArgs」会破坏参数语义时声明。
+   * 例如 agy 的 -p 必须紧跟 prompt 且 prompt 压尾，权限旗标只能放在 -p 之前。
+   */
+  fullTaskArgs?: string[];
   /** 步骤流格式：有值 = 该工具支持 task_step（taskArgs 必须产出对应 JSONL 事件流） */
   steps?: StepFormat;
   /** 原生 resume 参数模板（含 {{sessionId}}）；仅对 help 已确认的工具声明 */
   resumeArgs?: string[];
   /** 原生 ACP 启动方式；未声明表示该 CLI 没有已验证的 ACP 入口 */
   acp?: AcpAgentSpec;
+  /** 有此版本才声明 ACP；probeAgent 用真实版本门控，旧版只保留 headless。 */
+  acpMinVersion?: string;
+  /** 该 CLI 的后台进程需要显式外部代理；不写死端口，由 infra/proxy-env 解析。 */
+  preferSystemProxy?: boolean;
   /**
    * 该工具的 ACP 会话到底会不会发交互请求（缺省 `['permission','form']`）。
    *
@@ -56,11 +74,23 @@ export interface AgentDef {
    * **从不发 `session/request_permission`**。给它照拄声明 permission，平台就会一直等一个永远不会来的确认。
    */
   acpInteractionKinds?: InteractionKind[];
+  /**
+   * headless 未登录挂死守卫（1.0 起有）：stderr 命中任一模式 = 凭据缺失/失效，
+   * supervisor 立即 kill 并按 `tool_no_credentials` 失败结算。
+   *
+   * 实测依据（agy 1.4.10）：未登录时 stderr 立即打认证提示，60s 后吐 `status:"ERROR"` 结果
+   * 但**进程不退出** —— 不守卫就是干等到总超时。逐工具声明，不需要的工具不声明。
+   */
+  authGuard?: { patterns: RegExp[]; hint: string };
   credential: {
     /** 平台可代管 Key 的注入变量（有值才允许"绑定 Key"） */
     envKey?: string;
     envs: string[];
     files: string[];
+    /** Windows 凭据管理器中的固定 target；只探测存在性，不读取秘密。 */
+    windowsTargets?: string[];
+    /** 官方只读登录状态命令；使用当前适配器 bin，只认退出码，不保留输出。 */
+    statusCommand?: { args: string[]; timeoutMs?: number };
     loginCommand?: string;
   };
 }
@@ -136,6 +166,9 @@ export const AGENTS: AgentDef[] = [
     display: 'DeepSeek Harness',
     bin: 'dsh',
     npxSpec: '@deepseek-ai/dsh',
+    // 官方文档：headless 加 --json 出 NDJSON 事件流（tool_call/tool_result 按 callId 配对）；
+    // 需 dsh ≥ 0.2.x（0.1.5 实测 --json 是 unknown option，不带 --json 只能出纯文本、没有步骤流）
+    minVersion: '0.2.0',
     capability: 'non_interactive',
     // 官方文档：headless 加 --json 出 NDJSON 事件流（tool_call/tool_result 按 callId 配对）；
     // 需 dsh ≥ 0.2.x（0.1.5 实测 --json 是 unknown option）
@@ -159,21 +192,43 @@ export const AGENTS: AgentDef[] = [
     },
   },
   {
-    kind: 'gemini',
-    display: 'Gemini CLI',
-    bin: 'gemini',
-    capability: 'interactive_only',
-    // 步骤流：官方文档确认 stream-json（init/message/tool_use/tool_result/result）
-    taskArgs: ['-p', '{{prompt}}', '--output-format', 'stream-json'],
-    // full：--yolo（沙箱是另一维度，不在此声明）
-    fullArgs: ['--yolo'],
-    steps: 'gemini-json',
-    acp: { command: 'gemini', args: ['--acp'] },
+    // Google 官方继任者：Gemini CLI 2026-06-18 停服个人/Pro/Ultra 账号，官方指明迁移到 Antigravity。
+    // 2026-11-14 本机实测 agy 1.4.10（详见 openspec/changes/archive/2026-11-14-switch-gemini-to-antigravity-cli/design.md）：
+    //   - 1.4.10 无 `acp`；1.5.9 ACP 已于 2026-11-16 通过真实首轮/续接验收。
+    //     WorkBuddy 进程代理可能与 Windows 系统代理不同 ⇒ 显式 external proxy 优先、系统自动探测兜底。
+    //   - `-p` 吞值：prompt 必须紧跟其后且置于 argv 末尾，中间插旗标会被当 prompt 吞掉（实测 exit 2 报错）
+    //   - 未登录：stderr 立即打 `Authentication required…` / `Waiting for authentication (timeout 60s)…`，
+    //     60s 后吐 `status:"ERROR"` 结果但进程不退出 ⇒ authGuard 必须 kill（实测 timeout 124 实锤挂死）
+    //   - 登录令牌存 OS keyring；Windows 以固定 target=gemini:antigravity 探测存在性，不读取秘密。
+    //     envs/files 留空；envKey 未复验不开放（GEMINI_API_KEY + --settings 链路留作后续）
+    kind: 'agy',
+    display: 'Antigravity CLI',
+    bin: 'agy',
+    capability: 'non_interactive',
+    minVersion: '1.5.9',
+    acp: { command: 'agy', args: ['acp'], preferSystemProxy: true },
+    acpMinVersion: '1.5.9',
+    // 已实测无工具回合与原生续接；permission/form 尚未逐项实测，不声明。
+    acpInteractionKinds: [],
+    preferSystemProxy: true,
+    // 官方 headless 文档 + 1.4.10 实测信封一致：{"event":"init"|"step_update"|"result",…同名负载}
+    taskArgs: ['--output-format', 'stream-json', '-p', '{{prompt}}'],
+    // full：官方 always-proceed 权限模式（auto-approve all tool permission requests）。
+    // 不能把旗标追加在 prompt 后：-p 的 prompt 必须始终是最后一个 argv。
+    fullArgs: ['--dangerously-skip-permissions'],
+    fullTaskArgs: ['--output-format', 'stream-json', '--dangerously-skip-permissions', '-p', '{{prompt}}'],
+    // 官方文档：`--conversation <ID>` 续接指定会话（flags 前置，-p prompt 压尾）
+    resumeArgs: ['--output-format', 'stream-json', '--conversation', '{{sessionId}}', '-p', '{{prompt}}'],
+    steps: 'agy-json',
+    authGuard: {
+      patterns: [/Authentication required/, /Waiting for authentication/],
+      hint: 'Antigravity CLI 未登录或凭据已失效：请先在本机运行 `agy` 完成一次登录',
+    },
     credential: {
-      envKey: 'GEMINI_API_KEY',
-      envs: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
-      files: [join(home(), '.gemini', 'oauth_creds.json')],
-      loginCommand: 'gemini',
+      envs: [],
+      files: [],
+      windowsTargets: ['gemini:antigravity'],
+      loginCommand: 'agy',
     },
   },
   {
@@ -208,7 +263,13 @@ export const AGENTS: AgentDef[] = [
     fullArgs: ['--dangerously-skip-permissions'],
     steps: 'opencode-json',
     acp: { command: 'mimo', args: ['acp'] },
-    credential: { envs: ['MIMO_API_KEY'], files: [], loginCommand: 'mimo' },
+    credential: {
+      envs: ['MIMO_API_KEY'],
+      // 真实凭据位置（实测）：`mimo providers` 显示 Credentials `~\.local\share\mimocode\auth.json`。
+      // 之前 files 是空的，于是明明配了 key 也被判「缺凭据」。
+      files: [join(home(), '.local', 'share', 'mimocode', 'auth.json')],
+      loginCommand: 'mimo',
+    },
   },
   {
     kind: 'qoder-cli',
@@ -223,24 +284,47 @@ export const AGENTS: AgentDef[] = [
     // full：Qoder 官方旁路语义
     fullArgs: ['--dangerously-skip-permissions'],
     steps: 'claude-json',
-    credential: { envs: [], files: [join(home(), '.qoder')], loginCommand: 'qodercli' },
+    credential: {
+      envs: ['QODER_PERSONAL_ACCESS_TOKEN'],
+      files: [join(home(), '.qoder', '.auth', 'user')],
+      loginCommand: 'qodercli',
+    },
   },
   {
+    // 官方 xAI 命令行（Grok Build）。2026-10-29 实测 1.0.70：
+    //   - `grok --version` → "grok 1.0.70 (…)"，`--help` 首行 "Grok Build TUI"
+    //   - 非交互仍是 `-p/--single`；`--output-format streaming-messages-json` 出的是
+    //     Claude Messages 线格式（system/init → assistant/user → result），与 claude-json 解析器逐字段吻合
+    //   - `-s/--session-id` 可指定会话 ID、`-r/--resume` 可续接同一会话（实测 init.session_id 前后一致）
+    //   - `--always-approve` 实测使 init.permissionMode = bypassPermissions
+    // ⚠️ kind 保持 'grok-cli'：它是平台 run_task.agentType 的精确匹配值，改名属跨团队契约变更，
+    //    本次只改展示名（display）与实现细节。
     kind: 'grok-cli',
-    display: 'Grok CLI',
+    display: 'Grok Build',
     bin: 'grok',
     capability: 'interactive_only',
-    // 修 bug（B 批次实测发现）：grok 没有 run 子命令（'run' 会被当成 prompt）；
-    // 非交互是 --single，streaming-messages-json 输出与 claude 同构（实测 init/result 骨架）
     taskArgs: ['--single', '{{prompt}}', '--output-format', 'streaming-messages-json'],
     // full：--always-approve（沙箱是另一维度）
     fullArgs: ['--always-approve'],
+    // 实测 -r 能续上同一 session ⇒ headless 走原生续接，而不是重放 transcript
+    resumeArgs: ['--single', '{{prompt}}', '--output-format', 'streaming-messages-json', '--resume', '{{sessionId}}'],
     steps: 'claude-json',
-    acp: { command: 'grok', args: ['agent', 'stdio'], authMethod: 'cached_token' },
+    acp: {
+      command: 'grok',
+      args: ['agent', 'stdio'],
+      // 实测 initialize 声明 authMethods = [xai.api_key(默认), grok.com]；
+      // 且 **session/new 不需要先 authenticate 就能建会话** —— 所以这里刻意不写 `authMethod`：
+      // 写死 'grok.com' 会让每个任务都尝试一次浏览器登录（无浏览器机器上还会弹窗）。
+      // 只在真的有 XAI_API_KEY 时才走 API key 通道。
+      authEnvMethods: { XAI_API_KEY: 'xai.api_key' },
+    },
     credential: {
       envKey: 'XAI_API_KEY',
       envs: ['XAI_API_KEY', 'GROK_API_KEY'],
-      files: [join(home(), '.grok', 'user-settings.json')],
+      // Grok Build 的真实凭据位置：OAuth 登录态 auth.json；自定义模型（含 api_key）config.toml。
+      // ⛔ 不再探测社区版遗留的 user-settings.json —— 官方版从不创建它，探测它等于稳定误报「缺凭据」。
+      files: [join(home(), '.grok', 'auth.json'), join(home(), '.grok', 'config.toml')],
+      loginCommand: 'grok login',
     },
   },
   {
@@ -284,17 +368,34 @@ export const AGENTS: AgentDef[] = [
     capability: 'interactive_only',
     // 修 bug（B 批次实测发现）：原 `run` 子命令不存在；实测 `exec --print --output-format stream-json`
     // 输出 claude 同构事件流（v0.211.1）
-    taskArgs: ['exec', '--print', '--output-format', 'stream-json', '{{prompt}}'],
+    // 修 bug（2026-10-30 实测 0.211.1）：`--print` 已不存在，`--output-format` 也不再是
+    // exec 的旗标 —— 实测 `traecli exec --print` → `unexpected argument '--print'`（exit 2）。
+    // 现在的非交互输出开关是 `--json`（"Print events to stdout as JSONL"）。
+    taskArgs: ['exec', '--json', '{{prompt}}'],
     // full：--yolo（不夸大不同版本的沙箱语义）
     fullArgs: ['--yolo'],
     steps: 'claude-json',
-    acp: { command: 'traecli', args: ['acp'] },
-    credential: { envs: [], files: [join(home(), '.trae')], loginCommand: 'traecli' },
+    // 修 bug（实跑复核）：`traecli acp` 是**子命令组**，不带子命令只打印帮助并 exit 0 ——
+    // 于是 bridge 报「进程退出（code 0）」，看起来像正常结束，实际握手从未开始。
+    // 真入口是 `traecli acp serve`（实测 initialize 立刻回 protocolVersion=1）。
+    acp: { command: 'traecli', args: ['acp', 'serve'] },
+    credential: {
+      envs: ['TRAECLI_PERSONAL_ACCESS_TOKEN'],
+      files: [],
+      statusCommand: { args: ['login', 'status'], timeoutMs: 3_000 },
+      loginCommand: 'traecli',
+    },
   },
 ];
 
 export function agentDefOf(kind: string): AgentDef | undefined {
   return AGENTS.find((a) => a.kind === kind);
+}
+
+/** 生成指定权限模式的默认 argv；fullTaskArgs 是少数位置敏感 CLI 的显式覆盖。 */
+export function taskArgsForPermission(def: AgentDef, mode: PermissionMode): string[] {
+  if (mode === 'default') return def.taskArgs;
+  return def.fullTaskArgs ?? [...def.taskArgs, ...(def.fullArgs ?? [])];
 }
 
 /**
@@ -304,7 +405,11 @@ export function agentDefOf(kind: string): AgentDef | undefined {
  * headless 可能支持 full（危险参数），ACP 只走 default + 原生 permission 交互。
  * 混着报会让平台请求出「跑到一半才失败」的组合，所以这里逐模式列，未验证的一律不列。
  */
-export function executionModesFor(def: AgentDef, externalSandbox = false): ExecutionModeCapability[] {
+export function executionModesFor(
+  def: AgentDef,
+  externalSandbox = false,
+  installedVersion?: string,
+): ExecutionModeCapability[] {
   // steps 只有声明了步骤解析器才真的产出 task_step；artifacts 是任务级双向通道，两种模式都有
   const headlessFeed: FeedKind[] = ['messages', ...(def.steps !== undefined ? (['steps'] as FeedKind[]) : []), 'artifacts'];
   const admitted = fullModeAdmitted({ kind: def.kind, fullArgs: def.fullArgs, externalSandbox });
@@ -321,7 +426,10 @@ export function executionModesFor(def: AgentDef, externalSandbox = false): Execu
       continuation: headlessContinuation,
     },
   ];
-  if (def.acp) {
+  const acpVersionOk =
+    def.acpMinVersion === undefined ||
+    (installedVersion !== undefined && meetsMinVersion(installedVersion, def.acpMinVersion));
+  if (def.acp && acpVersionOk) {
     modes.push({
       mode: 'acp-stdio',
       // ACP 走原生 permission 交互，不走「跳过审批」的 full 参数
@@ -330,7 +438,7 @@ export function executionModesFor(def: AgentDef, externalSandbox = false): Execu
       interactionKinds: def.acpInteractionKinds ?? ['permission', 'form'],
       // ACP 的 agent_message_chunk → messages、tool_call → steps；artifacts 暂无 ACP 来源
       feedKinds: ['messages', 'steps'],
-      // ACP 会话由 agent 持有，bridge 只回传 ID（实测 9/9 都能续：session/load 或 session/resume）
+      // ACP 会话由 agent 持有，bridge 只回传 ID（当前 9 个声明工具走 session/load 或 session/resume）
       continuation: 'native-session',
     });
   }
@@ -354,7 +462,9 @@ export function agentCanContinue(kind: string): boolean {
 }
 
 // ---------- 可执行文件解析 ----------
-const WIN_EXTS = ['.cmd', '.exe', '.bat', ''];
+// `.exe` 必须排在 `.cmd` 前面：`.exe` 可以直接 spawn，`.cmd/.bat` 是 npm 垫片，
+// 必须经 shell 转发（见 win-exec.ts）。顺序反了，ACP 通道会拿到 .cmd 然后 EINVAL。
+const WIN_EXTS = ['.exe', '.cmd', '.bat', ''];
 /** Windows 上真正能 spawn 的可执行扩展名（无扩展名的 shim 是 bash 脚本，Node 起不来） */
 const WIN_EXEC_RE = /\.(exe|cmd|bat)$/i;
 
@@ -368,6 +478,66 @@ function isExecutableFile(p: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 从 `where` / `command -v` 的输出里挑一个真正能执行的路径。
+ *
+ * 为什么 `.exe` 优先：同目录常同时存在 `foo.cmd`（npm 垫片）与 `foo.exe`，
+ * 而 `where` 的输出顺序不保证。挑到 `.cmd` 时调用方必须走 shell 转发 ——
+ * ACP 这类要长期持有 stdin/stdout 的通道经一层 cmd.exe 转发既多余又易碎。
+ */
+export function pickPreferredBin(hits: string[]): string | undefined {
+  const usable = hits.map((s) => s.trim()).filter(Boolean).filter((p) => isExecutableFile(p));
+  return usable.find((p) => /\.exe$/i.test(p)) ?? usable[0];
+}
+
+/**
+ * 启动一个 CLI 子进程，统一处理 Windows `.cmd/.bat` 垫片。
+ *
+ * 为什么这个函数在这里而不是 `win-exec.ts`：`protocol-boundary-check` 只允许
+ * 本文件与 `task-supervisor.ts` 出现 `shell: true`（垫片必须经 shell 转发），
+ * 而长驻通道（ACP / app-server）也要同一套处理。与其让每个 adapter 各写一份、
+ * 各自被门禁拦下，不如收敛成这一个入口 —— 拼命令行仍走 `win-exec.ts`。
+ */
+export function spawnCliProcess(
+  binPath: string,
+  argv: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv },
+): ChildProcessWithoutNullStreams {
+  const stdio: ['pipe', 'pipe', 'pipe'] = ['pipe', 'pipe', 'pipe'];
+  return (
+    isWinShim(binPath)
+      ? spawn(buildWinCommandLine(binPath, argv), {
+          cwd: opts.cwd,
+          env: opts.env,
+          shell: true,
+          windowsHide: true,
+          stdio,
+        })
+      : spawn(binPath, argv, { cwd: opts.cwd, env: opts.env, windowsHide: true, stdio })
+  ) as ChildProcessWithoutNullStreams;
+}
+
+/** Windows 垫片必须回收整棵树；直接 exe/posix 保留原 kill 语义。taskkill 输出与错误不上行。 */
+export function killCliProcess(child: ChildProcess, binPath: string): void {
+  if (process.platform === 'win32' && isWinShim(binPath) && child.pid) {
+    execFile(
+      'taskkill',
+      ['/pid', String(child.pid), '/T', '/F'],
+      { timeout: 2_000, windowsHide: true },
+      () => {
+        // taskkill 失败时至少终止外壳；不让清理异常反噬已结算任务。
+        try {
+          child.kill();
+        } catch {
+          /* 已退出 */
+        }
+      },
+    );
+    return;
+  }
+  child.kill();
 }
 
 /** 候选目录：PATH → 常见用户目录 → 逐用户 Programs\<厂商>\<产品>\bin */
@@ -385,6 +555,12 @@ export function candidateBinDirs(): string[] {
     push(join(home(), '.volta', 'bin'));
     push(join(home(), '.cargo', 'bin'));
     push(join(home(), '.codex', 'packages', 'standalone', 'current', 'bin'));
+    // 自带安装器的 CLI 常把可执行塞进 `~/.<product>/bin` 且**不写 PATH**：
+    // Mimo Code 就是 `~/.mimocode/bin/mimo.exe`（实测 0.1.16 能跑，但 `where mimo` 找不到，
+    // 于是 bridge 误判「未安装」）。扫到就能自动就绪，不必要求用户改 PATH。
+    push(join(home(), '.mimocode', 'bin'));
+    // agy 同例且更隐蔽：装进 `%LOCALAPPDATA%\agy\bin`（跨厂商目录，Programs 扫描盖不住）
+    push(join(localAppData(), 'agy', 'bin'));
     const root = join(localAppData(), 'Programs');
     try {
       for (const vendor of readdirSync(root)) {
@@ -439,12 +615,8 @@ export function resolveBin(names: string[]): string | undefined {
               stdio: ['ignore', 'pipe', 'ignore'],
             });
       // where 可能返回多行（grok.cmd / grok.exe / grok），逐个看，取第一个真正能执行的
-      const hits = out
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const usable = hits.find((p) => isExecutableFile(p));
-      if (usable) return usable;
+      const preferred = pickPreferredBin(out.split(/\r?\n/));
+      if (preferred) return preferred;
     } catch {
       /* 继续走目录扫描 */
     }
@@ -453,6 +625,31 @@ export function resolveBin(names: string[]): string | undefined {
     if (found) return found;
   }
   return undefined;
+}
+
+/**
+ * 把 AgentDef 的 acp 声明变成「能直接 spawn 的 spec」。
+ *
+ * 两件事必须在**调用方**做，不能让 runner 自己做：
+ * 1) 补 `label` —— 9 个工具共用一个 runner，没有 label 就只能写死一个产品名，
+ *    于是 opencode / trae 的失败被冠上 CodeBuddy 的名字，排查直接被带偏；
+ * 2) 把 `command` 解析成**绝对路径** —— 否则 spawn 依赖 PATH，而扫描用的是 `resolveBin`，
+ *    就会出现「status 报就绪、跑起来 ENOENT」这种自相矛盾（qoder 实跑即此）。
+ *
+ * 解析失败时保留原 command：让 spawn 报出的 ENOENT 至少还带着 label，
+ * 比在这里静默返回 undefined（调用方会退回 CodeBuddy spec）更安全。
+ */
+export function acpSpecFor(def: AgentDef | undefined): AcpAgentSpec | undefined {
+  if (!def?.acp) return undefined;
+  // 已经是路径就不再 where 一次：每次解析约 300-400ms，run_task 在同步路径上不该白付这个钱。
+  const alreadyPath = /[\\/]/.test(def.acp.command);
+  const resolved = alreadyPath ? def.acp.command : resolveBin([def.acp.command, ...(def.altBins ?? [])]);
+  return {
+    ...def.acp,
+    label: def.acp.label ?? def.display,
+    command: resolved ?? def.acp.command,
+    ...(def.credential.loginCommand ? { loginCommand: def.credential.loginCommand } : {}),
+  };
 }
 
 /**
@@ -488,11 +685,7 @@ export async function resolveBinAsync(names: string[]): Promise<string | undefin
           resolve(buf);
         });
       });
-      const usable = out
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .find((p) => isExecutableFile(p));
+      const usable = pickPreferredBin(out.split(/\r?\n/));
       if (usable) return usable;
     } catch {
       /* 继续走目录扫描 */
@@ -603,6 +796,128 @@ export function probeCredential(def: AgentDef): CredentialProbe {
   return hasEvidence ? { status: 'missing' } : { status: 'unknown' };
 }
 
+/** cmdkey 的本地化文案不参与判断；只认每行末尾稳定的 ASCII target 标记。 */
+export function windowsCredentialTargetPresent(output: string, target: string): boolean {
+  const marker = `LegacyGeneric:target=${target}`;
+  return output.split(/\r?\n/).some((line) => line.trim().endsWith(marker));
+}
+
+function listWindowsCredentialTargets(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'cmdkey',
+      ['/list'],
+      { encoding: 'utf8', timeout: 2_000, maxBuffer: 256 * 1024, windowsHide: true },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
+/**
+ * 在 env/file 的直接证据之后补 OS keyring 存在性探测。
+ * 完整 cmdkey 输出只在函数内消费，不写日志/事件/数据库；失败时保留原保守结果。
+ */
+export async function probeCredentialWithKeyring(
+  def: AgentDef,
+  opts: { platform?: NodeJS.Platform; listWindowsTargets?: () => Promise<string> } = {},
+): Promise<CredentialProbe> {
+  const direct = probeCredential(def);
+  const targets = def.credential.windowsTargets ?? [];
+  if (direct.status === 'configured' || targets.length === 0 || (opts.platform ?? process.platform) !== 'win32') {
+    return direct;
+  }
+  try {
+    const output = await (opts.listWindowsTargets ?? listWindowsCredentialTargets)();
+    const target = targets.find((item) => windowsCredentialTargetPresent(output, item));
+    return target ? { status: 'configured', source: `keyring:${target}` } : direct;
+  } catch {
+    return direct;
+  }
+}
+
+function runCredentialStatusCommand(binPath: string, args: string[], timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (configured: boolean): void => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve(configured);
+    };
+    try {
+      const child = spawnCliProcess(binPath, args, { cwd: home(), env: process.env });
+      // 状态命令的输出可能含账号信息：只排空管道，绝不写日志或上行。
+      child.stdout.resume();
+      child.stderr.resume();
+      timer = setTimeout(() => {
+        killCliProcess(child, binPath);
+        finish(false);
+      }, timeoutMs);
+      child.on('error', () => finish(false));
+      child.on('close', (code) => finish(code === 0));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+/** env/file → keyring → 官方只读状态命令；任一明确证据存在即 configured。 */
+export async function probeCredentialRuntime(
+  def: AgentDef,
+  binPath: string,
+  opts: {
+    platform?: NodeJS.Platform;
+    listWindowsTargets?: () => Promise<string>;
+    runStatusCommand?: () => Promise<boolean>;
+  } = {},
+): Promise<CredentialProbe> {
+  const probed = await probeCredentialWithKeyring(def, opts);
+  const command = def.credential.statusCommand;
+  if (probed.status === 'configured' || !command) return probed;
+  try {
+    const configured = await (opts.runStatusCommand ??
+      (() => runCredentialStatusCommand(binPath, command.args, command.timeoutMs ?? 3_000)))();
+    return configured
+      ? { status: 'configured', source: `command:${command.args.join(' ')}` }
+      : probed;
+  } catch {
+    return probed;
+  }
+}
+
+/** 解析 `MAJOR.MINOR.PATCH[-pre]`；解析不出来返回 undefined */
+function parseVersion(v: string | undefined): { nums: [number, number, number]; pre: boolean } | undefined {
+  if (!v) return undefined;
+  const m = /(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/.exec(v);
+  if (!m) return undefined;
+  return {
+    nums: [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)],
+    pre: Boolean(m[4]),
+  };
+}
+
+/**
+ * 版本是否满足最低要求。
+ *
+ * 只做「够不够跑 taskArgs」这一件事，不实现完整 semver 范围语法。
+ * prerelease 视为低于同号正式版（`0.1.5-rc.3` < `0.1.5`），与 semver 一致。
+ * 任一侧解析不出来就返回 true —— 宁可放行让人真跑一次，也不要因为版本字符串怪就判死。
+ */
+export function meetsMinVersion(actual: string | undefined, min: string): boolean {
+  const a = parseVersion(actual);
+  const b = parseVersion(min);
+  if (!a || !b) return true;
+  for (let i = 0; i < 3; i += 1) {
+    if (a.nums[i]! !== b.nums[i]!) return a.nums[i]! > b.nums[i]!;
+  }
+  if (a.pre && !b.pre) return false;
+  return true;
+}
+
 /** 探测单个工具（不抛错：任何异常都降级成 not_installed / installedButBroken） */
 export async function probeAgent(def: AgentDef, externalSandbox = false): Promise<AgentListItem> {
   const binPath = await resolveBinAsync([def.bin, ...(def.altBins ?? [])]);
@@ -621,7 +936,7 @@ export async function probeAgent(def: AgentDef, externalSandbox = false): Promis
   if (!binPath) {
     // 免安装工具：不落本地可执行文件，直接算「未装凭据」（装了 npx 就能跑）
     if (def.npxSpec) {
-      const cred = probeCredential(def);
+      const cred = await probeCredentialWithKeyring(def);
       return {
         ...base,
         status: cred.status === 'configured' ? 'ready' : 'installed_no_cred',
@@ -632,14 +947,17 @@ export async function probeAgent(def: AgentDef, externalSandbox = false): Promis
     return base;
   }
   const ver = await probeVersion(binPath);
-  const cred = probeCredential(def);
+  const cred = await probeCredentialRuntime(def, binPath);
   const status: AgentStatus = cred.status === 'configured' ? 'ready' : 'installed_no_cred';
+  // 版本不够跑 taskArgs 也算「装坏」：否则平台会派任务下来，用户只看到一个 unknown option。
+  const tooOld = def.minVersion !== undefined && !meetsMinVersion(ver.version, def.minVersion);
   return {
     ...base,
+    executionModes: executionModesFor(def, externalSandbox, ver.version),
     status,
     version: ver.version,
     path: binPath,
     credentialSource: cred.source,
-    installedButBroken: !ver.ok,
+    installedButBroken: !ver.ok || tooOld,
   };
 }

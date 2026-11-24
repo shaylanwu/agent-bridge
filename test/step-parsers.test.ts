@@ -21,7 +21,7 @@ function parseAll(
     | 'claude-json'
     | 'codex-json'
     | 'opencode-json'
-    | 'gemini-json'
+    | 'agy-json'
     | 'kimi-json'
     | 'dsh-json'
     | 'mcode-json',
@@ -87,15 +87,33 @@ describe('步骤流解析器', () => {
     expect(finished?.ref).toBe(started?.ref);
   });
 
-  it('gemini stream-json（官方文档构造样例）：兼容 tool_name/parameters 与 name/args 两种写法', () => {
-    const steps = parseAll('gemini-json', fixture('gemini-stream.jsonl'));
+  it('agy stream-json（官方 headless 文档实样 + 1.4.10 实测信封）：tool 步骤按 step_index 配对，失败判 ok:false', () => {
+    const p = createStepParser('agy-json');
+    const steps = p.feed(fixture('agy-stream.jsonl'));
     const started = steps.filter((s) => s.state === 'started');
     const finished = steps.filter((s) => s.state === 'finished');
     expect(started).toHaveLength(2);
-    expect(started[0]).toMatchObject({ action: 'run_shell_command', label: 'ls -la', ref: 'call_abc' });
-    expect(started[1]).toMatchObject({ action: 'write_file', label: 'b.txt', ref: 'call_def' });
-    expect(finished[0]).toMatchObject({ ok: true, ref: 'call_abc' });
-    expect(finished[1]).toMatchObject({ ok: false, ref: 'call_def' });
+    // label 取 agy 特有的 CommandLine 键；write_file 走通用 path 键
+    expect(started[0]).toMatchObject({ action: 'run_command', label: 'echo hello_headless_demo', ref: '4' });
+    expect(started[1]).toMatchObject({ action: 'write_file', label: 'b.txt', ref: '5' });
+    expect(finished[0]).toMatchObject({ action: 'run_command', ok: true, ref: '4' });
+    // tool_info.error 存在 ⇒ 失败
+    expect(finished[1]).toMatchObject({ action: 'write_file', ok: false, ref: '5' });
+    // 最终回答：result.response 优先于 text_delta 增量拼接
+    expect(p.finalText()).toBe('Git、Subversion、Mercurial');
+    expect(p.finalOutcome()).toMatchObject({ ok: true, result: 'Git、Subversion、Mercurial' });
+  });
+
+  it('agy：退出码 0 但 status≠SUCCESS（--print-timeout 部分完成 / 实测未登录信封）→ finalOutcome 推翻成功', () => {
+    const p = createStepParser('agy-json');
+    p.feed(
+      JSON.stringify({
+        event: 'result',
+        result: { conversation_id: '', status: 'ERROR', response: '', error: 'authentication failed or timed out' },
+      }) + '\n',
+    );
+    expect(p.finalOutcome()).toMatchObject({ ok: false, error: expect.stringContaining('status=ERROR') });
+    expect(p.finalText()).toBeUndefined();
   });
 
   it('grok 复用 claude 解析器（实测其 streaming-messages-json 与 claude 同构）', () => {
@@ -113,13 +131,23 @@ describe('步骤流解析器', () => {
     expect(finished?.ref).toBe(started?.ref);
   });
 
-  it('trae 实测样例（未配模型，只有 init）：不产步骤也不报错', () => {
-    expect(parseAll('claude-json', fixture('trae-stream.jsonl'))).toEqual([]);
+  it('trae 实测 error_during_execution：不产步骤，但 finalOutcome 必须推翻退出码假成功', () => {
+    const p = createStepParser('claude-json');
+    expect(p.feed(fixture('trae-stream.jsonl'))).toEqual([]);
+    expect(p.finalOutcome()).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Models is required'),
+    });
   });
 
   it('dsh 实测骨架（缺 key 无 tool_call）+ 官方文档构造的 tool_call/tool_result 配对', () => {
     // 实测部分：session/status/final 骨架不产步骤、不报错
-    expect(parseAll('dsh-json', fixture('dsh-events.jsonl'))).toEqual([]);
+    const real = createStepParser('dsh-json');
+    expect(real.feed(fixture('dsh-events.jsonl'))).toEqual([]);
+    expect(real.finalOutcome()).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('MISSING_CREDENTIAL'),
+    });
     // 文档口径部分（本机缺 key 未取得实测，字段名按文档 + 兼容双写法）
     const doc =
       '{"type":"tool_call","callId":"c1","name":"bash","arguments":{"command":"ls"}}\n' +
@@ -142,10 +170,20 @@ describe('步骤流解析器', () => {
     for (const f of finished) expect(f.ok).toBe(true);
   });
 
+  it('mcode 没有 exec.completed 最终结果时，兜底最后一条而非第一条 agent_message', () => {
+    const p = createStepParser('mcode-json');
+    p.feed(
+      '{"type":"item.completed","item":{"type":"agent_message","content":"first"}}\n' +
+        '{"type":"item.completed","item":{"type":"agent_message","content":"second"}}\n',
+    );
+    expect(p.finalText()).toBe('second');
+  });
+
   it('finalText：各族解析器从 result/final 事件提取最终回答', () => {
     const claude = createStepParser('claude-json');
     claude.feed(fixture('claude-stream.jsonl'));
     expect(typeof claude.finalText?.()).toBe('string');
+    expect(claude.finalOutcome?.()).toMatchObject({ ok: true });
     const kimi = createStepParser('kimi-json');
     kimi.feed(fixture('kimi-stream.jsonl'));
     expect(kimi.finalText?.()).toContain('research');
@@ -170,7 +208,6 @@ describe('步骤流解析器', () => {
       ['claude-json', JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'TodoWrite', input: { todos } }] } }) + '\n'],
       ['opencode-json', JSON.stringify({ type: 'tool_use', part: { type: 'tool', tool: 'todowrite', callID: 'c1', state: { status: 'completed', input: { todos } } } }) + '\n'],
       ['codex-json', JSON.stringify({ type: 'item.completed', item: { id: 'p1', type: 'plan', plan: [{ step: '读代码', status: 'completed' }, { step: '改实现', status: 'in_progress' }] } }) + '\n'],
-      ['gemini-json', JSON.stringify({ type: 'tool_use', tool_name: 'todo_write', tool_id: 'g1', parameters: { todos } }) + '\n'],
       ['kimi-json', JSON.stringify({ role: 'assistant', tool_calls: [{ id: 'k1', type: 'function', function: { name: 'TodoWrite', arguments: JSON.stringify({ todos }) } }] }) + '\n'],
       ['dsh-json', JSON.stringify({ type: 'tool_call', callId: 'd1', name: 'todo_write', arguments: { todos } }) + '\n'],
       ['mcode-json', JSON.stringify({ type: 'item.started', item: { id: 'm1', type: 'tool_call', toolCall: { id: 'm1', name: 'todo_write', input: { todos } } } }) + '\n'],
