@@ -9,17 +9,34 @@ import {
   dispatchCancelTurn,
   dispatchCloseSession,
   dispatchGetTask,
-  dispatchInteractionResponse,
+  dispatchInteractionResponse as dispatchInteractionResponseRaw,
   dispatchRunTask,
   type TaskDispatchOptions,
 } from '../src/app/task-dispatch.js';
-import type { ClientMessage } from '../src/protocol.js';
+import type { ClientMessage, InteractionResponseCommand } from '../src/protocol.js';
+import { TaskSupervisor } from '../src/core/task-supervisor.js';
 
 const cleanups: Array<() => void> = [];
 
 afterEach(() => {
   for (const fn of cleanups.splice(0)) fn();
 });
+
+function dispatchInteractionResponse(msg: InteractionResponseCommand, options: TaskDispatchOptions) {
+  if (!options.interactions) {
+    const supervisor = new TaskSupervisor();
+    supervisor.interactions.bind({
+      store: options.store,
+      emit: (msg) => options.emitter.emit(msg),
+      deliver: async (taskId, requestId, answer) => {
+        const handle = options.tasks.get(taskId);
+        return handle?.respondInteraction ? handle.respondInteraction(requestId, answer) : false;
+      },
+    });
+    options.interactions = supervisor.interactions;
+  }
+  return dispatchInteractionResponseRaw(msg, options);
+}
 
 describe('task dispatch → SessionStore', () => {
   it('close_session 鉴权失败不回收常驻进程', () => {
@@ -142,7 +159,7 @@ describe('task dispatch → SessionStore', () => {
     });
   });
 
-  it('交互回复幂等、冲突拒绝并落 resultSeq', () => {
+  it('交互回复幂等、相同答案 duplicate 并落独立 resultSeq', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-dispatch-'));
     const store = new SessionStore(join(dir, 'state.db'));
     cleanups.push(() => {
@@ -154,7 +171,7 @@ describe('task dispatch → SessionStore', () => {
       sessionId: 'bt_interaction',
       requestId: 'ir_1',
       kind: 'permission',
-      payload: { title: 'write' },
+      payload: { title: 'write', options: [{ optionId: 'allow_once', kind: 'allow_once' }] },
     });
     const sent: ClientMessage[] = [];
     const options: TaskDispatchOptions = {
@@ -185,9 +202,9 @@ describe('task dispatch → SessionStore', () => {
       payload: { optionId: 'allow_once' },
     };
 
-    dispatchInteractionResponse(response, options);
+    await dispatchInteractionResponse(response, options);
     expect(store.getInteraction('bt_interaction', 'ir_1')).toMatchObject({
-      state: 'accepted',
+      state: 'resolved',
       responseId: 'resp_1',
     });
     expect(sent.find((msg) => msg.type === 'task_interaction_result')).toMatchObject({
@@ -196,15 +213,188 @@ describe('task dispatch → SessionStore', () => {
     });
     expect(respond).toHaveBeenCalledWith('ir_1', expect.objectContaining({ optionId: 'allow_once' }));
 
-    dispatchInteractionResponse(response, options);
+    await dispatchInteractionResponse(response, options);
     expect(sent.filter((msg) => msg.type === 'task_interaction_result')).toHaveLength(2);
 
-    dispatchInteractionResponse({ ...response, responseId: 'resp_2' }, options);
+    await dispatchInteractionResponse({ ...response, responseId: 'resp_2' }, options);
+    expect(sent.at(-1)).toMatchObject({
+      type: 'task_interaction_result',
+      state: 'accepted',
+      requestState: 'resolved',
+      responseStatus: 'duplicate',
+      resultSeq: 2,
+    });
+    expect(respond).toHaveBeenCalledTimes(1);
+  });
+
+  it('伪造 optionId 不交付且保留 pending，新 responseId 可修正', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-option-validation-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    store.createSession({ sessionId: 'bt_option', mode: 'task', agentType: 'codex', cwd: dir });
+    store.requestInteraction({
+      sessionId: 'bt_option',
+      requestId: 'ir_option',
+      kind: 'permission',
+      payload: { options: [{ optionId: 'allow_once', kind: 'allow_once' }] },
+    });
+    const sent: ClientMessage[] = [];
+    const respond = vi.fn(async () => true);
+    const options: TaskDispatchOptions = {
+      emitter: new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) }),
+      tasks: new Map([
+        ['bt_option', { taskId: 'bt_option', cancel: () => undefined, done: Promise.resolve('running' as const), respondInteraction: respond }],
+      ]),
+      registry: new TaskRegistry(),
+      maxConcurrent: 1,
+      maxQueued: 1,
+      diffMaxBytes: 1024,
+      captureDiffByDefault: false,
+      requireServiceToken: false,
+      store,
+      log: () => undefined,
+    };
+    const response = {
+      type: 'task_interaction_response' as const,
+      taskId: 'bt_option',
+      requestId: 'ir_option',
+      responseId: 'resp_invalid_option',
+      state: 'accepted' as const,
+      payload: { optionId: 'allow_always_not_offered' },
+    };
+    const invalid = await dispatchInteractionResponse(response, options);
+    expect(invalid).toMatchObject({ ok: false, errorCode: 'interaction_invalid_response' });
+    expect(respond).not.toHaveBeenCalled();
+    expect(store.getInteraction('bt_option', 'ir_option')?.state).toBe('pending');
+
+    const corrected = await dispatchInteractionResponse(
+      { ...response, responseId: 'resp_valid_option', payload: { optionId: 'allow_once' } },
+      options,
+    );
+    expect(corrected).toMatchObject({ ok: true, state: 'accepted' });
+    expect(respond).toHaveBeenCalledTimes(1);
+  });
+
+  it('declined/cancelled 即使携带允许选项也绝不交付 optionId', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-no-reverse-approval-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    store.createSession({ sessionId: 'bt_no_reverse', mode: 'task', agentType: 'codex', cwd: dir });
+    for (const state of ['declined', 'cancelled'] as const) {
+      store.requestInteraction({
+        sessionId: 'bt_no_reverse',
+        requestId: `ir_${state}`,
+        kind: 'permission',
+        payload: { options: [{ optionId: 'allow_once', kind: 'allow_once' }] },
+      });
+    }
+    const respond = vi.fn(async () => true);
+    const options: TaskDispatchOptions = {
+      emitter: new Emitter({ sink: () => undefined }),
+      tasks: new Map([
+        ['bt_no_reverse', { taskId: 'bt_no_reverse', cancel: () => undefined, done: Promise.resolve('running' as const), respondInteraction: respond }],
+      ]),
+      registry: new TaskRegistry(),
+      maxConcurrent: 1,
+      maxQueued: 1,
+      diffMaxBytes: 1024,
+      captureDiffByDefault: false,
+      requireServiceToken: false,
+      store,
+      log: () => undefined,
+    };
+    for (const state of ['declined', 'cancelled'] as const) {
+      const outcome = await dispatchInteractionResponse(
+        {
+          type: 'task_interaction_response',
+          taskId: 'bt_no_reverse',
+          requestId: `ir_${state}`,
+          responseId: `resp_${state}`,
+          state,
+          payload: { optionId: 'allow_once' },
+        },
+        options,
+      );
+      expect(outcome).toMatchObject({ ok: true, state });
+    }
+    expect(respond).toHaveBeenNthCalledWith(
+      1,
+      'ir_declined',
+      expect.objectContaining({ optionId: undefined, action: 'decline' }),
+    );
+    expect(respond).toHaveBeenNthCalledWith(
+      2,
+      'ir_cancelled',
+      expect.objectContaining({ optionId: undefined, action: 'cancel' }),
+    );
+  });
+
+  it('adapter 交付失败时禁止 resolved，记录 delivery_unknown 并拒绝后续重试', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-delivery-unknown-'));
+    const store = new SessionStore(join(dir, 'state.db'));
+    cleanups.push(() => {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    store.createSession({ sessionId: 'bt_delivery', mode: 'task', agentType: 'codex', cwd: dir });
+    store.requestInteraction({
+      sessionId: 'bt_delivery',
+      requestId: 'ir_delivery',
+      kind: 'permission',
+      payload: { options: [{ optionId: 'allow_once', kind: 'allow_once' }] },
+    });
+    const sent: ClientMessage[] = [];
+    const respond = vi.fn(async () => false);
+    const cancel = vi.fn();
+    const options: TaskDispatchOptions = {
+      emitter: new Emitter({ sink: (msg) => sent.push(msg as ClientMessage) }),
+      tasks: new Map([
+        ['bt_delivery', { taskId: 'bt_delivery', cancel, done: Promise.resolve('running' as const), respondInteraction: respond }],
+      ]),
+      registry: new TaskRegistry(),
+      maxConcurrent: 1,
+      maxQueued: 1,
+      diffMaxBytes: 1024,
+      captureDiffByDefault: false,
+      requireServiceToken: false,
+      store,
+      log: () => undefined,
+    };
+    const response = {
+      type: 'task_interaction_response' as const,
+      taskId: 'bt_delivery',
+      requestId: 'ir_delivery',
+      responseId: 'resp_delivery',
+      state: 'accepted' as const,
+      payload: { optionId: 'allow_once' },
+    };
+    const outcome = await dispatchInteractionResponse(response, options);
+    expect(outcome).toMatchObject({ ok: false, errorCode: 'interaction_delivery_unknown' });
+    expect(store.getInteraction('bt_delivery', 'ir_delivery')).toMatchObject({
+      state: 'failed',
+      responseId: 'resp_delivery',
+      resultSeq: expect.any(Number),
+    });
     expect(sent.at(-1)).toMatchObject({
       type: 'task_interaction_result',
       state: 'failed',
-      errorCode: 'interaction_already_resolved',
+      errorCode: 'interaction_delivery_unknown',
     });
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    const retry = await dispatchInteractionResponse(
+      { ...response, responseId: 'resp_delivery_retry' },
+      options,
+    );
+    expect(retry).toMatchObject({ ok: false, errorCode: 'interaction_delivery_unknown' });
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('cancel_turn 取消无进程的 active Turn', () => {
@@ -249,7 +439,7 @@ describe('task dispatch → SessionStore', () => {
 });
 
 describe('Form interaction result redaction', () => {
-  it('content 只回送任务句柄，不落库/不进入 result 报文', () => {
+  it('content 只回送任务句柄，不落库/不进入 result 报文', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-form-dispatch-'));
     cleanups.push(() => {
       store.close();
@@ -290,7 +480,7 @@ describe('Form interaction result redaction', () => {
       store,
       log: () => undefined,
     };
-    dispatchInteractionResponse(
+    await dispatchInteractionResponse(
       {
         type: 'task_interaction_response',
         taskId: 'bt_form',
@@ -313,7 +503,7 @@ describe('Form interaction result redaction', () => {
     expect(stored?.resultPayload).toEqual({ action: 'accept', fieldNames: ['env'] });
 
     // 同一 responseId 重放：返回已结算结果，不重复调用任务句柄，也不回显 content
-    dispatchInteractionResponse(
+    await dispatchInteractionResponse(
       {
         type: 'task_interaction_response',
         taskId: 'bt_form',

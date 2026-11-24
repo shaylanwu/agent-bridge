@@ -6,18 +6,26 @@
  * Adapters that need native session ids can replace this path later without changing the wire model.
  */
 
+import { randomUUID } from 'node:crypto';
 import { startTask, type TaskHandle } from '../runner.js';
-import type { TaskFinishInfo, TaskHooks } from '../core/task-supervisor.js';
-import type { ServerMessage, TaskStatus, TaskPhase } from '../protocol.js';
+import type {
+  ApprovalLookupInput,
+  ApprovalLookupResult,
+  TaskFinishInfo,
+  TaskHooks,
+} from '../core/task-supervisor.js';
+import type { PermissionPolicyName } from '../core/permission-policy.js';
+import type { ServerMessage, TaskStatus, TaskPhase, PermissionMode } from '../protocol.js';
 import type { Emitter } from '../core/emitter.js';
 import { hasAnsi } from '../core/ansi.js';
 import type { SessionStore, SessionRecord, SessionPhase, TurnRecord } from '../core/session-store.js';
 import type { TaskRegistry } from './task-registry.js';
 import type { SessionLog } from './session-log.js';
 import { authorizeService } from './service-gate.js';
-import { agentCanContinue, agentDefOf } from '../adapters/agent-adapters.js';
+import { acpSpecFor, agentCanContinue, agentDefOf, resolveBin } from '../adapters/agent-adapters.js';
 import { canRunAcp } from '../adapters/acp-codebuddy.js';
 import { ClaudeResident } from './claude-resident.js';
+import type { InteractionBroker } from '../core/interaction-broker.js';
 
 type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
 type SendMessageMessage = Extract<ServerMessage, { type: 'send_message' }>;
@@ -27,14 +35,20 @@ export interface ConversationDeps {
   tasks: Map<string, TaskHandle>;
   registry: TaskRegistry;
   store: SessionStore;
+  interactions?: InteractionBroker;
+  interactionEnabled?: boolean;
+  approvalLookup?: (input: ApprovalLookupInput, taskId: string) => ApprovalLookupResult | undefined;
   allowedCwd?: string[];
   maxConcurrent: number;
   maxQueued: number;
   diffMaxBytes: number;
   captureDiffByDefault: boolean;
+  /** 本机权限策略与隔离声明；每个 Turn 都须传递，不能在 conversation 入口丢失。 */
+  permissionPolicy?: PermissionPolicyName;
+  externalSandbox?: boolean;
   requireServiceToken: boolean;
   log: SessionLog;
-  /** 存在时启用 Claude/Qoder 常驻会话；测试/旧流程不传则走 startTask */
+  /** 存在时启用 Claude 常驻会话；测试/旧流程不传则走 startTask */
   residentSessions?: Map<string, ClaudeResident>;
   /** waiting_user 空闲关闭（0/undefined = 关闭） */
   idleTimeoutMs?: number;
@@ -43,7 +57,7 @@ export interface ConversationDeps {
 
 function phaseOf(status: TaskStatus, info?: TaskFinishInfo): TaskPhase {
   if (status !== 'running') return 'running';
-  return info?.phase === 'queued' ? 'queued' : 'running';
+  return info?.phase === 'queued' || info?.phase === 'waiting_interaction' ? info.phase : 'running';
 }
 
 function wirePhase(phase: SessionPhase): TaskPhase {
@@ -63,9 +77,11 @@ function emitStatus(
     turnId,
     status,
     phase,
+    interactionId: info?.interactionId,
     exitCode: info?.exitCode,
     error: info?.error,
     errorCode: info?.errorCode,
+    permissionMode: info?.permissionMode,
     requestedBy: undefined,
   };
   const event = deps.store.appendEvent({ sessionId, type: 'task_status', payload });
@@ -75,9 +91,11 @@ function emitStatus(
     turnId,
     status,
     phase,
+    interactionId: info?.interactionId,
     exitCode: info?.exitCode,
     error: info?.error,
     errorCode: info?.errorCode,
+    permissionMode: info?.permissionMode,
     eventSeq: event.eventSeq,
   });
   return event.eventSeq;
@@ -96,10 +114,16 @@ export function startConversationTurn(
   const sessionId = session.sessionId;
   const executionId = `${sessionId}__${turn.turnId}`;
   const def = agentDefOf(session.agentType);
+  const permissionMode: PermissionMode | undefined =
+    session.permissionMode === 'full' || session.permissionMode === 'default' ? session.permissionMode : undefined;
+  // 本机 policy=full 时，省略 permissionMode 的旧平台会话同样必须按 full 执行。
+  const full = permissionMode ? permissionMode === 'full' : deps.permissionPolicy === 'full';
+  // full 只接受受管空 args：内部 resumeArgs 也不能塞进该字段。需要续上下文时使用完整 transcript 重放。
   const resumeArgs =
-    def?.resumeArgs && session.nativeSessionId
+    !full && def?.resumeArgs && session.nativeSessionId
       ? def.resumeArgs.map((arg) => arg.replaceAll('{{sessionId}}', session.nativeSessionId as string))
       : [];
+  const turnPrompt = full ? transcriptOf(deps, sessionId) : prompt;
   /**
    * 有原生续接参数时 prompt 只有「本轮新说的话」—— 一旦 ACP 续会话没成功，
    * 新会话就只剩这句话，历史悄无声息地没了。这里备一份完整 transcript 给它兜底。
@@ -199,6 +223,7 @@ export function startConversationTurn(
   };
 
   const hooks: TaskHooks = {
+    onBeforeLaunch: () => deps.store.claimTurnForLaunch(sessionId, turn.turnId, turn.tenantId),
     onLog: (stream, data) => {
       const text = data.replace(/\x1b\[[0-9;]*m/g, '');
       if (text.trim()) deps.log('info', `[${sessionId}#${turn.ordinal}] [${stream}] ${text.trimEnd()}`);
@@ -236,10 +261,40 @@ export function startConversationTurn(
         eventSeq,
       });
     },
+    // 中间 agent 消息（4.7）：与 dispatch 同口径 —— appendMessage 同事务写 messages+events
+    //（message.eventSeq 即事件序号），duplicate 短路，不重复 appendEvent
+    onAgentMessage: (message) => {
+      const messageId =
+        message.messageId ?? `msg_${sessionId}_am_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      try {
+        const saved = deps.store.appendMessage({
+          sessionId,
+          messageId,
+          role: 'agent',
+          text: message.text,
+          turnId: turn.turnId,
+        });
+        if (saved.duplicate) return;
+        deps.emitter.emit({
+          type: 'task_message',
+          taskId: sessionId,
+          messageId,
+          role: 'agent',
+          state: 'complete',
+          text: message.text,
+          turnId: turn.turnId,
+          eventSeq: saved.message.eventSeq,
+          at: saved.message.createdAt,
+        });
+      } catch (error) {
+        deps.log('warn', `[agent-bridge] 中间消息 ${messageId} 未落库：${(error as Error).message}`);
+      }
+    },
     onPlan: (items) => deps.registry.updatePlan(sessionId, items),
     onInteraction: (request) => {
       try {
-        deps.store.requestInteraction({
+        if (!deps.interactions) throw new Error('InteractionBroker 未接入');
+        deps.interactions.open({
           sessionId,
           requestId: request.requestId,
           kind: request.kind,
@@ -247,35 +302,11 @@ export function startConversationTurn(
           turnId: turn.turnId,
           expiresAt: request.expiresAt,
         });
-        let eventSeq: number | undefined;
-        try {
-          eventSeq = deps.store.appendEvent({
-            sessionId,
-            type: 'task_interaction_request',
-            payload: {
-              requestId: request.requestId,
-              kind: request.kind,
-              payload: request.payload,
-              expiresAt: request.expiresAt,
-            },
-          }).eventSeq;
-        } catch {
-          /* event persistence must not kill the process */
-        }
-        deps.emitter.emit({
-          type: 'task_interaction_request',
-          taskId: sessionId,
-          requestId: request.requestId,
-          turnId: turn.turnId,
-          kind: request.kind,
-          payload: request.payload,
-          expiresAt: request.expiresAt,
-          eventSeq,
-        });
       } catch (error) {
         deps.log('error', `[agent-bridge] 创建交互失败 ${sessionId}：${(error as Error).message}`);
       }
     },
+    onApprovalLookup: (input) => deps.approvalLookup?.(input, sessionId),
     onSession: (nativeSessionId) => {
       try {
         deps.store.updateSession(sessionId, { nativeSessionId });
@@ -289,9 +320,21 @@ export function startConversationTurn(
   if (
     deps.residentSessions &&
     def &&
-    (session.agentType === 'claude-code' || session.agentType === 'qoder-cli')
+    // 常驻通道的参数按 claude 写死（含 `--verbose`），而 qoder-cli 不认这个旗标
+    // —— 实测 `qodercli -p --input-format stream-json ... --verbose` 直接退出。
+    // 因此常驻只给 claude-code；qoder 走下方 startTask（headless + resumeArgs，已实测能续会话）。
+    session.agentType === 'claude-code' &&
+    !full
   ) {
-    return startResidentTurn(deps, session, turn, prompt, hooks, def.bin, timeoutMs);
+    // 必须传**绝对路径**：常驻进程的 spawn 不经过 resolveBin，裸名直接落到 PATH 上查找。
+    // qoder 实跑即此 —— `where qodercli` 找得到（扫描判「就绪」），但裸名 spawn 仍 ENOENT。
+    const command = resolveBin([def.bin, ...(def.altBins ?? [])]);
+    if (!command) {
+      const message = `本机没有安装 ${def.display}（未找到 ${def.bin}）`;
+      onStatus('failed', { error: message, errorCode: 'tool_not_installed' });
+      throw new Error(message);
+    }
+    return startResidentTurn(deps, session, turn, prompt, hooks, command, timeoutMs);
   }
 
   let handle: TaskHandle;
@@ -301,18 +344,26 @@ export function startConversationTurn(
         taskId: executionId,
         agentType: session.agentType,
         cwd: session.cwd,
-        args: resumeArgs,
-        prompt,
+        args: [],
+        internalArgs: resumeArgs,
+        prompt: turnPrompt,
         timeoutMs,
         allowedCwd: deps.allowedCwd,
         maxConcurrent: deps.maxConcurrent,
         maxQueued: deps.maxQueued,
         captureDiff: deps.captureDiffByDefault,
         diffMaxBytes: deps.diffMaxBytes,
-        acp: Boolean(prompt) && canRunAcp(def?.acp),
-        acpSpec: def?.acp,
-        appServer: session.agentType === 'codex' && Boolean(prompt),
-        nativeSessionId: session.nativeSessionId,
+        permissionMode,
+        permissionPolicy: deps.permissionPolicy,
+        externalSandbox: deps.externalSandbox,
+        interactive: turn.execution?.allowInteractive === true && deps.interactionEnabled === true,
+        interactionSessionId: sessionId,
+        interactionTenantId: turn.tenantId,
+        // full 会话走受管 headless + transcript replay；ACP/app-server 不再静默丢弃权限模式。
+        acp: !full && Boolean(turnPrompt) && canRunAcp(def?.acp),
+        acpSpec: acpSpecFor(def),
+        appServer: !full && session.agentType === 'codex' && Boolean(turnPrompt),
+        nativeSessionId: full ? undefined : session.nativeSessionId,
         replayPrompt,
       },
       hooks,
@@ -380,6 +431,11 @@ function startResidentTurn(
     if (deps.tasks.get(sessionId) === handle) deps.tasks.delete(sessionId);
   });
 
+  if (hooks.onBeforeLaunch && !hooks.onBeforeLaunch()) {
+    settle('failed', { error: 'Turn 启动前持久化闸门未通过，未启动 CLI', errorCode: 'internal' });
+    return handle;
+  }
+
   void current.send(prompt, hooks, timeoutMs).then(
     (info) => settle('success', info),
     (error) => {
@@ -438,6 +494,12 @@ function transcriptOf(deps: ConversationDeps, sessionId: string): string {
     .join('\n\n');
 }
 
+export function recoverConversationTurn(deps: ConversationDeps, turn: TurnRecord): void {
+  const session = deps.store.getSession(turn.sessionId, turn.tenantId);
+  if (!session || session.status !== 'running' || !turn.execution) return;
+  startConversationTurn(deps, session, turn, turn.execution.prompt ?? '', turn.execution.timeoutMs);
+}
+
 export function dispatchConversationRun(msg: RunTaskMessage, deps: ConversationDeps): void {
   const existing = deps.store.getSession(msg.taskId);
   if (existing) {
@@ -489,10 +551,23 @@ export function dispatchConversationRun(msg: RunTaskMessage, deps: ConversationD
     mode: 'conversation',
     agentType: msg.agentType,
     cwd: msg.cwd,
+    permissionMode: msg.permissionMode,
     phase: 'queued',
   });
-  const turn = deps.store.createTurn({ sessionId: msg.taskId, status: 'queued' });
   const initialText = msg.prompt ?? '';
+  const turn = deps.store.createTurn({
+    sessionId: msg.taskId,
+    status: 'queued',
+    execution: {
+      args: [],
+      prompt: initialText,
+      timeoutMs: msg.timeoutMs,
+      allowInteractive: msg.allowInteractive,
+      permissionMode: msg.permissionMode,
+      requestedBy: msg.requestedBy,
+      purpose: msg.purpose,
+    },
+  });
   const initial = deps.store.appendMessage({
     sessionId: msg.taskId,
     messageId: `msg_${msg.taskId}_initial`,
@@ -604,7 +679,15 @@ export async function dispatchConversationMessage(
 
   if (session.phase !== 'waiting_user') return reject('session_busy');
 
-  const turn = deps.store.createTurn({ sessionId: msg.taskId, status: 'queued' });
+  const nativeResume = Boolean(agentDefOf(session.agentType)?.resumeArgs && session.nativeSessionId);
+  const priorTranscript = transcriptOf(deps, msg.taskId);
+  const prompt = nativeResume ? text : `${priorTranscript}${priorTranscript ? '\n\n' : ''}User: ${text}`;
+  const allowInteractive = deps.store.snapshot(msg.taskId).turns.at(-1)?.execution?.allowInteractive === true;
+  const turn = deps.store.createTurn({
+    sessionId: msg.taskId,
+    status: 'queued',
+    execution: { args: [], prompt, allowInteractive },
+  });
   const userMessage = deps.store.appendMessage({
     sessionId: msg.taskId,
     messageId: msg.messageId,
@@ -612,8 +695,6 @@ export async function dispatchConversationMessage(
     text,
     turnId: turn.turnId,
   });
-  const nativeResume = Boolean(agentDefOf(session.agentType)?.resumeArgs && session.nativeSessionId);
-  const prompt = nativeResume ? text : transcriptOf(deps, msg.taskId);
   deps.emitter.emit({
     type: 'message_ack',
     taskId: msg.taskId,

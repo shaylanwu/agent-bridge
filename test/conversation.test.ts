@@ -81,6 +81,105 @@ describe('conversation turns', () => {
     expect(sent.some((m) => m.type === 'task_status' && m.phase === 'waiting_user')).toBe(true);
   });
 
+  it('conversation 首轮保留权限请求、本机策略与外部沙箱声明', () => {
+    const { store, deps } = setup();
+    deps.permissionPolicy = 'allow-full';
+    deps.externalSandbox = true;
+    dispatchConversationRun(
+      {
+        type: 'run_task',
+        taskId: 'bt_conv_full_first',
+        agentType: 'agy',
+        cwd: '/tmp/work',
+        args: [],
+        prompt: 'hello full',
+        sessionMode: 'conversation',
+        permissionMode: 'full',
+      },
+      deps,
+    );
+
+    expect(store.getSession('bt_conv_full_first')?.permissionMode).toBe('full');
+    expect(runnerMocks.startTask.mock.calls[0]?.[0]).toMatchObject({
+      permissionMode: 'full',
+      permissionPolicy: 'allow-full',
+      externalSandbox: true,
+      acp: false,
+      appServer: false,
+    });
+  });
+
+  it('conversation 保留 allowInteractive 并在启动前真实认领 queued Turn', () => {
+    const { store, deps } = setup();
+    deps.interactionEnabled = true;
+    runnerMocks.startTask.mockImplementation((req, hooks) => {
+      expect(req).toMatchObject({ interactive: true, interactionSessionId: 'bt_conv_interactive' });
+      expect(hooks.onBeforeLaunch?.()).toBe(true);
+      hooks.onStatus('success', { exitCode: 0 });
+      return { taskId: req.taskId, cancel: () => undefined, done: Promise.resolve('success' as const) };
+    });
+    dispatchConversationRun(
+      {
+        type: 'run_task', taskId: 'bt_conv_interactive', agentType: 'codex', cwd: '/tmp/work', args: [],
+        prompt: 'interactive', sessionMode: 'conversation', allowInteractive: true,
+      },
+      deps,
+    );
+    expect(store.listTurns('bt_conv_interactive')[0]).toMatchObject({
+      status: 'success',
+      execution: { allowInteractive: true, prompt: 'interactive' },
+    });
+  });
+
+  it('full conversation 后续 Turn 用完整 transcript 重放，不把内部 resumeArgs 当平台自定义参数', () => {
+    const { store, deps } = setup();
+    deps.permissionPolicy = 'allow-full';
+    store.createSession({
+      sessionId: 'bt_conv_full_replay',
+      mode: 'conversation',
+      agentType: 'agy',
+      cwd: '/tmp/work',
+      phase: 'waiting_user',
+      permissionMode: 'full',
+      nativeSessionId: 'agy_native_1',
+    });
+    store.appendMessage({
+      sessionId: 'bt_conv_full_replay',
+      messageId: 'msg_full_prev_user',
+      role: 'user',
+      text: '上一轮问题',
+    });
+    store.appendMessage({
+      sessionId: 'bt_conv_full_replay',
+      messageId: 'msg_full_prev_agent',
+      role: 'agent',
+      text: '上一轮回答',
+    });
+
+    dispatchConversationMessage(
+      {
+        type: 'send_message',
+        taskId: 'bt_conv_full_replay',
+        messageId: 'msg_full_next',
+        parts: [{ kind: 'text', text: '这一轮新问题' }],
+      },
+      deps,
+    );
+
+    const request = runnerMocks.startTask.mock.calls[0]?.[0] as {
+      args: string[];
+      prompt?: string;
+      permissionMode?: string;
+      acp?: boolean;
+    };
+    expect(request.args).toEqual([]);
+    expect(request.permissionMode).toBe('full');
+    expect(request.acp).toBe(false);
+    expect(request.prompt).toContain('上一轮问题');
+    expect(request.prompt).toContain('上一轮回答');
+    expect(request.prompt).toContain('这一轮新问题');
+  });
+
   it('waiting_user 空闲超时会关闭会话并推终态', async () => {
     const { store, sent, deps } = setup();
     deps.idleTimeoutMs = 30;
@@ -110,8 +209,9 @@ describe('conversation turns', () => {
     });
   });
 
-  it('send_message 持久化 user message、回 ack，并启动下一 Turn', () => {
+  it('send_message 持久化 user message、回 ack，并启动下一 Turn；受管策略不拒内部 resumeArgs', () => {
     const { store, sent, deps } = setup();
+    deps.permissionPolicy = 'allow-full';
     store.createSession({
       sessionId: 'bt_conv_msg',
       mode: 'conversation',
@@ -138,10 +238,15 @@ describe('conversation turns', () => {
     expect(store.listMessages('bt_conv_msg').map((m) => m.role)).toEqual(['user', 'agent']);
     expect(store.getSession('bt_conv_msg')?.phase).toBe('waiting_user');
     expect(runnerMocks.startTask).toHaveBeenCalledTimes(1);
-    const request = runnerMocks.startTask.mock.calls[0]?.[0] as { args: string[]; prompt?: string };
-    expect(request.args).toEqual(
-      expect.arrayContaining(['--resume', 'sess_native_1']),
-    );
+    const request = runnerMocks.startTask.mock.calls[0]?.[0] as {
+      args: string[];
+      internalArgs?: string[];
+      prompt?: string;
+      permissionPolicy?: string;
+    };
+    expect(request.args).toEqual([]);
+    expect(request.internalArgs).toEqual(expect.arrayContaining(['--resume', 'sess_native_1']));
+    expect(request.permissionPolicy).toBe('allow-full');
     expect(request.prompt).toBe('second turn');
   });
 
