@@ -17,7 +17,7 @@ export type AuditOutcome = 'allowed' | 'denied' | 'executed' | 'error';
 
 export interface AuditEntry {
   at: string;
-  /** 动作：run_task / cancel_task / scan / token_issue / token_revoke / token_rotate */
+  /** 动作：run_task / cancel_task / scan / token_issue / token_revoke / token_rotate / interaction_response … */
   action: string;
   outcome: AuditOutcome;
   taskId?: string;
@@ -35,6 +35,11 @@ export interface AuditEntry {
   permissionMode?: string;
   /** 持久授权账本（1.0）：命中的授权 id；只写 id，不写资源原文 */
   approvalId?: string;
+  /** 交互响应（5.11）：request/response 标识与所选选项 —— 只写 optionId 或 action，不写 Form content */
+  requestId?: string;
+  responseId?: string;
+  kind?: string;
+  choice?: string;
 }
 
 export function auditPath(): string {
@@ -67,6 +72,10 @@ export function writeAudit(entry: AuditEntry): void {
       policy: clip(entry.policy),
       permissionMode: clip(entry.permissionMode),
       approvalId: clip(entry.approvalId),
+      requestId: clip(entry.requestId),
+      responseId: clip(entry.responseId),
+      kind: clip(entry.kind),
+      choice: clip(entry.choice),
     });
     const file = auditPath();
     appendFileSync(file, `${line}\n`, { encoding: 'utf8', mode: 0o600 });

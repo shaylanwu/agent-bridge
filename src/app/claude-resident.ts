@@ -1,5 +1,5 @@
 /**
- * 常驻 Claude/Qoder stream-json 会话。
+ * 常驻 Claude stream-json 会话；Qoder 使用 headless + 原生 --resume。
  *
  * 每个 conversation session 一个进程：Turn 结束（result）只结算 Turn，不退出进程；
  * 下一条 send_message 继续写 user 帧。这样省掉每轮 CLI 冷启动，并保留原生 session。
@@ -7,10 +7,12 @@
  * 注意：CLI 会把 active Turn 期间的第二个 user 帧排队，因此这里不声明 same-turn steer。
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 import type { TaskFinishInfo } from '../core/task-supervisor.js';
 import type { TaskHooks } from '../core/task-supervisor.js';
+import { killCliProcess, spawnCliProcess } from '../adapters/agent-adapters.js';
+import { claudeResultError } from '../adapters/claude-stream.js';
 
 export interface ClaudeResidentOptions {
   command: string;
@@ -82,11 +84,9 @@ export class ClaudeResident {
     if (this.child && !this.closed) return this.child;
     const args =
       this.options.args ?? claudeResidentArgs(this.sessionId || this.options.nativeSessionId);
-    const child = spawn(this.options.command, args, {
+    const child = spawnCliProcess(this.options.command, args, {
       cwd: this.options.cwd,
       env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
     });
     const generation = ++this.generation;
     this.child = child;
@@ -138,7 +138,7 @@ export class ClaudeResident {
     }
     this.closed = true;
     this.rl?.close();
-    this.child?.kill();
+    if (this.child) killCliProcess(this.child, this.options.command);
     this.child?.stdin.destroy();
     this.child?.stdout.destroy();
     this.child?.stderr.destroy();
@@ -193,6 +193,11 @@ export class ClaudeResident {
       const result = typeof event['result'] === 'string' ? event['result'] : turn.text;
       clearTimeout(turn.timer);
       this.active = undefined;
+      const resultError = claudeResultError(event);
+      if (resultError) {
+        turn.reject(resultError);
+        return;
+      }
       turn.resolve({ exitCode: 0, result });
       const idleMs = this.options.idleMs ?? 10 * 60_000;
       if (idleMs > 0) {

@@ -200,6 +200,21 @@ export type ClientMessage =
       /** state=finished 时给出成败 */
       ok?: boolean;
       ref?: string;
+      /**
+       * 富 toolCall（4.8）：工具调用的规范化子集。kind 用 ACP 的
+       * read/edit/delete/move/search/execute/think/fetch/switch_mode/other；
+       * content 是有界 text/diff/terminal 块（脱敏与截断在生成处/出口完成）；
+       * rawInput/rawOutput 不上行；无法可靠提取的适配器省略该字段（只保留 legacy 字段）。
+       */
+      toolCall?: {
+        toolCallId?: string;
+        name: string;
+        kind?: 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'switch_mode' | 'other';
+        title?: string;
+        status?: string;
+        locations?: Array<{ path?: string; line?: number }>;
+        content?: Array<{ kind: 'text' | 'diff' | 'terminal'; text: string }>;
+      };
       /** ISO 时间戳 */
       at: string;
       turnId?: string;
@@ -237,11 +252,16 @@ export type ClientMessage =
        * 平台补洞必须先按 gaps 判定缺失，而不是假设窗口连续。
        *
        * 命名对应：`oldestEventSeq` = 存储里还保留的最旧序号（保留水位），`latestEventSeq` = 最新序号。
+       *
+       * `reason`（2.9/3.9 有界 feed）：缺口由预算淘汰产生时给出原因
+       * （`count` 分类条数 / `task_bytes` 单任务字节 / `global_bytes` 进程全局字节）；
+       * 写入失败等其它来源的缺口不带该字段。窗口之前的前缀删除不进 gaps，
+       * 由 `prunedThrough` / `session_history_pruned` 语义表达。
        */
       eventWindow?: {
         oldestEventSeq?: number;
         latestEventSeq?: number;
-        gaps: Array<{ from: number; to: number }>;
+        gaps: Array<{ from: number; to: number; reason?: 'count' | 'task_bytes' | 'global_bytes' }>;
       };
       /** 窗口最旧一条之前还有没有内容（回翻控制器据此决定是否继续往前取） */
       hasMoreBefore?: boolean;
@@ -258,6 +278,10 @@ export type ClientMessage =
        * 没有流式文本通道的适配器（headless）这里就是空数组，属如实缺省，不是漏报。
        */
       partialMessages?: SnapshotPartialMessage[];
+      /** 当前 pending/submitting 交互；独立于 Feed retention。 */
+      pendingInteraction?: Record<string, unknown>;
+      /** 每个 requestId 的最新处理 occurrence；resultSeq 不占 eventSeq。 */
+      interactionResults?: Record<string, unknown>[];
       /**
        * 结果码（受控错误码）。`found: false` 时区分三种情况：
        * `task_not_found`（从未存在）、`session_deleted`（tombstone 命中，内容已删且 ID 不复用）、
@@ -309,15 +333,23 @@ export type ClientMessage =
       eventSeq?: number;
     }
   | {
-      /** 入站附件已提交 */
+      /** 入站附件已提交；或任务产物元数据（4.9：无 adapter 明确事件时不读内容，见 contentUnavailableReason） */
       type: 'task_artifact';
       taskId: string;
       artifactId: string;
       name: string;
       mimeType: string;
       size: number;
-      sha256: string;
+      /** 内容已读并校验时给；元数据路径（no_adapter_artifact_event）省略 */
+      sha256?: string;
       kind: string;
+      /** 来源：agent（任务产物）/ platform（平台上传） */
+      source?: 'agent' | 'platform';
+      /**
+       * 内容不可得的原因（4.9）：`no_adapter_artifact_event` = 仅 changedFiles 元数据
+       * （spec：无结构化 artifact 事件时不读取内容）；此时 get_artifact 如实回 artifact_not_found。
+       */
+      contentUnavailableReason?: string;
       eventSeq?: number;
     }
   | {
@@ -345,6 +377,7 @@ export type ClientMessage =
       type: 'artifact_download_ready';
       transferId: string;
       artifactId: string;
+      nextOffset: number;
       size: number;
       sha256: string;
       chunkSize: number;
@@ -363,6 +396,17 @@ export type ClientMessage =
       errorCode?: string;
     }
   | {
+      type: 'artifact_transfer_status';
+      transferId: string;
+      direction?: 'upload' | 'download';
+      state: string;
+      nextOffset?: number;
+      chunkSize?: number;
+      artifactId?: string;
+      reason?: string;
+      errorCode?: string;
+    }
+  | {
       type: 'interaction_url';
       taskId: string;
       requestId: string;
@@ -372,16 +416,21 @@ export type ClientMessage =
       errorCode?: string;
     }
   | {
-      /** 交互回复结果（bridge → 平台） */
+      /** 交互处理 occurrence（bridge → 平台）；不占 canonical eventSeq。 */
       type: 'task_interaction_result';
       taskId: string;
       requestId: string;
+      /** 兼容现有扁平消费者；新消费者应读 requestState + resolution。 */
       state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
+      requestState: InteractionRequestState;
+      responseStatus?: InteractionResponseStatus;
       responseId?: string;
-      resultSeq?: number;
+      resultSeq: number;
+      resolution?: Record<string, unknown>;
+      /** 旧字段仅保留安全摘要，不含 Form content。 */
       resultPayload?: Record<string, unknown>;
       errorCode?: string;
-      eventSeq?: number;
+      at: string;
     }
   | {
       /** send_message 的幂等回执 */
@@ -452,6 +501,14 @@ export type ExecutionModeName = 'headless' | 'acp-stdio';
 
 /** 交互种类：只列该模式下**已实现且通过测试**的种类，空数组/缺省 = 不支持交互 */
 export type InteractionKind = 'permission' | 'form' | 'auth-url';
+export type InteractionRequestState =
+  | 'pending'
+  | 'submitting'
+  | 'resolved'
+  | 'failed'
+  | 'expired'
+  | 'cancelled';
+export type InteractionResponseStatus = 'accepted' | 'duplicate' | 'invalid' | 'late';
 
 /** canonical feed 维度：未验证的维度不得声明（避免平台把 task_log 当稳定 UI 协议） */
 export type FeedKind = 'messages' | 'steps' | 'artifacts';
@@ -591,6 +648,8 @@ export interface InteractionResponseCommand extends ServiceIdentity {
   state: 'accepted' | 'declined' | 'cancelled';
   payload?: Record<string, unknown>;
   respondedBy?: string;
+  /** 本地 HTTP 恢复租户上下文；WS parser 不透传外部自报 tenant。 */
+  tenantId?: string;
 }
 
 export interface ArtifactDownloadStartCommand extends ServiceIdentity {
@@ -632,6 +691,17 @@ export interface ArtifactUploadCompleteCommand {
   sha256: string;
 }
 
+export interface ArtifactTransferStatusCommand extends ServiceIdentity {
+  type: 'artifact_transfer_status';
+  transferId: string;
+}
+
+export interface ArtifactTransferAbortCommand extends ServiceIdentity {
+  type: 'artifact_transfer_abort';
+  transferId: string;
+  reason?: string;
+}
+
 export interface GetTaskCommand extends ServiceIdentity {
   type: 'get_task';
   taskId: string;
@@ -671,7 +741,9 @@ export type ServerMessage =
   | ArtifactUploadChunkCommand
   | ArtifactUploadCompleteCommand
   | ArtifactDownloadStartCommand
-  | ArtifactDownloadChunkAckCommand;
+  | ArtifactDownloadChunkAckCommand
+  | ArtifactTransferStatusCommand
+  | ArtifactTransferAbortCommand;
 
 export class ProtocolError extends Error {}
 
@@ -929,6 +1001,21 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
     };
   }
+  if (type === 'artifact_transfer_status' || type === 'artifact_transfer_abort') {
+    if (typeof msg['transferId'] !== 'string' || !msg['transferId']) {
+      throw new ProtocolError(`${type} 缺少 transferId`);
+    }
+    return {
+      type,
+      transferId: String(msg['transferId']),
+      ...(type === 'artifact_transfer_abort' && typeof msg['reason'] === 'string'
+        ? { reason: msg['reason'] }
+        : {}),
+      requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
+      purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
+      serviceToken: strField(msg, 'serviceToken', MAX_TOKEN_LEN),
+    };
+  }
   if (type === 'get_task') {
     if (typeof msg['taskId'] !== 'string' || !msg['taskId']) {
       throw new ProtocolError('get_task 缺少 taskId');
@@ -936,6 +1023,10 @@ export function assertServerMessage(raw: unknown): ServerMessage {
     const after =
       typeof msg['afterEventSeq'] === 'number' && Number.isFinite(msg['afterEventSeq'])
         ? Math.max(0, Math.floor(msg['afterEventSeq']))
+        : undefined;
+    const before =
+      typeof msg['beforeEventSeq'] === 'number' && Number.isFinite(msg['beforeEventSeq'])
+        ? Math.max(0, Math.floor(msg['beforeEventSeq']))
         : undefined;
     const limit =
       typeof msg['limit'] === 'number' && Number.isFinite(msg['limit'])
@@ -946,6 +1037,7 @@ export function assertServerMessage(raw: unknown): ServerMessage {
       taskId: String(msg['taskId']),
       requestId: strField(msg, 'requestId', MAX_META_LEN),
       afterEventSeq: after,
+      beforeEventSeq: before,
       limit,
       requestedBy: strField(msg, 'requestedBy', MAX_META_LEN),
       purpose: strField(msg, 'purpose', MAX_PURPOSE_LEN),
@@ -1011,12 +1103,19 @@ export function toCloudEvent(
 ): CloudEvent {
   const type = `dev.agent-bridge.${msg.type}.v1`;
   const subject = 'taskId' in msg ? String(msg['taskId']) : undefined;
+  const stableId =
+    msg.type === 'task_interaction_request'
+      ? `interaction:${msg.taskId}:${msg.requestId}`
+      : msg.type === 'task_interaction_result'
+        ? `interaction-result:${msg.taskId}:${msg.requestId}:${msg.resultSeq}`
+        : `${seq}-${at.getTime()}`;
+  const stableTime = msg.type === 'task_interaction_result' ? new Date(msg.at) : at;
   return {
     specversion: CLOUD_EVENTS_SPECVERSION,
-    id: `${seq}-${at.getTime()}`,
+    id: stableId,
     source,
     type,
-    time: at.toISOString(),
+    time: stableTime.toISOString(),
     datacontenttype: 'application/json',
     ...(subject ? { subject } : {}),
     seq,

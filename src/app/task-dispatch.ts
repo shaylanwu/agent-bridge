@@ -8,11 +8,13 @@
  */
 
 import type { Emitter } from '../core/emitter.js';
-import { readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { hasAnsi } from '../core/ansi.js';
-import { validateFormContent } from '../core/form-schema.js';
+import { resolveWithinCwd, mimeTypeOf } from '../core/artifact-extract.js';
+import { InteractionBroker, type InteractionOutcome } from '../core/interaction-broker.js';
+export type { InteractionOutcome } from '../core/interaction-broker.js';
 import type { PermissionPolicyName } from '../core/permission-policy.js';
 import {
   approvalExpiry,
@@ -25,14 +27,14 @@ import {
 import { startTask, type TaskHandle } from '../runner.js';
 import type { ApprovalLookupInput, ApprovalLookupResult } from '../core/task-supervisor.js';
 import { ARTIFACT_INLINE_MAX_BYTES } from '../protocol.js';
-import type { PermissionMode, ServerMessage, SnapshotPartialMessage, TaskStatus } from '../protocol.js';
+import type { ServerMessage, SnapshotPartialMessage, TaskStatus } from '../protocol.js';
 import { authorizeService } from './service-gate.js';
 import { writeAudit } from '../infra/audit.js';
 import { canRunAcp } from '../adapters/acp-codebuddy.js';
-import { agentDefOf } from '../adapters/agent-adapters.js';
+import { acpSpecFor, agentDefOf } from '../adapters/agent-adapters.js';
 import type { SessionLog } from './session-log.js';
 import type { TaskRegistry } from './task-registry.js';
-import type { SessionStore, TurnRecord } from '../core/session-store.js';
+import { DEFAULT_TENANT, type SessionStore, type TurnRecord } from '../core/session-store.js';
 import { dispatchConversationRun } from './conversation.js';
 
 export type RunTaskMessage = Extract<ServerMessage, { type: 'run_task' }>;
@@ -71,6 +73,8 @@ export interface TaskDispatchOptions {
   artifactRootDir?: string;
   /** 持久 Session/Turn/Event 权威源 */
   store: SessionStore;
+  /** 当前 supervisor 的交互权威内核 */
+  interactions?: InteractionBroker;
   /**
    * 半截消息读取（1.0，可选）：注入 `supervisor.listPartialMessages`。
    * 缺省时不带该字段，而不是回一个假的空数组 —— 没接通道 ≠ 接收道了但没有文本。
@@ -209,191 +213,63 @@ export function dispatchCancelTurn(msg: CancelTurnMessage, o: TaskDispatchOption
   ackSession(o, msg, 'cancel_turn', true, { status: 'cancelled' });
 }
 
-/**
- * 一次交互响应处理的客观结果。
- *
- * 抽出来是因为同一条规则要服务两条通道：WS（`task_interaction_response`）只看「有没有回 result 帧」，
- * 而 HTTP（`POST /v1/interactions/{requestId}:respond`）必须能给出状态码。让判定函数返回结果，
- * 而不是让调用方回读 SQLite 猜 —— 回读在“鉴权失败”这类不落库的分支上会误判成 pending。
- */
-export interface InteractionOutcome {
-  ok: boolean;
-  /** 结算后的状态（ok=true 时有效；幂等重放返回既有终态） */
-  state?: 'accepted' | 'declined' | 'cancelled' | 'expired';
-  responseId?: string;
-  resultSeq?: number;
-  /** ok=false 时的受控错误码，与 WS 的 `task_interaction_result.errorCode` 同源 */
-  errorCode?: string;
-}
-
-export function dispatchInteractionResponse(
+/** WS 与 HTTP 只做鉴权和适配器入口接线；响应矩阵统一由当前 supervisor 的 Broker 判定。 */
+export async function dispatchInteractionResponse(
   msg: InteractionResponseMessage,
   o: TaskDispatchOptions,
-): InteractionOutcome {
-  const emitResult = (
-    state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed',
-    extra: { responseId?: string; resultSeq?: number; resultPayload?: Record<string, unknown>; errorCode?: string } = {},
-  ): void => {
-    o.emitter.emit({
-      type: 'task_interaction_result',
-      taskId: msg.taskId,
-      requestId: msg.requestId,
-      state,
-      ...extra,
-    });
-  };
-
-  const interaction = o.store.getInteraction(msg.taskId, msg.requestId);
-  if (!interaction) {
-    emitResult('failed', { errorCode: 'interaction_not_found' });
-    return { ok: false, errorCode: 'interaction_not_found' };
-  }
-  if (interaction.state !== 'pending') {
-    if (interaction.responseId === msg.responseId) {
-      emitResult(interaction.state as 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed', {
-        responseId: interaction.responseId,
-        resultSeq: interaction.resultSeq,
-        resultPayload: interaction.resultPayload as Record<string, unknown> | undefined,
-      });
-      // 幂等重放：同 responseId 再发一次 = 同一结果，不算错
-      return {
-        ok: true,
-        state: interaction.state as 'accepted' | 'declined' | 'cancelled' | 'expired',
-        responseId: interaction.responseId,
-        resultSeq: interaction.resultSeq,
-      };
-    }
-    emitResult('failed', { errorCode: 'interaction_already_resolved' });
-    return { ok: false, errorCode: 'interaction_already_resolved' };
-  }
-  if (interaction.expiresAt && Date.parse(interaction.expiresAt) <= Date.now()) {
-    const event = o.store.appendEvent({
-      sessionId: msg.taskId,
-      type: 'task_interaction_result',
-      payload: {
-        requestId: msg.requestId,
-        responseId: msg.responseId,
-        state: 'expired',
-      },
-    });
-    const expired = o.store.resolveInteraction({
-      sessionId: msg.taskId,
-      requestId: msg.requestId,
-      state: 'expired',
-      responseId: msg.responseId,
-      resultSeq: event.eventSeq,
-    });
-    emitResult('expired', {
-      responseId: expired.responseId,
-      resultSeq: expired.resultSeq,
-    });
-    return { ok: false, errorCode: 'interaction_expired', state: 'expired' as const };
-  }
-
+): Promise<InteractionOutcome> {
+  const interaction = o.store.getInteraction(msg.taskId, msg.requestId, msg.tenantId ?? 'default');
+  if (!interaction) return { ok: false, errorCode: 'interaction_not_found' };
   const scope = interaction.kind === 'permission' ? 'task:approve' : 'task:respond';
   const gate = authorizeService(msg, 'task_interaction_response', msg.taskId, scope, o.requireServiceToken);
-  if (!gate.ok) {
-    emitResult('failed', { errorCode: gate.code });
-    return { ok: false, errorCode: gate.code };
-  }
+  if (!gate.ok) return { ok: false, errorCode: gate.code };
+  if (!o.interactions) return { ok: false, errorCode: 'internal' };
 
-  const payload = msg.payload ?? {};
-  const content =
-    typeof payload['content'] === 'object' && payload['content'] !== null
-      ? (payload['content'] as Record<string, unknown>)
-      : undefined;
-  const action =
-    msg.state === 'accepted' ? 'accept' : msg.state === 'declined' ? 'decline' : 'cancel';
+  const outcome = await o.interactions.respond(msg);
+  if (outcome.deliveryFailed) o.tasks.get(msg.taskId)?.cancel();
 
-  const interactionPayload =
-    typeof interaction.payload === 'object' && interaction.payload !== null
-      ? (interaction.payload as Record<string, unknown>)
-      : {};
-  if (interaction.kind === 'form' && msg.state === 'accepted') {
-    const schema =
-      typeof interactionPayload['requestedSchema'] === 'object' &&
-      interactionPayload['requestedSchema'] !== null
-        ? (interactionPayload['requestedSchema'] as Record<string, unknown>)
-        : {};
-    const invalid = validateFormContent(schema, content ?? {});
-    if (invalid) {
-      emitResult('failed', { errorCode: 'protocol_incompatible' });
-      return { ok: false, errorCode: 'protocol_incompatible' };
-    }
-  }
-
-  // Form content 只回送 ACP；落库/回传只保留动作与字段名，避免 secret 扩散。
-  const storedPayload =
-    interaction.kind === 'form'
-      ? { action, fieldNames: Object.keys(content ?? {}) }
-      : payload;
-
-  const event = o.store.appendEvent({
-    sessionId: msg.taskId,
-    type: 'task_interaction_result',
-    payload: {
-      requestId: msg.requestId,
-      responseId: msg.responseId,
-      state: msg.state,
-      resultPayload: storedPayload,
-    },
-  });
-  const resolved = o.store.resolveInteraction({
-    sessionId: msg.taskId,
+  // 交互响应审计（5.11，spec「响应幂等、限流与审计」）：记 who/what/result，
+  // 只写 optionId（permission）或 action（form），Form content 的值绝不落审计。
+  writeAudit({
+    at: new Date().toISOString(),
+    action: 'interaction_response',
+    outcome: outcome.ok ? 'allowed' : 'denied',
+    taskId: msg.taskId,
     requestId: msg.requestId,
-    state: msg.state,
     responseId: msg.responseId,
-    resultSeq: event.eventSeq,
-    resultPayload: storedPayload,
+    kind: interaction.kind,
+    choice:
+      interaction.kind === 'permission'
+        ? (typeof msg.payload?.['optionId'] === 'string' ? String(msg.payload['optionId']) : msg.state)
+        : msg.state === 'accepted'
+          ? 'accept'
+          : msg.state === 'declined'
+            ? 'decline'
+            : 'cancel',
+    requestedBy: msg.respondedBy,
+    reason: outcome.ok ? undefined : (outcome.errorCode ?? 'rejected'),
   });
-  const explicitOption =
-    typeof payload['optionId'] === 'string'
-      ? (payload['optionId'] as string)
-      : typeof payload['option_id'] === 'string'
-        ? (payload['option_id'] as string)
-        : undefined;
-  const requestOptions = (interaction.payload as { options?: Array<Record<string, unknown>> }).options;
-  const fallbackOption =
-    msg.state === 'accepted' && Array.isArray(requestOptions)
-      ? requestOptions.find((option) => String(option['kind'] ?? '').startsWith('allow'))?.['optionId']
-      : undefined;
-  const optionId =
-    explicitOption ?? (typeof fallbackOption === 'string' ? fallbackOption : undefined);
 
-  // ---- 持久授权（1.0）：只有人工明确选了「持久允许」才落账本 ----
-  // 写在 respondInteraction 之前，但任何失败都不影响本次响应：会话内的授权由 ACP 自己维持。
-  if (msg.state === 'accepted' && interaction.kind === 'permission' && o.approvalLedger?.enabled) {
-    const chosenKind = Array.isArray(requestOptions)
-      ? requestOptions.find((option) => option['optionId'] === optionId)?.['kind']
-      : undefined;
+  // 仅首次 accepted 且真实交付成功才写账本；duplicate/replay/conflict 不得重复授权。
+  if (
+    outcome.ok &&
+    outcome.deliveredNow === true &&
+    outcome.result?.responseStatus === 'accepted' &&
+    msg.state === 'accepted' &&
+    interaction.kind === 'permission' &&
+    o.approvalLedger?.enabled
+  ) {
+    const optionId = outcome.result.resolution?.['optionId'];
+    const rawOptions = (interaction.payload as Record<string, unknown>)?.['options'];
+    const options = Array.isArray(rawOptions)
+      ? rawOptions.filter((option): option is Record<string, unknown> => typeof option === 'object' && option !== null)
+      : [];
+    const chosenKind = options.find((option) => option['optionId'] === optionId)?.['kind'];
     if (typeof chosenKind === 'string' && (PERSISTENT_OPTION_KINDS as readonly string[]).includes(chosenKind)) {
       persistApproval(o, msg, interaction.payload as Record<string, unknown>, gate, chosenKind);
     }
   }
-
-  o.tasks.get(msg.taskId)?.respondInteraction?.(msg.requestId, { optionId, action, content });
-  emitResult(resolved.state as 'accepted' | 'declined' | 'cancelled', {
-    responseId: resolved.responseId,
-    resultSeq: resolved.resultSeq,
-    resultPayload: storedPayload,
-  });
-  // 等待态必须显式收起：不带 interactionId 的 running 帧就是「不再等待」的语义。
-  // 仅在任务仍活着时发 —— 终态后迟到的响应不应把已结算的任务拉回 running。
-  if (o.tasks.get(msg.taskId)) {
-    o.emitter.emit({
-      type: 'task_status',
-      taskId: msg.taskId,
-      status: 'running',
-      phase: 'running',
-      turnId: interaction.turnId,
-    });
-  }
-  return {
-    ok: true,
-    state: resolved.state as 'accepted' | 'declined' | 'cancelled',
-    responseId: resolved.responseId,
-    resultSeq: resolved.resultSeq,
-  };
+  return outcome;
 }
 
 export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): void {
@@ -467,6 +343,18 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
       ...(() => {
         const partial = o.partialMessages?.(msg.taskId) ?? [];
         return partial.length ? { partialMessages: partial } : {};
+      })(),
+      ...(() => {
+        const pending = o.store
+          .listInteractions(msg.taskId)
+          .find((interaction) => interaction.state === 'pending' || interaction.state === 'submitting');
+        return pending ? { pendingInteraction: pending as unknown as Record<string, unknown> } : {};
+      })(),
+      ...(() => {
+        const results = o.store.listLatestInteractionResults(msg.taskId);
+        return results.length
+          ? { interactionResults: results as unknown as Record<string, unknown>[] }
+          : {};
       })(),
       hasMoreBefore: snapshot.hasMoreBefore ?? false,
       ...(prunedThrough > 0 ? { prunedThrough } : {}),
@@ -548,8 +436,17 @@ export function dispatchGetArtifact(msg: GetArtifactMessage, o: TaskDispatchOpti
   }
 }
 
-export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): void {
-  const gate = authorizeService(msg, 'run_task', msg.taskId, 'task:create', o.requireServiceToken);
+export function dispatchRunTask(
+  msg: RunTaskMessage,
+  o: TaskDispatchOptions,
+  recoveryTurnId?: string,
+  recoveryTenantId?: string,
+): void {
+  const storeTenant = recoveryTenantId ?? DEFAULT_TENANT;
+  // queued 恢复来自本机 SQLite 中已鉴权、已接受的执行快照，不伪造旧 serviceToken 重验。
+  const gate = recoveryTurnId
+    ? { ok: true as const }
+    : authorizeService(msg, 'run_task', msg.taskId, 'task:create', o.requireServiceToken);
   if (!gate.ok) {
     o.log('error', `[agent-bridge] 拒绝执行 ${msg.taskId}：${gate.message}`);
     o.emitter.emit({
@@ -571,30 +468,55 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
   let sessionCreated = false;
   let turn: TurnRecord | undefined;
   try {
-    const existing = o.store.getSession(msg.taskId);
+    const existing = o.store.getSession(msg.taskId, storeTenant);
     if (existing && existing.status !== 'running') {
-      // 跨进程重发：Session 的终态是权威，不再重新 spawn。
-      if (!o.tasks.has(msg.taskId)) {
-        o.emitter.emit({
-          type: 'task_status',
-          taskId: msg.taskId,
-          status: existing.status as TaskStatus,
-          error: '会话已结束（幂等重放，未重复执行）',
-          requestedBy: msg.requestedBy,
-        });
-        return;
-      }
+      // SQLite 终态优先于内存句柄生命周期：即使 done 的清理微任务尚未执行，也绝不重新校验/spawn。
+      // 回放原始终态快照，保留首次拒绝的 errorCode、权限结果与 eventSeq，而不是另造一个通用失败。
+      const terminal = o.store.getLatestEvent(msg.taskId, 'task_status', storeTenant);
+      const payload =
+        terminal && typeof terminal.payload === 'object' && terminal.payload !== null
+          ? (terminal.payload as Record<string, unknown>)
+          : { error: '会话已结束（幂等重放，未重复执行）' };
+      const latestTurn = o.store.listTurns(msg.taskId, storeTenant).at(-1);
+      o.emitter.emit({
+        ...payload,
+        type: 'task_status',
+        taskId: msg.taskId,
+        status: existing.status as TaskStatus,
+        turnId: latestTurn?.turnId,
+        eventSeq: terminal?.eventSeq,
+      });
+      return;
     }
     if (!existing) {
       const created = o.store.createSession({
         sessionId: msg.taskId,
+        tenantId: storeTenant,
         mode: 'task',
         agentType: msg.agentType,
         cwd: msg.cwd,
         phase: 'queued',
       });
       sessionCreated = created.created;
-      turn = o.store.createTurn({ sessionId: msg.taskId, status: 'queued' });
+      turn = o.store.createTurn({
+        sessionId: msg.taskId,
+        status: 'queued',
+        execution: {
+          args: [...msg.args],
+          prompt: msg.prompt,
+          timeoutMs: msg.timeoutMs,
+          allowInteractive: msg.allowInteractive,
+          captureDiff: msg.captureDiff,
+          permissionMode: msg.permissionMode,
+          requestedBy: msg.requestedBy,
+          purpose: msg.purpose,
+        },
+      });
+    } else if (recoveryTurnId) {
+      const recovered = o.store.getTurn(msg.taskId, recoveryTurnId, storeTenant);
+      if (!recovered || recovered.status !== 'queued') return;
+      turn = recovered;
+      sessionCreated = true;
     }
   } catch (error) {
     const code =
@@ -613,20 +535,24 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
   const who = msg.requestedBy ? `（${msg.requestedBy}${msg.purpose ? ` / ${msg.purpose}` : ''}）` : '';
   o.log('info', `\n▶ 执行任务 ${msg.taskId}：${msg.agentType}${who}`);
 
-  o.registry.register(msg.taskId, { agentType: msg.agentType, cwd: msg.cwd, source: 'platform' });
+  o.registry.register(msg.taskId, { agentType: msg.agentType, cwd: msg.cwd, source: 'platform', tenantId: storeTenant });
 
   // 交互额度（1.0）：按任务计数，不是全局 —— 一个任务问爆了不该拖累别的任务
   const maxInteractions = o.maxInteractionsPerTask ?? 16;
   const interactionBudgetMs = o.interactionTimeoutMs ?? 15 * 60 * 1000;
   let interactionCount = 0;
-  /** 本任务实际采用的权限模式（由调度器决策后回传，用于交互帧与终态一致回显） */
-  let permissionModeForEcho: PermissionMode | undefined;
   /** 交互过期时刻：适配器给了 expiresAt 就取较小值，绝不让单次等待超过本机上限 */
   const interactionDeadline = (requested?: string): string => {
     const cap = Date.now() + interactionBudgetMs;
     const asked = requested ? Date.parse(requested) : NaN;
     return new Date(Number.isFinite(asked) ? Math.min(asked, cap) : cap).toISOString();
   };
+
+  // full 不需要原生权限回问：非交互时直接选 headless，别让上游无条件选 ACP/app-server 后被 supervisor 拒死。
+  // full + allowInteractive 仍保留不支持通道，由 supervisor 按契约拒绝，不静默吞掉交互请求。
+  const headlessFull =
+    (msg.permissionMode === 'full' || (msg.permissionMode === undefined && o.permissionPolicy === 'full')) &&
+    msg.allowInteractive !== true;
 
   const handle = startTask(
     {
@@ -645,17 +571,30 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       permissionMode: msg.permissionMode,
       permissionPolicy: o.permissionPolicy,
       externalSandbox: o.externalSandbox,
+      interactionSessionId: msg.taskId,
+      interactionTenantId: storeTenant,
       interactive: msg.allowInteractive === true && o.interactionEnabled === true,
-      acp: Boolean(msg.prompt) && canRunAcp(agentDefOf(msg.agentType)?.acp),
-      acpSpec: agentDefOf(msg.agentType)?.acp,
-      appServer: msg.agentType === 'codex' && Boolean(msg.prompt),
+      acp: !headlessFull && Boolean(msg.prompt) && canRunAcp(agentDefOf(msg.agentType)?.acp),
+      acpSpec: acpSpecFor(agentDefOf(msg.agentType)),
+      appServer: !headlessFull && msg.agentType === 'codex' && Boolean(msg.prompt),
+      /**
+       * 双向 stream-json 通道只给 claude-code。
+       *
+       * qoder-cli 虽然也支持 `--input-format stream-json`（实测输出与 claude 同构），但
+       * **不认 `--verbose`**，而这条通道的启动旗标是按 claude 写死的 —— 实测
+       * `qodercli -p --input-format stream-json --output-format stream-json --verbose`
+       * 直接 `unknown option '--verbose'` 退出。与其塞一套它不认的参数，
+       * 不如让它走 headless（`-p --output-format stream-json` + resumeArgs，已实测能跑且能续会话）。
+       */
       claudeStream:
         Boolean(msg.prompt) &&
         msg.allowInteractive === true &&
         o.interactionEnabled === true &&
-        (msg.agentType === 'claude-code' || msg.agentType === 'qoder-cli'),
+        msg.agentType === 'claude-code',
     },
     {
+      onBeforeLaunch: () =>
+        turn ? o.store.claimTurnForLaunch(msg.taskId, turn.turnId, turn.tenantId) : true,
       onLog: (stream, data) => {
         const text = data.replace(/\x1b\[[0-9;]*m/g, '');
         if (text.trim()) o.log('info', `[${stream}] ${text.trimEnd()}`);
@@ -663,6 +602,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
         if (sessionCreated) {
           eventSeq = o.store.appendEvent({
             sessionId: msg.taskId,
+            tenantId: storeTenant,
             type: 'task_log',
             payload: { stream, data, isAnsi: hasAnsi(data) },
           }).eventSeq;
@@ -685,6 +625,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
         if (sessionCreated) {
           eventSeq = o.store.appendEvent({
             sessionId: msg.taskId,
+            tenantId: storeTenant,
             type: 'task_step',
             payload: { ...step, at },
           }).eventSeq;
@@ -701,9 +642,40 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       onPlan: (items) => {
         o.registry.updatePlan(msg.taskId, items);
       },
+      // 中间 agent 消息（4.7）：canonical task_message（complete 语义；text 的脱敏在 Emitter 出口）。
+      // appendMessage 同事务写 messages + events（message.eventSeq 即事件序号，不重复 appendEvent）；
+      // 同 ID 同文本 duplicate 直接短路；同 ID 异文本抛 session_conflict —— 跳过并记日志，不阻塞任务。
+      onAgentMessage: (message) => {
+        if (!sessionCreated) return;
+        const messageId = message.messageId ?? `msg_${msg.taskId}_am_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+        try {
+          const saved = o.store.appendMessage({
+            sessionId: msg.taskId,
+            tenantId: storeTenant,
+            messageId,
+            role: 'agent',
+            text: message.text,
+            turnId: turn?.turnId,
+          });
+          if (saved.duplicate) return;
+          o.emitter.emit({
+            type: 'task_message',
+            taskId: msg.taskId,
+            messageId,
+            role: 'agent',
+            state: 'complete',
+            text: message.text,
+            turnId: turn?.turnId,
+            eventSeq: saved.message.eventSeq,
+            at: saved.message.createdAt,
+          });
+        } catch (error) {
+          o.log('warn', `[agent-bridge] 中间消息 ${messageId} 未落库：${(error as Error).message}`);
+        }
+      },
       onSession: (nativeSessionId) => {
         try {
-          o.store.updateSession(msg.taskId, { nativeSessionId });
+          o.store.updateSession(msg.taskId, { nativeSessionId }, storeTenant);
         } catch (error) {
           o.log('error', `[agent-bridge] 保存 native session id 失败 ${msg.taskId}：${(error as Error).message}`);
         }
@@ -726,48 +698,17 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
         }
         const expiresAt = interactionDeadline(request.expiresAt);
         try {
-          o.store.requestInteraction({
+          if (!o.interactions) throw new Error('InteractionBroker 未接入');
+          o.interactions.open({
             sessionId: msg.taskId,
             requestId: request.requestId,
             kind: request.kind,
             payload: request.payload,
             turnId: turn?.turnId,
             expiresAt,
+            tenantId: storeTenant,
           });
-          let eventSeq: number | undefined;
-          if (sessionCreated) {
-            eventSeq = o.store.appendEvent({
-              sessionId: msg.taskId,
-              type: 'task_interaction_request',
-              payload: {
-                requestId: request.requestId,
-                kind: request.kind,
-                payload: request.payload,
-                expiresAt,
-              },
-            }).eventSeq;
-          }
-          o.emitter.emit({
-            type: 'task_interaction_request',
-            taskId: msg.taskId,
-            requestId: request.requestId,
-            turnId: turn?.turnId,
-            kind: request.kind,
-            payload: request.payload,
-            expiresAt,
-            eventSeq,
-          });
-          // 等待态必须带上 interactionId：平台据此收起「等待中」，而不是等到下一帧才反应过来
-          o.emitter.emit({
-            type: 'task_status',
-            taskId: msg.taskId,
-            status: 'running',
-            phase: 'waiting_interaction',
-            interactionId: request.requestId,
-            turnId: turn?.turnId,
-            permissionMode: permissionModeForEcho,
-            requestedBy: msg.requestedBy,
-          });
+          // waiting 状态由 supervisor 在 request 持久化/上行后统一发出。
         } catch (error) {
           o.log('error', `[agent-bridge] 创建交互失败 ${msg.taskId}：${(error as Error).message}`);
         }
@@ -775,8 +716,6 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
       onApprovalLookup: (input) => resolveApproval(o, input, msg.taskId),
       onStatus: (status, info) => {
         o.registry.updateStatus(msg.taskId, status, info);
-        // 记下实际权限模式：交互帧与后续帧要保持一致，不能让平台看到两个不同的模式
-        if (info?.permissionMode) permissionModeForEcho = info.permissionMode;
         // 权限判定审计（每个任务一条，终态时落）：只写策略名/模式/结果，不写 argv 与环境值
         if (terminalStatus(status)) {
           const deniedByPolicy =
@@ -809,6 +748,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
               const messageId = `msg_${msg.taskId}_final`;
               const messageEvent = o.store.appendEvent({
                 sessionId: msg.taskId,
+                tenantId: storeTenant,
                 type: 'task_message',
                 payload: {
                   messageId,
@@ -831,9 +771,64 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
                 at,
               });
             }
+            // 任务产物元数据（4.9）：captureDiff 捕到的 changedFiles 只生成元数据事件。
+            // spec「附件路径安全」：无 adapter 明确 artifact 事件时**不读取内容** ——
+            // size 用 stat（元数据操作，经 resolveWithinCwd 安全检查），sha256 省略并显式给出原因；
+            // 越界/凭据/已清理的文件连名字都不上行。内容下载必须等 adapter artifact 事件（get_artifact 如实 404）。
+            if (terminalStatus(status) && info?.changedFiles?.length) {
+              const at = new Date().toISOString();
+              for (const file of info.changedFiles.slice(0, 50)) {
+                const within = resolveWithinCwd(msg.cwd, file);
+                if (!within.ok) continue;
+                let size = 0;
+                try {
+                  size = statSync(within.abs).size;
+                } catch {
+                  continue; // 任务自己清理掉了：没有产物就没有事件
+                }
+                const artifactId = `af_${msg.taskId}_${createHash('sha256')
+                  .update(file)
+                  .digest('hex')
+                  .slice(0, 12)}`;
+                const artifactEvent = o.store.appendEvent({
+                  sessionId: msg.taskId,
+                  tenantId: storeTenant,
+                  type: 'task_artifact',
+                  payload: {
+                    artifactId,
+                    name: file,
+                    mimeType: mimeTypeOf(file),
+                    size,
+                    kind: 'output',
+                    source: 'agent',
+                    contentUnavailableReason: 'no_adapter_artifact_event',
+                    turnId: turn?.turnId,
+                    at,
+                  },
+                });
+                o.emitter.emit({
+                  type: 'task_artifact',
+                  taskId: msg.taskId,
+                  artifactId,
+                  name: file,
+                  mimeType: mimeTypeOf(file),
+                  size,
+                  kind: 'output',
+                  source: 'agent',
+                  contentUnavailableReason: 'no_adapter_artifact_event',
+                  eventSeq: artifactEvent.eventSeq,
+                });
+              }
+            }
             const nextPhase =
-              status === 'running' ? (info?.phase === 'queued' ? 'queued' : 'running') : 'settled';
-            o.store.updateSession(msg.taskId, { phase: nextPhase });
+              status === 'running'
+                ? info?.phase === 'queued'
+                  ? 'queued'
+                  : info?.phase === 'waiting_interaction'
+                    ? 'waiting_interaction'
+                    : 'running'
+                : 'settled';
+            o.store.updateSession(msg.taskId, { phase: nextPhase }, storeTenant);
             if (turn) {
               const at = new Date().toISOString();
               const turnPatch: {
@@ -850,7 +845,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
               };
               if (status === 'running' && info?.phase !== 'queued') turnPatch.startedAt = at;
               if (terminalStatus(status)) turnPatch.finishedAt = at;
-              o.store.updateTurn(msg.taskId, turn.turnId, turnPatch);
+              o.store.updateTurn(msg.taskId, turn.turnId, turnPatch, storeTenant);
             }
             const payload = {
               taskId: msg.taskId,
@@ -859,6 +854,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
               error: info?.error,
               errorCode: info?.errorCode,
               phase: info?.phase,
+              interactionId: info?.interactionId,
               queuePosition: info?.queuePosition,
               diff: info?.diff,
               changedFiles: info?.changedFiles,
@@ -870,11 +866,12 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
             };
             eventSeq = o.store.appendEvent({
               sessionId: msg.taskId,
+              tenantId: storeTenant,
               type: 'task_status',
               payload,
             }).eventSeq;
             if (terminalStatus(status)) {
-              o.store.closeSession(msg.taskId, status, info?.error);
+              o.store.closeSession(msg.taskId, status, info?.error, storeTenant);
             }
           } catch (error) {
             o.log('error', `[agent-bridge] 会话事件落库失败 ${msg.taskId}：${(error as Error).message}`);
@@ -888,6 +885,7 @@ export function dispatchRunTask(msg: RunTaskMessage, o: TaskDispatchOptions): vo
           error: info?.error,
           errorCode: info?.errorCode,
           phase: info?.phase,
+          interactionId: info?.interactionId,
           queuePosition: info?.queuePosition,
           diff: info?.diff,
           changedFiles: info?.changedFiles,

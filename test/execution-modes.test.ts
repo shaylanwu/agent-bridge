@@ -10,9 +10,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AGENTS, agentCanContinue, canContinue, executionModesFor } from '../src/adapters/agent-adapters.js';
+import { AGENTS, agentCanContinue, agentDefOf, canContinue, executionModesFor, taskArgsForPermission } from '../src/adapters/agent-adapters.js';
 import { SessionStore } from '../src/core/session-store.js';
-import { knownStopReason } from '../src/core/task-supervisor.js';
+import { createNativeSessionDetector, knownStopReason } from '../src/core/task-supervisor.js';
 import { assertServerMessage, ProtocolError } from '../src/protocol.js';
 import type { ContinuationKind, ExecutionModeCapability } from '../src/protocol.js';
 
@@ -46,7 +46,7 @@ describe('executionModes', () => {
     const acpAgents = AGENTS.filter((def) => def.acp);
     expect(acpAgents.length).toBeGreaterThan(0);
     for (const def of acpAgents) {
-      const acp = executionModesFor(def).find((mode) => mode.mode === 'acp-stdio');
+      const acp = executionModesFor(def, false, def.acpMinVersion).find((mode) => mode.mode === 'acp-stdio');
       expect(acp).toBeDefined();
       // ACP 走原生 permission 交互，不给「跳过审批」的 full
       expect(acp?.permissionModes).toEqual(['default']);
@@ -97,16 +97,61 @@ describe('executionModes', () => {
       expect(headless.continuation).toBe(def.resumeArgs ? 'resume-session' : 'replay-session');
     }
     expect(AGENTS.filter((def) => def.resumeArgs).map((def) => def.kind).sort()).toEqual([
+      'agy',
       'claude-code',
       'codebuddy-cli',
       'ds-harness',
+      'grok-cli',
       'qoder-cli',
     ]);
   });
 
+  it('agy 用官方 --conversation 原生续接（Gemini CLI 停服后的官方继任者）', () => {
+    const def = AGENTS.find((agent) => agent.kind === 'agy');
+    expect(def?.display).toBe('Antigravity CLI');
+    expect(def?.resumeArgs).toContain('--conversation');
+    expect(def?.resumeArgs).toContain('{{sessionId}}');
+    // -p 吞值：prompt 必须压尾（taskArgs/resumeArgs 末位是 {{prompt}}）
+    expect(def?.taskArgs.at(-1)).toBe('{{prompt}}');
+    expect(def?.resumeArgs.at(-1)).toBe('{{prompt}}');
+    expect(def?.steps).toBe('agy-json');
+    expect(executionModesFor(def!)[0].continuation).toBe('resume-session');
+    // 官方文档：--print-timeout 到期以 0 退出但给部分结果 ⇒ 守卫与 finalOutcome 是 agy 的两道真实性闸
+    expect(def?.authGuard?.patterns.length).toBeGreaterThan(0);
+  });
+
+  it('agy 1.5.9 声明已实测 ACP 和系统代理接入，旧版不得声明 acp-stdio', () => {
+    const def = agentDefOf('agy')!;
+    expect(def.acp).toMatchObject({ args: ['acp'], preferSystemProxy: true });
+    expect(def.acpMinVersion).toBe('1.5.9');
+    expect(executionModesFor(def, false, '1.4.10').some((mode) => mode.mode === 'acp-stdio')).toBe(false);
+    expect(executionModesFor(def, false, '1.5.9').some((mode) => mode.mode === 'acp-stdio')).toBe(true);
+  });
+
+  it('agy full 使用专用 argv 模板，权限旗标不得把 -p 的 prompt 挤离末尾', () => {
+    const def = AGENTS.find((agent) => agent.kind === 'agy')!;
+    expect(taskArgsForPermission(def, 'default')).toEqual(def.taskArgs);
+    expect(taskArgsForPermission(def, 'full')).toEqual([
+      '--output-format',
+      'stream-json',
+      '--dangerously-skip-permissions',
+      '-p',
+      '{{prompt}}',
+    ]);
+    expect(taskArgsForPermission(def, 'full').at(-1)).toBe('{{prompt}}');
+  });
+
+  it('grok 用官方 Grok Build 的 --resume 原生续接（实测 -r 能接上同一 session_id）', () => {
+    const def = AGENTS.find((agent) => agent.kind === 'grok-cli');
+    expect(def?.display).toBe('Grok Build');
+    expect(def?.resumeArgs).toContain('--resume');
+    expect(def?.resumeArgs).toContain('{{sessionId}}');
+    expect(executionModesFor(def!)[0].continuation).toBe('resume-session');
+  });
+
   it('ACP 模式一律 native-session（会话在 agent 侧，bridge 只回传 ID）', () => {
     for (const def of AGENTS.filter((agent) => agent.acp)) {
-      const acp = executionModesFor(def).find((mode) => mode.mode === 'acp-stdio');
+      const acp = executionModesFor(def, false, def.acpMinVersion).find((mode) => mode.mode === 'acp-stdio');
       expect(acp?.continuation).toBe('native-session');
     }
   });
@@ -163,6 +208,28 @@ describe('stopReason 收敛', () => {
     expect(knownStopReason('unknown')).toBeUndefined();
     expect(knownStopReason(undefined)).toBeUndefined();
     expect(knownStopReason(42)).toBeUndefined();
+  });
+});
+
+describe('headless native session 提取', () => {
+  it('覆盖 snake_case 与 DSH 实测 camelCase 字段', () => {
+    for (const [field, expected] of [
+      ['session_id', 'sess_snake'],
+      ['thread_id', 'thread_1'],
+      ['conversation_id', 'conv_1'],
+      ['sessionId', 'sess_dsh_1'],
+      ['sessionID', 'sess_caps'],
+    ] as const) {
+      const detect = createNativeSessionDetector();
+      expect(detect(`{"${field}":"${expected}"}\n`)).toBe(expected);
+    }
+  });
+
+  it('字段名和值跨 stdout 分片也能提取，且只上报首次', () => {
+    const detect = createNativeSessionDetector();
+    expect(detect(`${'x'.repeat(600)}\n{"session`)).toBeUndefined();
+    expect(detect('Id":"sess_split_1"}\n')).toBe('sess_split_1');
+    expect(detect('{"sessionId":"sess_duplicate"}\n')).toBeUndefined();
   });
 });
 

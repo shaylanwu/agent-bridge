@@ -23,11 +23,13 @@ import {
   resolveControlPlane,
   resolveDiffMaxBytes,
   resolveExternalSandbox,
+  resolveGateway,
   resolvePermissionPolicy,
   resolveMaxQueued,
   resolveMaxTasks,
   stateDir,
 } from '../infra/config.js';
+import { AGENTS } from '../adapters/agent-adapters.js';
 import { acquireBridgeRuntimeLock } from '../infra/profile-lock.js';
 import { verifyServiceToken, type ServiceScope } from '../infra/service-token.js';
 import { JwtVerifier } from '../infra/jwt.js';
@@ -92,7 +94,14 @@ async function runServe(flags: Flags): Promise<void> {
   };
 
   const plane = await startControlPlane(
-    { enabled: true, host: settings.host, port, requireToken: settings.requireToken },
+    {
+      enabled: true,
+      host: settings.host,
+      port,
+      requireToken: settings.requireToken,
+      // A2A/ACP 网关（默认关闭）：resolveGateway 读 [gateway] 配置与环境变量
+      gateway: resolveGateway(config?.gateway),
+    },
     {
       emitter: session.emitter,
       registry: session.registry,
@@ -102,6 +111,8 @@ async function runServe(flags: Flags): Promise<void> {
       // 与平台下发的任务共用同一个 supervisor：并发上限不会因多开一条通道而翻倍
       startTask: (req, hooks) => startTask(req, hooks),
       respondInteraction: (msg) => session.respondInteraction(msg),
+      // conversation 编排（add-acp-session-memory）：与 WS 通道同一份 dispatchOptions
+      conversation: session.conversation,
       partialMessages: (taskId) => session.partialMessages(taskId),
       scan: (opts) => scanAgents(opts),
       log,
@@ -119,6 +130,8 @@ async function runServe(flags: Flags): Promise<void> {
         : {}),
       capabilities: PROTOCOL_CAPABILITIES,
       version: version(),
+      // 网关 agent card 的 skills 数据源：静态适配器表（不触发扫描）
+      gatewayAgents: AGENTS.map((a) => ({ id: a.kind, name: a.display })),
       defaults: {
         allowedCwd: config?.allowedCwd,
         // 与主流程同一优先级链：--max-tasks/--max-queue > 环境变量 > config > 默认

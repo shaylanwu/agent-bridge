@@ -105,3 +105,24 @@ export function permissionEnvFor(kind: string, mode: PermissionMode): Record<str
   if (mode !== 'full') return undefined;
   return kind === 'codebuddy-cli' ? { CODEBUDDY_IS_SANDBOX: '1' } : undefined;
 }
+
+/**
+ * full 模式的残余权限请求（spec「权限与问题的组合语义」）：
+ * full 下权限请求一律 fail closed，不转交人工、不借人工绕过 full 的静态 deny。
+ *
+ * 只有当前 options **真实提供** reject_once 时，才返回其原 optionId（自动拒绝这一次，
+ * CLI 继续回合）；否则返回 cancel 语义 —— 调用方以 cancelled outcome 回复 adapter、
+ * 取消回合并以 interaction_denied 结束。绝不伪造 reject 选项或 optionId。
+ */
+export function fullResidualPermissionOutcome(
+  options: Array<Record<string, unknown>> | undefined,
+): { optionId: string } | { cancel: true } {
+  const list = Array.isArray(options)
+    ? options.filter((option): option is Record<string, unknown> => typeof option === 'object' && option !== null)
+    : [];
+  const rejectOnce = list.find((option) => option['kind'] === 'reject_once');
+  if (rejectOnce && typeof rejectOnce['optionId'] === 'string' && rejectOnce['optionId']) {
+    return { optionId: rejectOnce['optionId'] };
+  }
+  return { cancel: true };
+}

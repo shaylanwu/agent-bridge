@@ -63,8 +63,15 @@ export class Emitter {
   private readonly envelope: { source: string } | undefined;
   private readonly onAudit: ((msg: Upstream) => void) | undefined;
   private readonly maxSettled: number;
-  /** 已终态的 taskId（插入顺序 = 淘汰顺序，最旧的先忘） */
-  private readonly settled = new Set<string>();
+  /**
+   * 已终态 taskId → 规范化终态指纹；仅完全相同的终态允许幂等重放。
+   *
+   * 与 supervisor 的协调（3.4）：supervisor 侧「拒绝终态后 log/step/running」的
+   * 第一道闸门在调度器回调入口（entry.state 守卫），本表是纵深防御 —— 淘汰
+   * （maxSettled 有界）不改变外部可见行为：迟到输出已在源头断绝，终态重放
+   * 由调度入口的 SQLite 前置回放负责、不依赖本表命中。
+   */
+  private readonly settled = new Map<string, string>();
   private seq = 0;
   private readonly observers = new Set<EmitObserver>();
   private readonly ring: Upstream[] = [];
@@ -105,9 +112,15 @@ export class Emitter {
   emit(msg: ClientMessage): void {
     // —— 1. 幂等 ——
     // task_snapshot/session_ack 是补取/控制回执，终态后仍必须可发。
+    // 相同终态也必须能回放（断线重发/同步拒绝重试）；不同终态及后续日志仍然拒绝。
+    const identicalTerminalReplay =
+      msg.type === 'task_status' &&
+      isTerminal(msg.status) &&
+      this.settled.get(msg.taskId) === terminalFingerprint(msg);
     if (
       'taskId' in msg &&
       this.settled.has(msg.taskId) &&
+      !identicalTerminalReplay &&
       msg.type !== 'task_snapshot' &&
       msg.type !== 'session_ack' &&
       msg.type !== 'message_ack' &&
@@ -135,7 +148,9 @@ export class Emitter {
     }
 
     // 终态登记放在**发送之后**的必要之前：先记住，再发，避免重入导致重复终态
-    if (out.type === 'task_status' && isTerminal(out.status)) this.remember(out.taskId);
+    if (out.type === 'task_status' && isTerminal(out.status)) {
+      this.remember(out.taskId, terminalFingerprint(out));
+    }
 
     // —— 4. 信封 ——
     const payload: Upstream = this.envelope
@@ -168,13 +183,23 @@ export class Emitter {
     this.sink(payload);
   }
 
-  private remember(taskId: string): void {
+  private remember(taskId: string, fingerprint: string): void {
     if (this.settled.has(taskId)) return;
-    this.settled.add(taskId);
+    this.settled.set(taskId, fingerprint);
     while (this.settled.size > this.maxSettled) {
-      const oldest = this.settled.values().next().value;
+      const oldest = this.settled.keys().next().value;
       if (oldest === undefined) break;
       this.settled.delete(oldest);
     }
   }
+}
+
+/** task_status 字段均为扁平值；顶层键排序避免 SQLite 重建对象时的键顺序影响“完全相同”判定。 */
+function terminalFingerprint(msg: Extract<ClientMessage, { type: 'task_status' }>): string {
+  const normalized: Record<string, unknown> = {};
+  for (const key of Object.keys(msg).sort()) {
+    const value = msg[key as keyof typeof msg];
+    if (value !== undefined) normalized[key] = value;
+  }
+  return JSON.stringify(normalized);
 }

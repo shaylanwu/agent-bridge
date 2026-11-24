@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Emitter } from '../src/core/emitter.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
+import { TaskSupervisor } from '../src/core/task-supervisor.js';
 import {
   dispatchInteractionResponse,
   resolveApproval,
@@ -87,11 +88,21 @@ function setup(overrides: Partial<TaskDispatchOptions> = {}): {
     approvalLedger: { enabled: true, tenantId: 'default', ttlMs: 60_000, requirePersistScope: false },
     ...overrides,
   };
+  const supervisor = new TaskSupervisor();
+  supervisor.interactions.bind({
+    store,
+    emit: (msg) => o.emitter.emit(msg),
+    deliver: async (taskId, requestId, answer) => {
+      const handle = o.tasks.get(taskId);
+      return handle?.respondInteraction ? handle.respondInteraction(requestId, answer) : false;
+    },
+  });
+  o.interactions = supervisor.interactions;
   return { store, o, responded, dir };
 }
 
-function answer(o: TaskDispatchOptions, optionId: string): void {
-  dispatchInteractionResponse(
+async function answer(o: TaskDispatchOptions, optionId: string): Promise<void> {
+  await dispatchInteractionResponse(
     {
       type: 'task_interaction_response',
       taskId: TASK,
@@ -104,10 +115,11 @@ function answer(o: TaskDispatchOptions, optionId: string): void {
   );
 }
 
-describe('持久授权：写入链路', () => {
-  it('选 allow_always 才落库，并把原始 optionId 回给适配器', () => {
+describe('持久授权：写入链路', async () => {
+  it('选 allow_always 才落库，并把原始 optionId 回给适配器', async () => {
     const { store, o, responded } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
+    await answer(o, 'always');
     const rows = store.listApprovals('default');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.agentType).toBe('codebuddy-cli');
@@ -116,17 +128,18 @@ describe('持久授权：写入链路', () => {
     expect(rows[0]?.expiresAt).toBeDefined();
     // 适配器拿到的仍是它自己提供的 optionId，不能是编出来的
     expect(responded[0]?.answer).toMatchObject({ optionId: 'always' });
+    expect(responded).toHaveLength(1);
   });
 
-  it('选 allow_once 不落库（不得把一次性同意升级成永久）', () => {
+  it('选 allow_once 不落库（不得把一次性同意升级成永久）', async () => {
     const { store, o } = setup();
-    answer(o, 'once');
+    await answer(o, 'once');
     expect(store.listApprovals('default')).toHaveLength(0);
   });
 
-  it('拒绝不落库', () => {
+  it('拒绝不落库', async () => {
     const { store, o } = setup();
-    dispatchInteractionResponse(
+    await dispatchInteractionResponse(
       {
         type: 'task_interaction_response',
         taskId: TASK,
@@ -139,27 +152,27 @@ describe('持久授权：写入链路', () => {
     expect(store.listApprovals('default')).toHaveLength(0);
   });
 
-  it('账本关闭时不落库', () => {
+  it('账本关闭时不落库', async () => {
     const { store, o } = setup({
       approvalLedger: { enabled: false, tenantId: 'default', ttlMs: 60_000, requirePersistScope: false },
     });
-    answer(o, 'always');
+    await answer(o, 'always');
     expect(store.listApprovals('default')).toHaveLength(0);
   });
 
-  it('要求 approval:persist 且响应方没有令牌时，不落库（未鉴权不能授权未来）', () => {
+  it('要求 approval:persist 且响应方没有令牌时，不落库（未鉴权不能授权未来）', async () => {
     const { store, o } = setup({
       approvalLedger: { enabled: true, tenantId: 'default', ttlMs: 60_000, requirePersistScope: true },
     });
-    answer(o, 'always');
+    await answer(o, 'always');
     expect(store.listApprovals('default')).toHaveLength(0);
   });
 });
 
-describe('持久授权：命中链路', () => {
-  it('同一 toolCall 在 default 模式下自动批准', () => {
+describe('持久授权：命中链路', async () => {
+  it('同一 toolCall 在 default 模式下自动批准', async () => {
     const { o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     const hit = resolveApproval(
       o,
       {
@@ -175,9 +188,9 @@ describe('持久授权：命中链路', () => {
     expect(hit?.approvalId).toMatch(/^ap_/);
   });
 
-  it('full 模式永不命中', () => {
+  it('full 模式永不命中', async () => {
     const { o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     const hit = resolveApproval(
       o,
       {
@@ -192,9 +205,9 @@ describe('持久授权：命中链路', () => {
     expect(hit).toBeUndefined();
   });
 
-  it('请求只提供 allow_once 时不命中（不能构造不存在的持久选项）', () => {
+  it('请求只提供 allow_once 时不命中（不能构造不存在的持久选项）', async () => {
     const { o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     const hit = resolveApproval(
       o,
       {
@@ -209,9 +222,9 @@ describe('持久授权：命中链路', () => {
     expect(hit).toBeUndefined();
   });
 
-  it('资源不同则不命中（同工具不同命令不共享授权）', () => {
+  it('资源不同则不命中（同工具不同命令不共享授权）', async () => {
     const { o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     const hit = resolveApproval(
       o,
       {
@@ -226,9 +239,9 @@ describe('持久授权：命中链路', () => {
     expect(hit).toBeUndefined();
   });
 
-  it('撤销后立即失效', () => {
+  it('撤销后立即失效', async () => {
     const { store, o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     const [row] = store.listApprovals('default');
     expect(row).toBeDefined();
     store.revokeApproval('default', row!.approvalId);
@@ -246,9 +259,9 @@ describe('持久授权：命中链路', () => {
     expect(hit).toBeUndefined();
   });
 
-  it('账本关闭时不查（即使表里有记录）', () => {
+  it('账本关闭时不查（即使表里有记录）', async () => {
     const { store, o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     expect(store.listApprovals('default')).toHaveLength(1);
     const hit = resolveApproval(
       { ...o, approvalLedger: { enabled: false, tenantId: 'default', ttlMs: 60_000 } },
@@ -265,8 +278,8 @@ describe('持久授权：命中链路', () => {
   });
 });
 
-describe('持久授权：没有资源就不授权（fail closed）', () => {
-  it('toolCall 无位置/命令/URL 时不写库', () => {
+describe('持久授权：没有资源就不授权（fail closed）', async () => {
+  it('toolCall 无位置/命令/URL 时不写库', async () => {
     const { store, o, dir } = setup();
     store.requestInteraction({
       sessionId: TASK,
@@ -274,7 +287,7 @@ describe('持久授权：没有资源就不授权（fail closed）', () => {
       kind: 'permission',
       payload: { toolCall: { kind: 'other' }, options: OPTIONS },
     });
-    dispatchInteractionResponse(
+    await dispatchInteractionResponse(
       {
         type: 'task_interaction_response',
         taskId: TASK,
@@ -289,9 +302,9 @@ describe('持久授权：没有资源就不授权（fail closed）', () => {
     void dir;
   });
 
-  it('即使表里有同工具记录，无资源请求也不自动批准', () => {
+  it('即使表里有同工具记录，无资源请求也不自动批准', async () => {
     const { store, o, dir } = setup();
-    answer(o, 'always');
+    await answer(o, 'always');
     // 手工塞一条「空资源」记录，模拟历史数据/异常路径留下的脏记录
     store.addApproval({
       tenantId: 'default',

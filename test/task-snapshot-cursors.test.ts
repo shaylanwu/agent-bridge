@@ -7,7 +7,7 @@ import { SessionStore } from '../src/core/session-store.js';
 import { TaskRegistry } from '../src/app/task-registry.js';
 import { dispatchGetTask, type TaskDispatchOptions } from '../src/app/task-dispatch.js';
 import { PartialMessageTracker } from '../src/core/partial-messages.js';
-import type { ClientMessage } from '../src/protocol.js';
+import { assertServerMessage, type ClientMessage } from '../src/protocol.js';
 
 const cleanups: Array<() => void> = [];
 
@@ -94,6 +94,22 @@ describe('get_task 游标组合', () => {
       { type: 'get_task', taskId: id, requestId: 'r3', beforeEventSeq: 6, limit: 3 },
       options,
     );
+    expect(lastSnapshot(sent).events?.map((event) => event.eventSeq)).toEqual([3, 4, 5]);
+  });
+
+  it('WS 原始报文穿过解析器后仍保留 beforeEventSeq', () => {
+    const { store, options, sent } = harness();
+    const id = seedSession(store, 'sess_before_wire', 10);
+    const msg = assertServerMessage({
+      type: 'get_task',
+      taskId: id,
+      requestId: 'r3-wire',
+      beforeEventSeq: 6.9,
+      limit: 3,
+    });
+    expect(msg).toMatchObject({ type: 'get_task', beforeEventSeq: 6 });
+    if (msg.type !== 'get_task') throw new Error('expected get_task');
+    dispatchGetTask(msg, options);
     expect(lastSnapshot(sent).events?.map((event) => event.eventSeq)).toEqual([3, 4, 5]);
   });
 
@@ -185,6 +201,39 @@ describe('get_task 的三个 not-found 语义', () => {
     const id = seedSession(store, 'sess_noprune', 5);
     dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'r11', afterEventSeq: 0 }, options);
     expect(lastSnapshot(sent).prunedThrough).toBeUndefined();
+  });
+});
+
+describe('快照中的交互控制快照', () => {
+  it('pending 与最新 result 独立于事件窗口返回', () => {
+    const { store, options, sent } = harness();
+    const id = seedSession(store, 'sess_interaction_snapshot', 1);
+    store.openInteraction({
+      sessionId: id,
+      requestId: 'ir_snapshot',
+      kind: 'permission',
+      payload: { options: [] },
+    });
+    dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'snapshot_pending' }, options);
+    expect(lastSnapshot(sent)).toMatchObject({
+      pendingInteraction: { requestId: 'ir_snapshot', state: 'pending', requestEventSeq: 2 },
+    });
+    store.recordInteractionResult({
+      sessionId: id,
+      requestId: 'ir_snapshot',
+      responseId: 'rs_snapshot',
+      responseFingerprint: 'fp',
+      responseAnchor: true,
+      requestState: 'pending',
+      responseStatus: 'invalid',
+      state: 'failed',
+      errorCode: 'interaction_invalid_response',
+    });
+    dispatchGetTask({ type: 'get_task', taskId: id, requestId: 'snapshot_result' }, options);
+    const snapshot = lastSnapshot(sent);
+    expect(snapshot.interactionResults).toHaveLength(1);
+    expect(snapshot.interactionResults?.[0]).toMatchObject({ resultSeq: 1, responseId: 'rs_snapshot' });
+    expect(snapshot.latestEventSeq).toBe(2);
   });
 });
 

@@ -7,7 +7,7 @@ import { decidePermissionMode, permissionEnvFor } from '../src/core/permission-p
  * 平台会以为拿到了完全权限，实际每一步都在等审批。
  */
 describe('决定权限模式：策略矩阵', () => {
-  const base = { args: [] as string[], fullArgs: ['--yolo'] as string[], kind: 'gemini', externalSandbox: false };
+  const base = { args: [] as string[], fullArgs: ['--dangerously-skip-permissions'] as string[], kind: 'agy', externalSandbox: false };
 
   it('policy=default + 未指定 → default', () => {
     expect(decidePermissionMode({ ...base, policy: 'default' })).toEqual({ ok: true, mode: 'default' });
@@ -55,7 +55,7 @@ describe('决定权限模式：策略矩阵', () => {
 });
 
 describe('受管参数模式', () => {
-  const base = { fullArgs: ['--yolo'] as string[], kind: 'gemini' };
+  const base = { fullArgs: ['--dangerously-skip-permissions'] as string[], kind: 'agy' };
 
   it('allow-full 下非空 args 被拒（不因参数看似普通而放行）', () => {
     const decision = decidePermissionMode({ ...base, policy: 'allow-full', args: ['--help'] });
@@ -127,8 +127,8 @@ describe('full 准入', () => {
         policy: 'allow-full',
         requested: 'full',
         args: [],
-        fullArgs: ['--yolo'],
-        kind: 'gemini',
+        fullArgs: ['--dangerously-skip-permissions'],
+        kind: 'agy',
         externalSandbox: false,
       }),
     ).toEqual({ ok: true, mode: 'full' });
@@ -145,6 +145,6 @@ describe('固定注入的环境变量', () => {
   });
 
   it('其他工具 full 也不注入', () => {
-    expect(permissionEnvFor('gemini', 'full')).toBeUndefined();
+    expect(permissionEnvFor('agy', 'full')).toBeUndefined();
   });
 });

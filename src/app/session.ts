@@ -15,8 +15,11 @@ import type { TaskRegistry } from './task-registry.js';
 import {
   assertServerMessage,
   ProtocolError,
+  type CancelTurnCommand,
   type ClientMessage,
   type InteractionResponseCommand,
+  type RunTaskCommand,
+  type SendMessageCommand,
   type SnapshotPartialMessage,
 } from '../protocol.js';
 import type { TaskHandle } from '../runner.js';
@@ -30,9 +33,10 @@ import {
   dispatchGetTask,
   dispatchInteractionResponse,
   dispatchRunTask,
+  resolveApproval,
   type InteractionOutcome,
 } from './task-dispatch.js';
-import { dispatchConversationMessage } from './conversation.js';
+import { dispatchConversationMessage, dispatchConversationRun, recoverConversationTurn } from './conversation.js';
 import type { ClaudeResident } from './claude-resident.js';
 import { authorizeService } from './service-gate.js';
 import { DEFAULT_TENANT, type SessionStore } from '../core/session-store.js';
@@ -99,6 +103,8 @@ export interface BridgeSession {
   readonly urls: InteractionUrlVault;
   /** 在跑/排队的任务数（状态展示与控制面用） */
   activeTasks: () => number;
+  /** 启动后按持久顺序恢复 queued Turn；返回本次实际提交数。 */
+  recoverQueuedTasks?: () => number;
   /** 取消指定任务（无此任务返回 false） */
   cancelTask: (taskId: string) => boolean;
   /**
@@ -109,12 +115,25 @@ export interface BridgeSession {
    * 让 HTTP 层能把 `insufficient_scope` / `interaction_not_found` 映射成状态码，
    * 而不是回读 SQLite 猜（鉴权失败不落库，回读会误判成 pending）。
    */
-  respondInteraction: (msg: InteractionResponseCommand) => InteractionOutcome;
+  respondInteraction: (msg: InteractionResponseCommand) => Promise<InteractionOutcome>;
   /**
    * 半截消息读取（1.0）：`task_snapshot.partialMessages` 与 HTTP 快照共用的同一个源，
    * 避免「本地面板能看到正在写的半句、远程平台看不到」。
    */
   partialMessages: (taskId: string) => SnapshotPartialMessage[];
+  /**
+   * conversation 编排入口（add-acp-session-memory）：供本地通道（控制面/ACP 网关）驱动多轮会话。
+   * 与 WS 通道走**同一个** dispatchOptions——鉴权、账本、审计与续接状态
+   * （residentSessions / idleTimers / 活动句柄表）全部单一真源，跨轮复用不失效。
+   */
+  conversation: {
+    /** 创建 conversation 会话并跑首轮（run_task 语义；不续接已有 taskId） */
+    run: (msg: RunTaskCommand) => void;
+    /** 向已有 conversation 会话追加一轮（send_message 语义；被拒时 message_ack(rejected) 上行） */
+    message: (msg: SendMessageCommand) => Promise<void>;
+    /** 取消指定 turn（cancel_turn 语义；带 operationId 幂等） */
+    cancelTurn: (msg: CancelTurnCommand) => void;
+  };
 }
 
 export function createSession(opts: SessionOptions): BridgeSession {
@@ -122,7 +141,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
   /**
    * 常驻会话与空闲计时器必须挂在**会话级**，不能写在每条报文的 dispatchOpts 字面量里：
    * 那样每个回合都会拿到一张新 Map，`residentSessions.get()` 永远 miss ——
-   * Claude/Qoder 的常驻进程复用形同虚设，每回合都重新拉起一个进程。
+   * Claude 的常驻进程复用形同虚设，每回合都重新拉起一个进程。
    */
   const residentSessions = new Map<string, ClaudeResident>();
   const idleTimers = new Map<string, NodeJS.Timeout>();
@@ -155,6 +174,9 @@ export function createSession(opts: SessionOptions): BridgeSession {
     },
     artifactRootDir: opts.artifactRootDir,
     store: opts.store,
+    interactions: defaultSupervisor.interactions,
+    approvalLookup: (input: Parameters<typeof resolveApproval>[1], taskId: string) =>
+      resolveApproval(dispatchOptions(emitter!), input, taskId),
     log: opts.log,
     residentSessions,
     idleTimeoutMs: opts.sessionIdleMs,
@@ -214,6 +236,8 @@ export function createSession(opts: SessionOptions): BridgeSession {
     },
     log: (line) => opts.log('info', line),
     onOpen: async () => {
+      // Outbox 已在 transport 层先 drain；这里再从 SQLite 补最新交互快照，覆盖控制消息溢出。
+      if (defaultSupervisor.interactions.isBound) defaultSupervisor.interactions.replayRecoverable();
       // 流式上报：每完成一个工具就推一条 scan_progress，平台可以边收边亮卡片
       const items = await scanAgents({
         fresh: true,
@@ -303,7 +327,9 @@ export function createSession(opts: SessionOptions): BridgeSession {
         return;
       }
       if (msg.type === 'task_interaction_response') {
-        dispatchInteractionResponse(msg, dispatchOpts);
+        void dispatchInteractionResponse(msg, dispatchOpts).catch((error) => {
+          opts.log('error', `[agent-bridge] 交互响应处理失败 ${msg.requestId}：${(error as Error).message}`);
+        });
         return;
       }
       if (msg.type === 'artifact_upload_start') {
@@ -397,7 +423,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
             transferId: msg.transferId,
             status: 'committed',
             artifactId: result.artifactId,
-            sha256: msg.sha256,
+            sha256: result.sha256 ?? msg.sha256,
             eventSeq: result.eventSeq,
           });
         } catch (error) {
@@ -406,6 +432,39 @@ export function createSession(opts: SessionOptions): BridgeSession {
             transferId: msg.transferId,
             status: 'failed',
             errorCode: (error as { code?: string }).code ?? 'artifact_upload_failed',
+          });
+        }
+        return;
+      }
+      if (msg.type === 'artifact_transfer_status' || msg.type === 'artifact_transfer_abort') {
+        const gate = authorizeService(
+          msg,
+          msg.type === 'artifact_transfer_abort' ? 'cancel_task' : 'get_task',
+          msg.transferId,
+          msg.type === 'artifact_transfer_abort' ? 'task:cancel' : 'task:read',
+          opts.requireServiceToken,
+        );
+        if (!gate.ok) {
+          emitter.emit({
+            type: 'artifact_transfer_status',
+            transferId: msg.transferId,
+            state: 'failed',
+            errorCode: gate.code,
+          });
+          return;
+        }
+        try {
+          if (msg.type === 'artifact_transfer_abort') {
+            artifacts.abortTransfer(msg.transferId, msg.reason);
+          } else {
+            emitter.emit({ type: 'artifact_transfer_status', ...artifacts.transferStatus(msg.transferId) });
+          }
+        } catch (error) {
+          emitter.emit({
+            type: 'artifact_transfer_status',
+            transferId: msg.transferId,
+            state: 'failed',
+            errorCode: (error as { code?: string }).code ?? 'internal',
           });
         }
         return;
@@ -439,11 +498,113 @@ export function createSession(opts: SessionOptions): BridgeSession {
     // 信封暂不由本地单方开启：平台在 hello 协商到 cloud-events 后再启用，默认保持 v1 扁平报文
     sink: (msg) => client.send(msg as ClientMessage),
   });
+  if (!defaultSupervisor.interactions.isBound) {
+    defaultSupervisor.interactions.bind({
+      store: opts.store,
+      emit: (msg) => emitter?.emit(msg),
+      deliver: async (taskId, requestId, answer) => {
+        const handle = tasks.get(taskId);
+        return handle?.respondInteraction ? handle.respondInteraction(requestId, answer) : false;
+      },
+      defaultTimeoutMs: opts.interactionTimeoutMs,
+      onResolved: (taskId, requestId) => defaultSupervisor.completeInteraction(taskId, requestId),
+      onFailed: (taskId, requestId) => defaultSupervisor.failInteraction(taskId, requestId),
+      // 无 reject_once 可选的等待超时：cancelled outcome 已交付，这里取消回合并以 interaction_timeout 结算
+      onExpired: (taskId, requestId) => defaultSupervisor.expireInteraction(taskId, requestId),
+    });
+  }
 
   // 容量水位（A2）：每次调度状态变化广播一条 capacity_update。
   // 平台与控制面任务共用 defaultSupervisor（都经 runner.startTask），一处订阅覆盖双通道。
   defaultSupervisor.subscribeCapacity((s) => {
     emitter?.emit({ type: 'capacity_update', ...s });
+  });
+
+  let recoveryActive = false;
+  let recoveryPumping = false;
+  const recoverySubmitted = new Set<string>();
+  const pumpQueuedRecovery = (): number => {
+    if (!recoveryActive || recoveryPumping || !emitter) return 0;
+    recoveryPumping = true;
+    let started = 0;
+    try {
+      for (;;) {
+        const queued = opts.store.listQueuedTurns();
+        const next = queued.find((turn) => !recoverySubmitted.has(`${turn.tenantId}\0${turn.turnId}`));
+        if (!next) {
+          if (queued.length === 0) recoveryActive = false;
+          return started;
+        }
+        const capacity = defaultSupervisor.capacitySnapshot();
+        if (capacity.running >= capacity.maxTasks && capacity.queued >= capacity.maxQueued) return started;
+        const session = opts.store.getSession(next.sessionId, next.tenantId);
+        const execution = next.execution;
+        if (!session || session.status !== 'running' || !execution) {
+          // 无快照不可猜参数重放；同时收口 Session，不能留下没有 active Turn 的假 queued。
+          opts.store.updateTurn(next.sessionId, next.turnId, {
+            status: 'failed',
+            stopReason: 'session_interrupted',
+            finishedAt: new Date().toISOString(),
+          }, next.tenantId);
+          if (session) {
+            const terminal = session.mode === 'task';
+            const status = terminal ? 'failed' : 'running';
+            const phase = terminal ? undefined : 'waiting_user';
+            const event = opts.store.appendEvent({
+              sessionId: next.sessionId,
+              tenantId: next.tenantId,
+              type: 'task_status',
+              payload: { status, phase, errorCode: 'internal', error: 'Turn 缺少恢复快照', turnId: next.turnId },
+            });
+            if (terminal) opts.store.closeSession(next.sessionId, 'failed', 'session_interrupted', next.tenantId);
+            else opts.store.updateSession(next.sessionId, { phase: 'waiting_user' }, next.tenantId);
+            emitter.emit({
+              type: 'task_status',
+              taskId: next.sessionId,
+              status,
+              phase,
+              errorCode: 'internal',
+              error: 'Turn 缺少恢复快照',
+              turnId: next.turnId,
+              eventSeq: event.eventSeq,
+            });
+          }
+          opts.log('warn', `[agent-bridge] queued Turn 缺少可恢复执行快照：${next.turnId}`);
+          continue;
+        }
+        recoverySubmitted.add(`${next.tenantId}\0${next.turnId}`);
+        if (session.mode === 'conversation') {
+          recoverConversationTurn(dispatchOptions(emitter), next);
+        } else {
+          dispatchRunTask(
+            {
+              type: 'run_task',
+              taskId: next.sessionId,
+              agentType: session.agentType,
+              cwd: session.cwd,
+              args: [...execution.args],
+              prompt: execution.prompt,
+              timeoutMs: execution.timeoutMs,
+              allowInteractive: execution.allowInteractive,
+              captureDiff: execution.captureDiff,
+              permissionMode: execution.permissionMode,
+              requestedBy: execution.requestedBy,
+              purpose: execution.purpose,
+              sessionMode: session.mode,
+            },
+            dispatchOptions(emitter),
+            next.turnId,
+            next.tenantId,
+          );
+        }
+        started += 1;
+      }
+    } finally {
+      recoveryPumping = false;
+    }
+  };
+  defaultSupervisor.subscribeCapacity(() => {
+    if (recoveryActive) pumpQueuedRecovery();
   });
 
   return {
@@ -455,7 +616,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     artifactsForTenant,
     urls,
     close: () => {
-      // 常驻进程（Claude/Qoder）不属于 supervisor，关闭会话时必须自己收干净，
+      // 常驻进程（Claude）不属于 supervisor，关闭会话时必须自己收干净，
       // 否则每开一次会话就在后台留一批子进程。
       for (const timer of idleTimers.values()) clearTimeout(timer);
       idleTimers.clear();
@@ -466,6 +627,10 @@ export function createSession(opts: SessionOptions): BridgeSession {
     },
     isConnected: () => client.isOpen(),
     activeTasks: () => tasks.size,
+    recoverQueuedTasks: () => {
+      recoveryActive = true;
+      return pumpQueuedRecovery();
+    },
     cancelTask: (taskId: string) => {
       const h = tasks.get(taskId);
       if (!h) return false;
@@ -474,5 +639,12 @@ export function createSession(opts: SessionOptions): BridgeSession {
     },
     respondInteraction: (msg) => dispatchInteractionResponse(msg, dispatchOptions(emitter)),
     partialMessages: (taskId) => defaultSupervisor.listPartialMessages(taskId),
+    // conversation 编排（add-acp-session-memory）：与 WS 通道同一份 dispatchOptions。
+    // emitter 在回调期求值（调用方发起请求时连接必然已建立），与 respondInteraction 同一前提。
+    conversation: {
+      run: (msg) => dispatchConversationRun(msg, dispatchOptions(emitter)),
+      message: (msg) => dispatchConversationMessage(msg, dispatchOptions(emitter)),
+      cancelTurn: (msg) => dispatchCancelTurn(msg, dispatchOptions(emitter)),
+    },
   };
 }

@@ -12,8 +12,8 @@
  * They pause the turn until the client replies.
  */
 
-import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { killCliProcess, spawnCliProcess } from './agent-adapters.js';
 
 export type CodexApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
@@ -22,11 +22,15 @@ export interface CodexApprovalRequest {
   method: string;
   kind: 'command' | 'file-change' | 'user-input' | 'permission';
   payload: Record<string, unknown>;
+  /** 内部交付确认：审批结果写入 app-server stdio 后 resolve。 */
+  delivery: Promise<boolean>;
 }
 
 export interface CodexPromptOptions {
   cwd: string;
   prompt: string;
+  /** 可执行文件路径；缺省 'codex'。调用方应传 resolveBin 出来的绝对路径 */
+  command?: string;
   /** 已有 Codex thread id：优先 thread/resume */
   nativeThreadId?: string;
   timeoutMs?: number;
@@ -71,12 +75,24 @@ function errorText(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function codexTurnError(status: string, error?: unknown): Error | undefined {
+  if (status === 'completed') return undefined;
+  const detail = error === undefined ? '' : errorText(error);
+  return new Error(`Codex turn ${status || 'unknown'}${detail ? `：${detail}` : ''}`);
+}
+
+function deliveryFuture(): { promise: Promise<boolean>; settle: (delivered: boolean) => void } {
+  let settle!: (delivered: boolean) => void;
+  const promise = new Promise<boolean>((resolvePromise) => {
+    settle = resolvePromise;
+  });
+  return { promise, settle };
+}
+
 export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPromptResult> {
-  const child = spawn('codex', codexAppServerArgs(), {
+  const child = spawnCliProcess(opts.command ?? 'codex', codexAppServerArgs(), {
     cwd: opts.cwd,
     env: process.env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
   });
 
   let nextId = 1;
@@ -85,6 +101,11 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
   let text = '';
   let closed = false;
   let turnSettled = false;
+  const responseWaiters = new Set<(delivered: boolean) => void>();
+  const settleResponseWaiters = (): void => {
+    for (const finish of responseWaiters) finish(false);
+    responseWaiters.clear();
+  };
   let resolveTurn: (() => void) | undefined;
   let rejectTurn: ((error: Error) => void) | undefined;
   const turnDone = new Promise<void>((resolve, reject) => {
@@ -93,9 +114,15 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
   });
   const pending = new Map<number, Pending>();
 
-  const send = (message: JsonObject): void => {
-    if (closed || !child.stdin.writable) return;
-    child.stdin.write(`${JSON.stringify(message)}\n`);
+  const send = (message: JsonObject): boolean => {
+    if (closed || !child.stdin.writable || child.stdin.destroyed) return false;
+    try {
+      child.stdin.write(`${JSON.stringify(message)}\n`);
+      // false 仅表示背压，数据已被流接受；不能据此误判成交付失败。
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   const request = (method: string, params: JsonObject, timeoutMs = 15_000): Promise<unknown> =>
@@ -109,9 +136,31 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
       send({ jsonrpc: '2.0', id, method, params });
     });
 
-  const respond = (id: unknown, result: unknown): void => {
-    if (typeof id !== 'number' && typeof id !== 'string') return;
-    send({ jsonrpc: '2.0', id, result });
+  const writeResponse = (message: JsonObject): Promise<boolean> => {
+    if (closed || !child.stdin.writable) return Promise.resolve(false);
+    return new Promise<boolean>((resolvePromise) => {
+      let finished = false;
+      const finish = (delivered: boolean): void => {
+        if (finished) return;
+        finished = true;
+        responseWaiters.delete(finish);
+        resolvePromise(delivered);
+      };
+      responseWaiters.add(finish);
+      try {
+        child.stdin.write(`${JSON.stringify(message)}\n`, (error) => finish(!error));
+      } catch {
+        finish(false);
+      }
+    });
+  };
+  const respond = (id: unknown, result: unknown): Promise<boolean> => {
+    if (typeof id !== 'number' && typeof id !== 'string') return Promise.resolve(false);
+    return writeResponse({ jsonrpc: '2.0', id, result });
+  };
+  const respondError = (id: unknown, code: number, message: string): Promise<boolean> => {
+    if (typeof id !== 'number' && typeof id !== 'string') return Promise.resolve(false);
+    return writeResponse({ jsonrpc: '2.0', id, error: { code, message } });
   };
 
   const failAll = (error: Error): void => {
@@ -123,6 +172,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
   };
 
   const handleServerRequest = async (message: JsonObject): Promise<void> => {
+    const delivery = deliveryFuture();
     const method = String(message['method'] ?? '');
     const params = asObject(message['params']);
     const kind: CodexApprovalRequest['kind'] =
@@ -133,32 +183,34 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
           : method === 'item/permissions/requestApproval'
             ? 'permission'
             : 'command';
-    const decision = opts.onApproval
-      ? await opts.onApproval({
-          requestId: (message['id'] as number | string | undefined) ?? '',
-          method,
-          kind,
-          payload: params,
-        })
-      : undefined;
-    if (method === 'item/tool/requestUserInput') {
-      // The caller returns a JSON string or undefined; undefined means cancel the turn.
-      if (decision) {
-        try {
-          respond(message['id'], JSON.parse(decision));
-        } catch {
-          respond(message['id'], { answers: {} });
+    try {
+      const decision = opts.onApproval
+        ? await opts.onApproval({
+            requestId: (message['id'] as number | string | undefined) ?? '',
+            method,
+            kind,
+            payload: params,
+            delivery: delivery.promise,
+          })
+        : undefined;
+      if (method === 'item/tool/requestUserInput') {
+        // The caller returns a JSON string or undefined; undefined means cancel the turn.
+        if (decision) {
+          try {
+            delivery.settle(await respond(message['id'], JSON.parse(decision)));
+          } catch {
+            delivery.settle(await respond(message['id'], { answers: {} }));
+          }
+        } else {
+          delivery.settle(await respondError(message['id'], -32000, 'user input cancelled'));
         }
-      } else {
-        send({
-          jsonrpc: '2.0',
-          id: message['id'],
-          error: { code: -32000, message: 'user input cancelled' },
-        });
+        return;
       }
-      return;
+      delivery.settle(await respond(message['id'], { decision: decision ?? 'decline' }));
+    } catch {
+      delivery.settle(false);
+      await respond(message['id'], { decision: 'decline' });
     }
-    respond(message['id'], { decision: decision ?? 'decline' });
   };
 
   const handleNotification = (message: JsonObject): void => {
@@ -174,12 +226,10 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
       if (turnSettled) return;
       turnSettled = true;
       const turn = asObject(params['turn']);
-      const status = String(turn['status'] ?? 'completed');
-      if (status === 'failed') {
-        rejectTurn?.(new Error(`Codex turn failed：${errorText(turn['error'])}`));
-      } else {
-        resolveTurn?.();
-      }
+      const status = String(turn['status'] ?? 'unknown');
+      const error = codexTurnError(status, turn['error']);
+      if (error) rejectTurn?.(error);
+      else resolveTurn?.();
       return;
     }
   };
@@ -211,13 +261,14 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
           handleNotification(message);
         } catch (error) {
           failAll(error as Error);
-          child.kill();
+          killCliProcess(child, opts.command ?? 'codex');
         }
       }
     }
   });
 
   child.on('error', (error) => {
+    settleResponseWaiters();
     failAll(error);
     if (!turnSettled) {
       turnSettled = true;
@@ -226,6 +277,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
   });
   child.on('close', (code) => {
     closed = true;
+    settleResponseWaiters();
     const error = new Error(`Codex app-server 退出（code ${code ?? 'null'}）`);
     failAll(error);
     if (!turnSettled) {
@@ -239,7 +291,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
     if (threadId && turnId) {
       void request('turn/interrupt', { threadId, turnId }, 3000).catch(() => undefined);
     }
-    child.kill();
+    killCliProcess(child, opts.command ?? 'codex');
   };
   const timer = setTimeout(cancel, timeoutMs);
   const onAbort = (): void => cancel();
@@ -292,6 +344,6 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener('abort', onAbort);
-    child.kill();
+    killCliProcess(child, opts.command ?? 'codex');
   }
 }

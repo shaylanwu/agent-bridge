@@ -24,10 +24,12 @@ import {
   resolveControlPlane,
   resolveDiffMaxBytes,
   resolveExternalSandbox,
+  resolveGateway,
   resolvePermissionPolicy,
   resolveMaxQueued,
   resolveMaxTasks,
 } from '../infra/config.js';
+import { AGENTS } from '../adapters/agent-adapters.js';
 import { JwtVerifier } from '../infra/jwt.js';
 import { acquireBridgeRuntimeLock } from '../infra/profile-lock.js';
 import { stateDir } from '../infra/config.js';
@@ -75,7 +77,14 @@ async function runConnect(flags: Flags): Promise<void> {
   try {
     plane = await withPortFallback(basePort, 20, (port) =>
       startControlPlane(
-        { enabled: true, host: settings.host, port, requireToken: settings.requireToken },
+        {
+          enabled: true,
+          host: settings.host,
+          port,
+          requireToken: settings.requireToken,
+          // A2A/ACP 网关（默认关闭）：resolveGateway 读 [gateway] 配置与环境变量
+          gateway: resolveGateway(config?.gateway),
+        },
         {
           emitter: session.emitter,
           registry: session.registry,
@@ -84,6 +93,8 @@ async function runConnect(flags: Flags): Promise<void> {
           artifactsForTenant: (tenantId) => session.artifactsForTenant(tenantId),
           startTask: (req, hooks) => startTask(req, hooks),
           respondInteraction: (msg) => session.respondInteraction(msg),
+          // conversation 编排（add-acp-session-memory）：与 WS 通道同一份 dispatchOptions
+          conversation: session.conversation,
           partialMessages: (taskId) => session.partialMessages(taskId),
           scan: (opts) => scanAgents(opts),
           log,
@@ -101,6 +112,8 @@ async function runConnect(flags: Flags): Promise<void> {
             : {}),
           capabilities: PROTOCOL_CAPABILITIES,
           version: version(),
+          // 网关 agent card 的 skills 数据源：静态适配器表（不触发扫描）
+          gatewayAgents: AGENTS.map((a) => ({ id: a.kind, name: a.display })),
           defaults: {
             allowedCwd: config?.allowedCwd,
             maxConcurrent: resolveMaxTasks(config?.maxTasks, numFlagMin(flags, 'max-tasks', 1)),

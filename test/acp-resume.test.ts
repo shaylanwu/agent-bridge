@@ -37,7 +37,14 @@ rl.on('line', (line) => {
     return;
   }
   if (m.method === 'session/load') {
-    if (mode === 'load') send({ jsonrpc: '2.0', id: m.id, result: { sessionId: m.params.sessionId } });
+    if (mode === 'load') {
+      // agy 1.5.9 会在 load 期间重放历史 agent chunk；这些不属于本轮结果。
+      send({ jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: m.params.sessionId,
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '历史回答' } },
+      }});
+      send({ jsonrpc: '2.0', id: m.id, result: { sessionId: m.params.sessionId } });
+    }
     else unsupported(m.id);
     return;
   }

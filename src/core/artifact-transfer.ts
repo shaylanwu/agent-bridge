@@ -10,7 +10,7 @@ import {
   closeSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -55,6 +55,7 @@ interface DownloadTransfer {
   chunkSize: number;
   offset: number;
   lastLength: number;
+  fd?: number;
 }
 
 export class ArtifactTransferManager {
@@ -80,6 +81,40 @@ export class ArtifactTransferManager {
 
   private sha256Bytes(data: Buffer): string {
     return createHash('sha256').update(data).digest('hex');
+  }
+
+  private sha256File(path: string): string {
+    const fd = openSync(path, 'r');
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(MAX_CHUNK_SIZE);
+    try {
+      while (true) {
+        const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        hash.update(buffer.subarray(0, bytesRead));
+      }
+    } finally {
+      closeSync(fd);
+    }
+    return hash.digest('hex');
+  }
+
+  private readRange(fd: number, length: number, offset: number): { bytes: Buffer; bytesRead: number } {
+    const bytes = Buffer.alloc(length);
+    let total = 0;
+    while (total < length) {
+      const read = readSync(fd, bytes, total, length - total, offset + total);
+      if (read === 0) break;
+      total += read;
+    }
+    return { bytes, bytesRead: total };
+  }
+
+  private closeDownload(transfer: DownloadTransfer): void {
+    if (transfer.fd === undefined) return;
+    const fd = transfer.fd;
+    transfer.fd = undefined;
+    closeSync(fd);
   }
 
   startUpload(input: {
@@ -109,7 +144,18 @@ export class ArtifactTransferManager {
       input.operationId,
       this.tenant(),
     );
-    if (persisted?.state === 'uploading' && persisted.tempPath && statSync(persisted.tempPath, { throwIfNoEntry: false })) {
+    if (persisted?.state === 'committed') {
+      return {
+        transferId: persisted.transferId,
+        artifactId: persisted.artifactId,
+        nextOffset: persisted.nextOffset,
+        chunkSize: persisted.chunkSize,
+      };
+    }
+    if (persisted?.state === 'aborted') {
+      throw new ArtifactTransferError('transfer_aborted', '该 operationId 的传输已中止');
+    }
+    if (persisted?.state === 'uploading' && persisted.tempPath) {
       const restored: Transfer = {
         transferId: persisted.transferId,
         operationId: persisted.operationId,
@@ -211,17 +257,52 @@ export class ArtifactTransferManager {
       }
     }
     if (!transfer) throw new ArtifactTransferError('transfer_not_found', '传输不存在或已结束');
+    if (!Number.isSafeInteger(input.offset) || input.offset < 0) {
+      throw new ArtifactTransferError('invalid_offset', 'chunk offset 必须是非负安全整数');
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(input.chunkSha256)) {
+      throw new ArtifactTransferError('invalid_hash', 'chunk SHA-256 必须是 64 位十六进制字符串');
+    }
+    const maxChunkSize = Math.min(transfer.chunkSize, MAX_CHUNK_SIZE);
+    if (input.data.length > 4 * Math.ceil(maxChunkSize / 3)) {
+      throw new ArtifactTransferError('chunk_too_large', 'chunk 超过协商大小');
+    }
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.data)) {
+      throw new ArtifactTransferError('invalid_base64', 'chunk data 必须是规范 base64');
+    }
     const bytes = Buffer.from(input.data, 'base64');
+    if (bytes.toString('base64') !== input.data) {
+      throw new ArtifactTransferError('invalid_base64', 'chunk data 必须是规范 base64');
+    }
+    if (bytes.length > maxChunkSize) {
+      throw new ArtifactTransferError('chunk_too_large', 'chunk 超过协商大小');
+    }
     if (this.sha256Bytes(bytes) !== input.chunkSha256.toLowerCase()) {
       throw new ArtifactTransferError('chunk_hash_mismatch', 'chunk SHA-256 不匹配');
     }
-    if (input.offset !== transfer.nextOffset) {
+    if (input.offset < transfer.nextOffset) {
+      if (bytes.length > transfer.nextOffset - input.offset) {
+        throw new ArtifactTransferError('conflict', '重放 chunk 与已确认内容不一致');
+      }
+      const fd = openSync(transfer.tempPath, 'r');
+      let persisted: { bytes: Buffer; bytesRead: number };
+      try {
+        persisted = this.readRange(fd, bytes.length, input.offset);
+      } finally {
+        closeSync(fd);
+      }
+      if (persisted.bytesRead !== bytes.length || !persisted.bytes.equals(bytes)) {
+        throw new ArtifactTransferError('conflict', '重放 chunk 与已确认内容不一致');
+      }
+      return { nextOffset: transfer.nextOffset };
+    }
+    if (input.offset > transfer.nextOffset) {
       throw new ArtifactTransferError(
         'out_of_order',
         `chunk offset ${input.offset} != expected ${transfer.nextOffset}`,
       );
     }
-    if (transfer.nextOffset + bytes.length > transfer.size) {
+    if (input.offset > transfer.size || bytes.length > transfer.size - input.offset) {
       throw new ArtifactTransferError('size_exceeded', 'chunk 超出声明的文件大小');
     }
     const fd = openSync(transfer.tempPath, 'r+');
@@ -230,9 +311,55 @@ export class ArtifactTransferManager {
     } finally {
       closeSync(fd);
     }
-    transfer.nextOffset += bytes.length;
-    this.deps.store.updateTransferOffset(transfer.transferId, transfer.nextOffset, this.tenant());
-    return { nextOffset: transfer.nextOffset };
+    const nextOffset = transfer.nextOffset + bytes.length;
+    this.deps.store.updateTransferOffset(transfer.transferId, nextOffset, this.tenant());
+    transfer.nextOffset = nextOffset;
+    return { nextOffset };
+  }
+
+  transferStatus(transferId: string): {
+    transferId: string;
+    direction: 'upload' | 'download';
+    state: string;
+    nextOffset: number;
+    chunkSize: number;
+    artifactId: string;
+  } {
+    const transfer = this.deps.store.getTransfer(transferId, this.tenant());
+    if (!transfer) throw new ArtifactTransferError('transfer_not_found', '传输不存在');
+    return {
+      transferId: transfer.transferId,
+      direction: transfer.direction,
+      state: transfer.state,
+      nextOffset: transfer.nextOffset,
+      chunkSize: transfer.chunkSize,
+      artifactId: transfer.artifactId,
+    };
+  }
+
+  abortTransfer(transferId: string, reason?: string): ReturnType<ArtifactTransferManager['transferStatus']> {
+    const persisted = this.deps.store.getTransfer(transferId, this.tenant());
+    if (!persisted || persisted.state !== 'uploading') {
+      if (persisted?.state === 'aborted') return this.transferStatus(transferId);
+      throw new ArtifactTransferError('transfer_not_found', '传输不存在或已结束');
+    }
+    if (persisted.direction === 'upload') {
+      if (persisted.tempPath) rmSync(persisted.tempPath, { force: true });
+      this.transfers.delete(transferId);
+      this.byOperation.delete(`${persisted.sessionId}:${persisted.operationId}`);
+    } else {
+      const active = this.downloads.get(transferId);
+      if (active) this.closeDownload(active);
+      this.downloads.delete(transferId);
+    }
+    this.deps.store.saveTransfer({ ...persisted, state: 'aborted' });
+    const status = this.transferStatus(transferId);
+    this.deps.emit({
+      type: 'artifact_transfer_status',
+      ...status,
+      reason,
+    });
+    return status;
   }
 
   /**
@@ -320,6 +447,11 @@ export class ArtifactTransferManager {
       persisted.artifactId === input.artifactId
         ? persisted.transferId
         : `dt_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const active = this.downloads.get(transferId);
+    if (active) {
+      this.closeDownload(active);
+      this.downloads.delete(transferId);
+    }
     const chunkSize = Math.min(
       MAX_CHUNK_SIZE,
       Math.max(1, Math.floor(persisted?.chunkSize ?? input.chunkSize ?? DEFAULT_CHUNK_SIZE)),
@@ -338,39 +470,51 @@ export class ArtifactTransferManager {
           ? Math.min(persisted.nextOffset, artifact.size)
           : 0,
       lastLength: 0,
+      fd: openSync(path, 'r'),
     };
     this.downloads.set(transferId, transfer);
-    this.deps.store.saveTransfer({
-      tenantId: this.tenant(),
-      transferId,
-      sessionId: input.sessionId,
-      operationId: input.operationId,
-      artifactId: artifact.artifactId,
-      direction: 'download',
-      name: artifact.name,
-      mimeType: artifact.mimeType,
-      size: artifact.size,
-      sha256: artifact.sha256,
-      chunkSize,
-      nextOffset: transfer.offset,
-      state: 'uploading',
-    });
-    this.deps.emit({
-      type: 'artifact_download_ready',
-      transferId,
-      artifactId: artifact.artifactId,
-      size: artifact.size,
-      sha256: artifact.sha256,
-      chunkSize,
-    });
-    if (transfer.offset >= artifact.size) {
-      this.downloads.delete(transferId);
-      this.deps.store.deleteTransfer(transferId, this.tenant());
-      this.deps.emit({ type: 'artifact_download_result', transferId, status: 'completed' });
-    } else {
-      this.sendNextDownloadChunk(transfer);
+    try {
+      this.deps.store.saveTransfer({
+        tenantId: this.tenant(),
+        transferId,
+        sessionId: input.sessionId,
+        operationId: input.operationId,
+        artifactId: artifact.artifactId,
+        direction: 'download',
+        name: artifact.name,
+        mimeType: artifact.mimeType,
+        size: artifact.size,
+        sha256: artifact.sha256,
+        chunkSize,
+        nextOffset: transfer.offset,
+        state: 'uploading',
+      });
+      this.deps.emit({
+        type: 'artifact_download_ready',
+        transferId,
+        artifactId: artifact.artifactId,
+        nextOffset: transfer.offset,
+        size: artifact.size,
+        sha256: artifact.sha256,
+        chunkSize,
+      });
+      if (transfer.offset >= artifact.size) {
+        this.closeDownload(transfer);
+        this.downloads.delete(transferId);
+        this.deps.store.deleteTransfer(transferId, this.tenant());
+        this.deps.emit({ type: 'artifact_download_result', transferId, status: 'completed' });
+      } else {
+        this.sendNextDownloadChunk(transfer);
+      }
+      return { transferId, size: artifact.size, sha256: artifact.sha256, chunkSize };
+    } catch (error) {
+      try {
+        this.closeDownload(transfer);
+      } finally {
+        this.downloads.delete(transferId);
+      }
+      throw error;
     }
-    return { transferId, size: artifact.size, sha256: artifact.sha256, chunkSize };
   }
 
   ackDownload(input: { transferId: string; nextOffset: number }): void {
@@ -378,65 +522,124 @@ export class ArtifactTransferManager {
     if (!transfer) throw new ArtifactTransferError('transfer_not_found', '下载传输不存在或已结束');
     const expected = transfer.offset + transfer.lastLength;
     if (input.nextOffset !== expected) {
+      try {
+        this.closeDownload(transfer);
+      } finally {
+        this.downloads.delete(transfer.transferId);
+      }
       throw new ArtifactTransferError(
         'out_of_order',
         `chunk ack offset ${input.nextOffset} != expected ${expected}`,
       );
     }
-    transfer.offset = input.nextOffset;
-    this.deps.store.updateTransferOffset(transfer.transferId, transfer.offset, this.tenant());
-    if (transfer.offset >= transfer.size) {
-      this.downloads.delete(transfer.transferId);
-      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
-      this.deps.emit({
-        type: 'artifact_download_result',
-        transferId: transfer.transferId,
-        status: 'completed',
-      });
-      return;
+    try {
+      this.deps.store.updateTransferOffset(transfer.transferId, input.nextOffset, this.tenant());
+      transfer.offset = input.nextOffset;
+      if (transfer.offset >= transfer.size) {
+        this.closeDownload(transfer);
+        this.downloads.delete(transfer.transferId);
+        this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
+        this.deps.emit({
+          type: 'artifact_download_result',
+          transferId: transfer.transferId,
+          status: 'completed',
+        });
+        return;
+      }
+      this.sendNextDownloadChunk(transfer);
+    } catch (error) {
+      try {
+        this.closeDownload(transfer);
+      } finally {
+        this.downloads.delete(transfer.transferId);
+      }
+      throw error;
     }
-    this.sendNextDownloadChunk(transfer);
   }
 
   private sendNextDownloadChunk(transfer: DownloadTransfer): void {
-    const content = readFileSync(transfer.path);
-    const end = Math.min(transfer.size, transfer.offset + transfer.chunkSize);
-    const chunk = content.subarray(transfer.offset, end);
-    transfer.lastLength = chunk.length;
-    this.deps.emit({
-      type: 'artifact_download_chunk',
-      transferId: transfer.transferId,
-      offset: transfer.offset,
-      data: chunk.toString('base64'),
-      chunkSha256: this.sha256Bytes(chunk),
-    });
+    try {
+      if (transfer.fd === undefined) throw new ArtifactTransferError('artifact_read_failed', '附件文件句柄已关闭');
+      const length = Math.min(transfer.chunkSize, transfer.size - transfer.offset);
+      const { bytes: chunk, bytesRead } = this.readRange(transfer.fd, length, transfer.offset);
+      if (bytesRead !== length) throw new ArtifactTransferError('artifact_read_failed', '附件读取长度不足');
+      transfer.lastLength = bytesRead;
+      this.deps.emit({
+        type: 'artifact_download_chunk',
+        transferId: transfer.transferId,
+        offset: transfer.offset,
+        data: chunk.toString('base64'),
+        chunkSha256: this.sha256Bytes(chunk),
+      });
+    } catch (error) {
+      try {
+        this.closeDownload(transfer);
+      } finally {
+        this.downloads.delete(transfer.transferId);
+      }
+      throw error;
+    }
   }
 
   completeUpload(input: { transferId: string; size: number; sha256: string }): {
     committed: boolean;
     artifactId?: string;
     eventSeq?: number;
+    sha256?: string;
   } {
-    const transfer = this.transfers.get(input.transferId);
+    const persisted = this.deps.store.getTransfer(input.transferId, this.tenant());
+    if (persisted?.state === 'committed') {
+      if (input.size !== persisted.size || input.sha256.toLowerCase() !== persisted.sha256) {
+        throw new ArtifactTransferError('conflict', 'committed 重放参数与原传输不一致');
+      }
+      const artifact = this.deps.store.getArtifact(persisted.artifactId, this.tenant());
+      const event = this.deps.store.getArtifactEvent(persisted.sessionId, persisted.artifactId, this.tenant());
+      return {
+        committed: true,
+        artifactId: artifact?.artifactId ?? persisted.artifactId,
+        eventSeq: event?.eventSeq,
+        sha256: persisted.sha256,
+      };
+    }
+    let transfer = this.transfers.get(input.transferId);
+    if (!transfer && persisted?.state === 'uploading' && persisted.direction === 'upload' && persisted.tempPath) {
+      transfer = {
+        transferId: persisted.transferId,
+        operationId: persisted.operationId,
+        sessionId: persisted.sessionId,
+        artifactId: persisted.artifactId,
+        name: persisted.name,
+        mimeType: persisted.mimeType,
+        size: persisted.size,
+        sha256: persisted.sha256,
+        chunkSize: persisted.chunkSize,
+        nextOffset: persisted.nextOffset,
+        tempPath: persisted.tempPath,
+      };
+      this.transfers.set(transfer.transferId, transfer);
+      this.byOperation.set(`${transfer.sessionId}:${transfer.operationId}`, transfer.transferId);
+    }
     if (!transfer) throw new ArtifactTransferError('transfer_not_found', '传输不存在或已结束');
-    try {
-      if (input.size !== transfer.size || transfer.nextOffset !== transfer.size) {
-        throw new ArtifactTransferError('size_mismatch', '文件大小与声明不一致');
-      }
-      const content = readFileSync(transfer.tempPath);
-      const actual = this.sha256Bytes(content);
-      if (actual !== transfer.sha256 || input.sha256.toLowerCase() !== actual) {
-        throw new ArtifactTransferError('file_hash_mismatch', '整文件 SHA-256 不匹配');
-      }
-      const storageKey = `${this.tenant()}/sha256/${actual.slice(0, 2)}/${actual}`;
-      const target = join(this.root, storageKey);
-      mkdirSync(dirname(target), { recursive: true });
-      if (!statSync(target, { throwIfNoEntry: false })) {
-        renameSync(transfer.tempPath, target);
-      } else {
-        rmSync(transfer.tempPath, { force: true });
-      }
-      const artifact = this.deps.store.putArtifact({
+    if (input.size !== transfer.size || transfer.nextOffset !== transfer.size) {
+      throw new ArtifactTransferError('size_mismatch', '文件大小与声明不一致');
+    }
+    const storageKey = `${this.tenant()}/sha256/${transfer.sha256.slice(0, 2)}/${transfer.sha256}`;
+    const target = join(this.root, storageKey);
+    const tempExists = Boolean(statSync(transfer.tempPath, { throwIfNoEntry: false }));
+    const targetExists = Boolean(statSync(target, { throwIfNoEntry: false }));
+    if (!tempExists && !targetExists) {
+      throw new ArtifactTransferError('artifact_missing', '上传临时文件与 CAS 内容均不存在');
+    }
+    // rename 后崩溃也可恢复：从已存在的 CAS 文件重新流式校验，再补 DB 事务。
+    const actual = this.sha256File(targetExists ? target : transfer.tempPath);
+    if (actual !== transfer.sha256 || input.sha256.toLowerCase() !== actual) {
+      throw new ArtifactTransferError('file_hash_mismatch', '整文件 SHA-256 不匹配');
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    if (!targetExists) renameSync(transfer.tempPath, target);
+    else if (tempExists) rmSync(transfer.tempPath, { force: true });
+    const { artifact, event } = this.deps.store.commitArtifact(
+      {
         tenantId: this.tenant(),
         artifactId: transfer.artifactId,
         sessionId: transfer.sessionId,
@@ -446,19 +649,12 @@ export class ArtifactTransferManager {
         sha256: actual,
         kind: 'attachment',
         storageKey,
-      });
-      const event = this.deps.store.appendEvent({
-        sessionId: transfer.sessionId,
-        type: 'task_artifact',
-        payload: {
-          artifactId: artifact.artifactId,
-          name: artifact.name,
-          mimeType: artifact.mimeType,
-          size: artifact.size,
-          sha256: artifact.sha256,
-          kind: artifact.kind,
-        },
-      });
+      },
+      transfer.transferId,
+    );
+    this.transfers.delete(transfer.transferId);
+    this.byOperation.delete(`${transfer.sessionId}:${transfer.operationId}`);
+    try {
       this.deps.emit({
         type: 'task_artifact',
         taskId: transfer.sessionId,
@@ -470,16 +666,9 @@ export class ArtifactTransferManager {
         kind: artifact.kind,
         eventSeq: event.eventSeq,
       });
-      this.transfers.delete(transfer.transferId);
-      this.byOperation.delete(`${transfer.sessionId}:${transfer.operationId}`);
-      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
-      return { committed: true, artifactId: artifact.artifactId, eventSeq: event.eventSeq };
-    } catch (error) {
-      this.transfers.delete(transfer.transferId);
-      this.byOperation.delete(`${transfer.sessionId}:${transfer.operationId}`);
-      this.deps.store.deleteTransfer(transfer.transferId, this.tenant());
-      rmSync(transfer.tempPath, { force: true });
-      throw error;
+    } catch {
+      // DB/CAS 已 committed；发送失败由快照/重试恢复，不能把结果翻转成 failed。
     }
+    return { committed: true, artifactId: artifact.artifactId, eventSeq: event.eventSeq, sha256: artifact.sha256 };
   }
 }

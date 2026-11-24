@@ -10,7 +10,7 @@ describe('任务注册表 TaskRegistry', () => {
   it('注册 → 状态迁移 → 计数正确（queued 与 running 分开计）', () => {
     const reg = new TaskRegistry();
     reg.register('t1', { agentType: 'codex', cwd: '/a/b', source: 'platform' });
-    reg.register('t2', { agentType: 'gemini', cwd: '/a/c', source: 'control-plane' });
+    reg.register('t2', { agentType: 'agy', cwd: '/a/c', source: 'control-plane' });
     // 默认 queued
     expect(reg.counts()).toMatchObject({ running: 0, queued: 2, success: 0, failed: 0 });
     reg.updateStatus('t1', 'running', { phase: 'running' });

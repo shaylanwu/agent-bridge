@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -92,6 +93,46 @@ async function withRecoveryGuard<T>(lockPath: string, fn: () => Promise<T>): Pro
   }
 }
 
+/**
+ * Windows 下读取进程创建时间（ISO 8601）；拿不到返回 undefined（调用方保守处理）。
+ * 仅在 stale 回收冲突路径使用（频率极低）；数组参数 spawn，不走 shell 字符串。
+ * 用途：`process.kill(pid, 0)` 只能证明「该 PID 有进程」，不能证明是锁的原持有者——
+ * PID 被复用时会把陈旧锁误判成占用（实测：10-29 的死锁在 24 天后挡住 connect）。
+ * 复用进程的创建时间必然**晚于**锁记录的 createdAt（先有进程后写锁），据此识别。
+ */
+function windowsProcessStartTime(pid: number, timeoutMs = 3000): Promise<string | undefined> {
+  return new Promise((resolvePromise) => {
+    if (process.platform !== 'win32') {
+      resolvePromise(undefined);
+      return;
+    }
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToString('o')`],
+      { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
+    );
+    let out = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      resolvePromise(undefined);
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout.on('data', (chunk: Buffer) => {
+      out += chunk.toString('utf8');
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolvePromise(undefined);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const text = out.trim();
+      if (/^\d{4}-\d{2}-\d{2}T/.test(text)) resolvePromise(text);
+      else resolvePromise(undefined);
+    });
+  });
+}
+
 async function recoverStaleLock(lockPath: string): Promise<void> {
   await withRecoveryGuard(lockPath, async () => {
     let text: string;
@@ -111,6 +152,20 @@ async function recoverStaleLock(lockPath: string): Promise<void> {
       if (errorCode(error) === 'ESRCH') alive = false;
       else if (errorCode(error) !== 'EPERM') {
         throw unsafeError(lockPath, `无法确认 PID ${record.pid} 状态（${errorCode(error) ?? 'UNKNOWN'}）`);
+      }
+    }
+    if (alive) {
+      // PID 存活 ≠ 锁持有者存活：PID 复用会把陈旧锁误判成占用（Windows 实测）。
+      // 复用进程的创建时间必然晚于锁 createdAt；早于（含缓冲）则视为原持有者仍在。
+      const startedAt = await windowsProcessStartTime(record.pid);
+      if (startedAt === undefined) throw busyError(lockPath);
+      const lockCreated = Date.parse(record.createdAt);
+      const processStarted = Date.parse(startedAt);
+      // 1 分钟缓冲吸收时钟抖动；创建时间晚于锁 → 复用 → 可回收
+      if (Number.isFinite(lockCreated) && Number.isFinite(processStarted) && processStarted > lockCreated + 60_000) {
+        alive = false;
+      } else {
+        throw busyError(lockPath);
       }
     }
     if (alive) throw busyError(lockPath);

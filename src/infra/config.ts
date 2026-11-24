@@ -101,6 +101,28 @@ export interface BridgeConfig {
     /** 是否强制 scope 令牌（默认 true；关掉等于本机任意程序可调用） */
     requireToken?: boolean;
   };
+  /**
+   * A2A / ACP 外部网关（默认关闭；挂在控制面的 HTTP 表面上，不另开端口）。
+   * 见 add-a2a-acp-gateway 提案。enabled 后 A2A / ACP 表面默认可用（各自可单独关掉）。
+   */
+  gateway?: {
+    enabled?: boolean;
+    a2a?: boolean;
+    acp?: boolean;
+  };
+  /**
+   * per-task 有界 canonical feed（2.9/3.9）：200 messages / 200 steps / 50 artifacts、
+   * 4 MiB 单任务、64 MiB 进程是**默认配置而非产品硬上限**。未写 `[feed]` 段 = 用默认；
+   * 单维 0 = 关闭该维；全 0 = 整套关闭。淘汰产生显式 gap（reason=count/task_bytes/global_bytes），
+   * 各会话最新终态与最新一条事件永不淘汰。
+   */
+  feed?: {
+    maxMessages?: number;
+    maxSteps?: number;
+    maxArtifacts?: number;
+    taskMaxBytes?: number;
+    globalMaxBytes?: number;
+  };
   /** 设备展示名（默认 hostname） */
   label?: string;
   /** 记一次绑定时间，便于排查 */
@@ -310,6 +332,61 @@ export function resolveControlPlane(fromConfig?: BridgeConfig['controlPlane']): 
   };
 }
 
+/**
+ * 网关设置解析：`AGENT_BRIDGE_GATEWAY`（1/0，CI 临时开）> config.toml 的 `[gateway]` > 默认（**关闭**）。
+ * 默认关闭与控制面同一条红线：不开就多一个字节都不监听。
+ */
+export function resolveGateway(fromConfig?: BridgeConfig['gateway']): {
+  enabled: boolean;
+  a2a: boolean;
+  acp: boolean;
+} {
+  const envOn = process.env['AGENT_BRIDGE_GATEWAY'];
+  const envEnabled = envOn === '1' || envOn === 'true' ? true : envOn === '0' || envOn === 'false' ? false : undefined;
+  return {
+    enabled: envEnabled ?? fromConfig?.enabled === true,
+    a2a: fromConfig?.a2a !== false,
+    acp: fromConfig?.acp !== false,
+  };
+}
+
+/** 有界 feed 的默认预算（spec「会话快照、预算与终态收尾」：默认配置，非产品硬上限） */
+export const DEFAULT_FEED_BUDGETS = {
+  maxMessages: 200,
+  maxSteps: 200,
+  maxArtifacts: 50,
+  taskMaxBytes: 4 * 1024 * 1024,
+  globalMaxBytes: 64 * 1024 * 1024,
+} as const;
+
+/**
+ * 有界 feed 预算解析：未写 `[feed]` 段 = 全默认（生产默认启用）；
+ * 写了则**逐维覆盖** —— 只调 maxMessages 不会把别的维关掉；单维显式 0 = 关闭该维；
+ * 全 0 = 整套关闭。非法值按 0 处理（失败关闭，不误淘汰）。
+ */
+export function resolveFeedBudgets(fromConfig?: BridgeConfig['feed']): {
+  maxMessages: number;
+  maxSteps: number;
+  maxArtifacts: number;
+  taskMaxBytes: number;
+  globalMaxBytes: number;
+} {
+  if (!fromConfig) return { ...DEFAULT_FEED_BUDGETS };
+  const pick = (value: number | undefined, fallback: number): number =>
+    value === undefined
+      ? fallback
+      : Number.isFinite(value) && value >= 0
+        ? Math.floor(value)
+        : 0;
+  return {
+    maxMessages: pick(fromConfig.maxMessages, DEFAULT_FEED_BUDGETS.maxMessages),
+    maxSteps: pick(fromConfig.maxSteps, DEFAULT_FEED_BUDGETS.maxSteps),
+    maxArtifacts: pick(fromConfig.maxArtifacts, DEFAULT_FEED_BUDGETS.maxArtifacts),
+    taskMaxBytes: pick(fromConfig.taskMaxBytes, DEFAULT_FEED_BUDGETS.taskMaxBytes),
+    globalMaxBytes: pick(fromConfig.globalMaxBytes, DEFAULT_FEED_BUDGETS.globalMaxBytes),
+  };
+}
+
 /** 白名单条目规范化：`resolve()` 成绝对路径、丢弃空项、去重；空数组等价于「未配置」。
  * 配置里写相对路径（如 `"./"`）时以启动 bridge 时的 cwd 为基准 —— 规范化一次，避免每次任务都算。
  */
@@ -431,6 +508,22 @@ function serializeConfig(cfg: BridgeConfig): string {
     if (cfg.controlPlane.port !== undefined) controlPlane['port'] = cfg.controlPlane.port;
     if (cfg.controlPlane.requireToken !== undefined) controlPlane['require_token'] = cfg.controlPlane.requireToken;
     out['control_plane'] = controlPlane;
+  }
+  if (cfg.gateway !== undefined) {
+    const gateway: Record<string, unknown> = {};
+    if (cfg.gateway.enabled !== undefined) gateway['enabled'] = cfg.gateway.enabled;
+    if (cfg.gateway.a2a !== undefined) gateway['a2a'] = cfg.gateway.a2a;
+    if (cfg.gateway.acp !== undefined) gateway['acp'] = cfg.gateway.acp;
+    out['gateway'] = gateway;
+  }
+  if (cfg.feed !== undefined) {
+    const feed: Record<string, unknown> = {};
+    if (cfg.feed.maxMessages !== undefined) feed['max_messages'] = cfg.feed.maxMessages;
+    if (cfg.feed.maxSteps !== undefined) feed['max_steps'] = cfg.feed.maxSteps;
+    if (cfg.feed.maxArtifacts !== undefined) feed['max_artifacts'] = cfg.feed.maxArtifacts;
+    if (cfg.feed.taskMaxBytes !== undefined) feed['task_max_bytes'] = cfg.feed.taskMaxBytes;
+    if (cfg.feed.globalMaxBytes !== undefined) feed['global_max_bytes'] = cfg.feed.globalMaxBytes;
+    if (Object.keys(feed).length > 0) out['feed'] = feed;
   }
   if (cfg.label !== undefined) out['label'] = cfg.label;
   if (cfg.boundAt !== undefined) out['boundAt'] = cfg.boundAt;
@@ -559,6 +652,46 @@ export function loadConfig(): BridgeConfig | null {
       }
     : undefined;
 
+  const gwValue = raw['gateway'];
+  if (gwValue !== undefined && (typeof gwValue !== 'object' || gwValue === null || Array.isArray(gwValue))) {
+    throw invalidConfig(file, 'gateway 必须是 TOML 表');
+  }
+  const gwRaw = (gwValue ?? {}) as Record<string, unknown>;
+  const gateway = gwValue !== undefined
+    ? {
+        enabled: optionalBoolean(gwRaw['enabled'], 'gateway.enabled', file),
+        a2a: optionalBoolean(gwRaw['a2a'], 'gateway.a2a', file),
+        acp: optionalBoolean(gwRaw['acp'], 'gateway.acp', file),
+      }
+    : undefined;
+
+  const feedValue = raw['feed'];
+  if (feedValue !== undefined && (typeof feedValue !== 'object' || feedValue === null || Array.isArray(feedValue))) {
+    throw invalidConfig(file, 'feed 必须是 TOML 表');
+  }
+  let feed: BridgeConfig['feed'];
+  if (feedValue !== undefined) {
+    const feedRaw = feedValue as Record<string, unknown>;
+    const num = (key: string): number | undefined =>
+      optionalNumber(feedRaw[key], `feed.${key}`, file, 0);
+    const anySet = [
+      'max_messages',
+      'max_steps',
+      'max_artifacts',
+      'task_max_bytes',
+      'global_max_bytes',
+    ].some((key) => feedRaw[key] !== undefined);
+    if (anySet) {
+      feed = {
+        maxMessages: num('max_messages'),
+        maxSteps: num('max_steps'),
+        maxArtifacts: num('max_artifacts'),
+        taskMaxBytes: num('task_max_bytes'),
+        globalMaxBytes: num('global_max_bytes'),
+      };
+    }
+  }
+
   const mcpValue = raw['mcp'];
   if (mcpValue !== undefined && (typeof mcpValue !== 'object' || mcpValue === null || Array.isArray(mcpValue))) {
     throw invalidConfig(file, 'mcp 必须是 TOML 表');
@@ -641,6 +774,8 @@ export function loadConfig(): BridgeConfig | null {
     ...(mcp !== undefined ? { mcp } : {}),
     ...(jwt !== undefined ? { jwt } : {}),
     ...(controlPlane !== undefined ? { controlPlane } : {}),
+    ...(gateway !== undefined ? { gateway } : {}),
+    ...(feed !== undefined ? { feed } : {}),
     ...(label !== undefined ? { label } : {}),
     ...(boundAt !== undefined ? { boundAt } : {}),
   };

@@ -173,12 +173,23 @@ describe('锁所有权与异常释放', () => {
 });
 
 describe('stale lock 安全回收', () => {
-  it('同 hostname 且活 PID 时不能仅凭时间强拆', async () => {
-    const active = lockRecord();
+  it('活 PID 且进程创建时间早于锁（原持有者形态）时不能强拆', async () => {
+    // 真实锁的 createdAt ≥ 持有进程的启动时间：当前进程 + 刚创建的锁 = 原持有者形态
+    const active = lockRecord({ createdAt: new Date().toISOString() });
     await putLock(active);
 
     await expect(withProfileLock(stateDir, async () => undefined)).rejects.toThrow(/已有绑定进行中/);
     expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(active);
+  });
+
+  it.skipIf(process.platform !== 'win32')('Windows PID 复用：活 PID 但进程创建时间晚于锁 createdAt → 回收（2026-11-22 实测回归）', async () => {
+    // 场景：10-29 的死锁，进程死后 PID 被新进程复用——`kill(pid,0)` 探活成功但那是别的进程。
+    // 复用进程（当前测试进程）的创建时间必然晚于旧锁 createdAt → 应回收而不是报占用。
+    const reused = lockRecord({ createdAt: '2020-01-01T00:00:00.000Z' });
+    await putLock(reused);
+
+    await expect(withProfileLock(stateDir, async () => 'recovered')).resolves.toBe('recovered');
+    await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('同 hostname 且 PID 确认不存在时回收 stale lock', async () => {

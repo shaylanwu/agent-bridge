@@ -30,6 +30,7 @@ import {
   resolveInteractionTimeoutMs,
   resolveMaxInteractionsPerTask,
   resolveEventRetentionMaxEvents,
+  resolveFeedBudgets,
   resolveApprovalLedgerEnabled,
   resolveApprovalTtlMs,
   resolveMaxQueued,
@@ -161,6 +162,8 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
       saved?.eventRetentionMaxEvents,
       eventRetentionOverride,
     ),
+    // 有界 feed（2.9/3.9）：默认 200/200/50 + 4MiB/64MiB，[feed] 段逐维覆盖（0 = 关闭该维）
+    feedBudgets: resolveFeedBudgets(saved?.feed),
   });
   const recovered = store.recoverInterrupted();
   if (recovered > 0) {
@@ -229,6 +232,8 @@ export async function startBridge(flags: Flags, log: SessionLog): Promise<Bridge
     store.close();
     throw error;
   }
+  const resumed = session.recoverQueuedTasks?.() ?? 0;
+  if (resumed > 0) log('info', `[agent-bridge] 已恢复 ${resumed} 个 queued Turn`);
 
   return { session, config: saved };
 }

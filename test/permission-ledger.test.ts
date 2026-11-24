@@ -92,7 +92,7 @@ describe('approvalFingerprint', () => {
     const base = { agentType: 'kimi-code', tool: 'edit', resourceKey: 'a.ts' };
     expect(approvalFingerprint(base)).not.toBe(approvalFingerprint({ ...base, tool: 'read' }));
     expect(approvalFingerprint(base)).not.toBe(approvalFingerprint({ ...base, resourceKey: 'b.ts' }));
-    expect(approvalFingerprint(base)).not.toBe(approvalFingerprint({ ...base, agentType: 'gemini' }));
+    expect(approvalFingerprint(base)).not.toBe(approvalFingerprint({ ...base, agentType: 'agy' }));
   });
 });
 
@@ -204,6 +204,6 @@ describe('approvals 存储', () => {
   it('跨 agent 不串味：同指纹不同 agent 查不到', () => {
     const store = open();
     const rec = store.addApproval(mk());
-    expect(store.findApproval('default', 'gemini', rec.fingerprint)).toBeUndefined();
+    expect(store.findApproval('default', 'agy', rec.fingerprint)).toBeUndefined();
   });
 });

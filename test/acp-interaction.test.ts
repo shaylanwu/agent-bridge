@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -245,6 +245,72 @@ rl.on('line', (line) => {
       onPermission: () => undefined,
     });
     expect(result.text).toBe('DENIED');
+  });
+
+  it('未评审的 fs/terminal 方法一律 UnsupportedOperation，且不声明能力或写文件', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-acp-no-fs-'));
+    cleanups.push(() => {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      } catch {
+        /* Windows 下子进程句柄释放可能滞后 */
+      }
+    });
+    const script = join(dir, 'fake-acp-no-fs.cjs');
+    const target = join(dir, 'must-not-exist.txt');
+    writeFileSync(
+      script,
+      String.raw`
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+let promptId = null;
+let caps = null;
+const replies = [];
+const maybeFinish = () => {
+  if (replies.length !== 3) return;
+  send({ jsonrpc: '2.0', method: 'session/update', params: {
+    sessionId: 'sess_no_fs',
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ caps, replies }) } },
+  }});
+  send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+};
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.method === 'initialize') {
+    caps = m.params.clientCapabilities;
+    send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1 } });
+  } else if (m.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: m.id, result: { sessionId: 'sess_no_fs' } });
+  } else if (m.method === 'session/prompt') {
+    promptId = m.id;
+    send({ jsonrpc: '2.0', id: 'read-fs', method: 'fs/read_text_file', params: { path: __TARGET__ } });
+    send({ jsonrpc: '2.0', id: 'write-fs', method: 'fs/write_text_file', params: { path: __TARGET__, content: 'forbidden' } });
+    send({ jsonrpc: '2.0', id: 'create-terminal', method: 'terminal/create', params: { command: 'forbidden' } });
+  } else if (['read-fs', 'write-fs', 'create-terminal'].includes(m.id)) {
+    replies.push({ id: m.id, result: m.result, error: m.error });
+    maybeFinish();
+  }
+});
+`.replaceAll('__TARGET__', JSON.stringify(target)),
+    );
+    const result = await runAcpPrompt({
+      cwd: dir,
+      prompt: 'attempt unreviewed capabilities',
+      spec: { command: process.execPath, args: [script], sanitizeHostEnv: false },
+      timeoutMs: 1_000,
+    });
+    const payload = JSON.parse(result.text) as {
+      caps: { fs?: unknown };
+      replies: Array<{ id: string; error?: { code: number; message: string } }>;
+    };
+    expect(payload.caps.fs ?? {}).toEqual({ readTextFile: false, writeTextFile: false });
+    expect(payload.replies).toHaveLength(3);
+    for (const reply of payload.replies) {
+      expect(reply.error?.code).toBe(-32601);
+      expect(reply.error?.message).toContain('UnsupportedOperation');
+    }
+    expect(existsSync(target)).toBe(false);
   });
 });
 

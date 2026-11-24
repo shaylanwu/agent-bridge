@@ -9,7 +9,11 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import type { InteractionKind } from '../protocol.js';
+import type {
+  InteractionKind,
+  InteractionRequestState,
+  InteractionResponseStatus,
+} from '../protocol.js';
 import type { ApprovalRecord } from './permission-ledger.js';
 
 export type SessionMode = 'task' | 'conversation';
@@ -19,10 +23,27 @@ export type SessionStatus = 'running' | SessionTerminalStatus;
 export type TurnStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'timeout';
 // 交互种类是 wire 语义（平台按它决定渲染），真源在 protocol；这里只做同值转出，避免两处漂移
 export type { InteractionKind };
-export type InteractionState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
+export type InteractionState = InteractionRequestState | 'accepted' | 'declined';
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
 export const DEFAULT_TENANT = 'default';
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, canonicalJson(child)]),
+    );
+  }
+  return value;
+}
+
+export function fingerprintIdempotency(value: unknown): string {
+  return JSON.stringify(canonicalJson(value));
+}
 
 function containsUrlKey(value: unknown, depth = 0): boolean {
   if (depth > 8 || !value || typeof value !== 'object') return false;
@@ -39,6 +60,7 @@ export class SessionStoreError extends Error {
       | 'session_deleted'
       | 'session_conflict'
       | 'event_conflict'
+      | 'idempotency_conflict'
       | 'turn_not_found'
       | 'interaction_not_found'
       | 'artifact_not_found'
@@ -67,6 +89,17 @@ export interface SessionRecord {
   closedAt?: string;
 }
 
+export interface TurnExecutionSnapshot {
+  args: string[];
+  prompt?: string;
+  timeoutMs?: number;
+  allowInteractive?: boolean;
+  captureDiff?: boolean;
+  permissionMode?: 'default' | 'full';
+  requestedBy?: string;
+  purpose?: string;
+}
+
 export interface TurnRecord {
   tenantId: string;
   sessionId: string;
@@ -76,6 +109,9 @@ export interface TurnRecord {
   stopReason?: string;
   startedAt?: string;
   finishedAt?: string;
+  enqueuedAt?: string;
+  /** 恢复 queued Turn 所需的原始业务参数；绝不包含 serviceToken。 */
+  execution?: TurnExecutionSnapshot;
 }
 
 export interface SessionEvent {
@@ -105,12 +141,32 @@ export interface InteractionRecord {
   turnId?: string;
   kind: InteractionKind;
   state: InteractionState;
+  requestEventSeq?: number;
   payload: unknown;
   expiresAt?: string;
   responseId?: string;
+  responseFingerprint?: string;
+  resolvedFingerprint?: string;
+  resolution?: Record<string, unknown>;
   resultSeq?: number;
   resultPayload?: unknown;
   createdAt: string;
+}
+
+export interface InteractionResultRecord {
+  tenantId: string;
+  sessionId: string;
+  requestId: string;
+  resultSeq: number;
+  responseId?: string;
+  responseFingerprint?: string;
+  responseAnchor: boolean;
+  requestState: InteractionRequestState;
+  responseStatus?: InteractionResponseStatus;
+  state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
+  resolution?: Record<string, unknown>;
+  errorCode?: string;
+  at: string;
 }
 
 export interface ArtifactRecord {
@@ -186,6 +242,8 @@ interface TurnRow {
   stop_reason: string | null;
   started_at: string | null;
   finished_at: string | null;
+  enqueued_at: string | null;
+  execution_json: string | null;
 }
 
 interface EventRow {
@@ -215,11 +273,31 @@ interface InteractionRow {
   turn_id: string | null;
   kind: InteractionKind;
   state: InteractionState;
+  request_event_seq: number | null;
   payload: string;
   expires_at: string | null;
   response_id: string | null;
+  response_fingerprint: string | null;
+  resolved_fingerprint: string | null;
+  resolution: string | null;
   result_seq: number | null;
   result_payload: string | null;
+  created_at: string;
+}
+
+interface InteractionResultRow {
+  tenant_id: string;
+  session_id: string;
+  request_id: string;
+  result_seq: number;
+  response_id: string | null;
+  response_fingerprint: string | null;
+  response_anchor: number;
+  request_state: InteractionRequestState;
+  response_status: InteractionResponseStatus | null;
+  state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
+  resolution: string | null;
+  error_code: string | null;
   created_at: string;
 }
 
@@ -321,6 +399,8 @@ function toTurn(row: TurnRow): TurnRecord {
     stopReason: row.stop_reason ?? undefined,
     startedAt: row.started_at ?? undefined,
     finishedAt: row.finished_at ?? undefined,
+    enqueuedAt: row.enqueued_at ?? undefined,
+    execution: row.execution_json ? parseJson(row.execution_json) : undefined,
   };
 }
 
@@ -356,12 +436,34 @@ function toInteraction(row: InteractionRow): InteractionRecord {
     turnId: row.turn_id ?? undefined,
     kind: row.kind,
     state: row.state,
+    requestEventSeq: row.request_event_seq ?? undefined,
     payload: parseJson(row.payload),
     expiresAt: row.expires_at ?? undefined,
     responseId: row.response_id ?? undefined,
+    responseFingerprint: row.response_fingerprint ?? undefined,
+    resolvedFingerprint: row.resolved_fingerprint ?? undefined,
+    resolution: row.resolution ? parseJson(row.resolution) : undefined,
     resultSeq: row.result_seq ?? undefined,
     resultPayload: row.result_payload ? parseJson(row.result_payload) : undefined,
     createdAt: row.created_at,
+  };
+}
+
+function toInteractionResult(row: InteractionResultRow): InteractionResultRecord {
+  return {
+    tenantId: row.tenant_id,
+    sessionId: row.session_id,
+    requestId: row.request_id,
+    resultSeq: row.result_seq,
+    responseId: row.response_id ?? undefined,
+    responseFingerprint: row.response_fingerprint ?? undefined,
+    responseAnchor: row.response_anchor === 1,
+    requestState: row.request_state,
+    responseStatus: row.response_status ?? undefined,
+    state: row.state,
+    resolution: row.resolution ? parseJson(row.resolution) : undefined,
+    errorCode: row.error_code ?? undefined,
+    at: row.created_at,
   };
 }
 
@@ -409,6 +511,22 @@ export interface SessionStoreOptions {
    */
   retentionMaxEvents?: number;
   /**
+   * per-task 有界 canonical feed（spec「会话快照、预算与终态收尾」）：
+   * 200 messages / 200 steps / 50 artifacts、4 MiB 单任务、64 MiB 进程是**默认配置而非产品硬上限**。
+   * 未传（undefined）= 整套机制关闭（测试与旧用法兼容）；单维 0 = 该维不启用。
+   * 淘汰产生显式 gap（feed_gaps 表，reason = count | task_bytes | global_bytes），
+   * 绝不淘汰各会话最新终态 task_status；pending 交互在独立表，天然不受影响。
+   */
+  feedBudgets?: {
+    maxMessages?: number;
+    maxSteps?: number;
+    maxArtifacts?: number;
+    /** 单任务（会话）事件 payload 总字节上限 */
+    taskMaxBytes?: number;
+    /** 进程全局（全库）事件 payload 总字节上限；检查是惰性的（每会话每 64 条） */
+    globalMaxBytes?: number;
+  };
+  /**
    * 打开时跑一次 `PRAGMA quick_check`（缺省开启）。
    *
    * 为什么必须在**打开时**做：损坏的 SQLite 文件往往能正常 open、也能过 schema 检查，
@@ -422,10 +540,25 @@ export interface SessionStoreOptions {
 export class SessionStore {
   private readonly db: Database.Database;
   private readonly retentionMaxEvents: number;
+  private readonly feed: {
+    maxMessages: number;
+    maxSteps: number;
+    maxArtifacts: number;
+    taskMaxBytes: number;
+    globalMaxBytes: number;
+  };
   private closed = false;
 
   constructor(dbPath: string, options: SessionStoreOptions = {}) {
     this.retentionMaxEvents = Math.max(0, Math.floor(options.retentionMaxEvents ?? 0));
+    const b = options.feedBudgets;
+    this.feed = {
+      maxMessages: b ? Math.max(0, Math.floor(b.maxMessages ?? 0)) : 0,
+      maxSteps: b ? Math.max(0, Math.floor(b.maxSteps ?? 0)) : 0,
+      maxArtifacts: b ? Math.max(0, Math.floor(b.maxArtifacts ?? 0)) : 0,
+      taskMaxBytes: b ? Math.max(0, Math.floor(b.taskMaxBytes ?? 0)) : 0,
+      globalMaxBytes: b ? Math.max(0, Math.floor(b.globalMaxBytes ?? 0)) : 0,
+    };
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
     const opened = new Database(dbPath);
     this.db = opened;
@@ -479,9 +612,20 @@ export class SessionStore {
     }
   }
 
+  /**
+   * 建表 DDL **每次打开都跑**（整段都是 `CREATE TABLE IF NOT EXISTS`，对已存在的表是 no-op）。
+   *
+   * ⛔ 不要用 `user_version >= SCHEMA_VERSION` 把这段挡住。2026-10-29 的真实故障就是这么来的：
+   * `event_prunes` 是后来追加进这段 DDL 的，而已经升到 `SCHEMA_VERSION = 4` 的老库命中了
+   * 「版本号够了就 return」，表永远建不出来；偏偏 `appendEvent()` 无条件
+   * `SELECT pruned_through FROM event_prunes`，于是**每一条事件写入都抛 `no such table`**。
+   * 现场表现极具误导性：平台侧「已下发，等待第一条输出」，本机面板「暂无任务」，
+   * 而被异常打断的位置恰好在 `registry.register()` 之前 —— 任务连面板都进不去。
+   *
+   * 结论：幂等 DDL 无条件执行（微秒级开销），版本号只做标记；只有**必须看现有列结构才能决定**
+   * 的变更（如 `ALTER TABLE ADD COLUMN`）才走结构探测。
+   */
   private migrate(): void {
-    const current = Number(this.db.pragma('user_version', { simple: true }) ?? 0);
-    if (current >= SCHEMA_VERSION) return;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         tenant_id TEXT NOT NULL,
@@ -508,6 +652,8 @@ export class SessionStore {
         stop_reason TEXT,
         started_at TEXT,
         finished_at TEXT,
+        enqueued_at TEXT,
+        execution_json TEXT,
         PRIMARY KEY (tenant_id, session_id, turn_id),
         UNIQUE (tenant_id, session_id, ordinal),
         FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
@@ -563,15 +709,39 @@ export class SessionStore {
         turn_id TEXT,
         kind TEXT NOT NULL,
         state TEXT NOT NULL,
+        request_event_seq INTEGER,
         payload TEXT NOT NULL,
         expires_at TEXT,
         response_id TEXT,
+        response_fingerprint TEXT,
+        resolved_fingerprint TEXT,
+        resolution TEXT,
         result_seq INTEGER,
         result_payload TEXT,
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, session_id, request_id),
         FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS interaction_results (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        result_seq INTEGER NOT NULL,
+        response_id TEXT,
+        response_fingerprint TEXT,
+        response_anchor INTEGER NOT NULL DEFAULT 0,
+        request_state TEXT NOT NULL,
+        response_status TEXT,
+        state TEXT NOT NULL,
+        resolution TEXT,
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, session_id, request_id, result_seq),
+        FOREIGN KEY (tenant_id, session_id, request_id)
+          REFERENCES interactions (tenant_id, session_id, request_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS interaction_results_response
+        ON interaction_results (tenant_id, session_id, request_id, response_id, response_anchor);
       CREATE TABLE IF NOT EXISTS artifacts (
         tenant_id TEXT NOT NULL,
         artifact_id TEXT NOT NULL,
@@ -594,6 +764,15 @@ export class SessionStore {
         pruned_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, session_id),
         FOREIGN KEY (tenant_id, session_id) REFERENCES sessions (tenant_id, session_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS feed_gaps (
+        tenant_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        reason TEXT NOT NULL CHECK (reason IN ('count','task_bytes','global_bytes')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, session_id, from_seq, to_seq)
       );
       CREATE TABLE IF NOT EXISTS session_tombstones (
         tenant_id TEXT NOT NULL,
@@ -632,6 +811,18 @@ export class SessionStore {
     const columns = this.db.pragma('table_info(sessions)') as Array<{ name: string }>;
     if (!columns.some((column) => column.name === 'native_session_id')) {
       this.db.exec('ALTER TABLE sessions ADD COLUMN native_session_id TEXT');
+    }
+    const interactionColumns = this.db.pragma('table_info(interactions)') as Array<{ name: string }>;
+    for (const column of ['response_fingerprint', 'resolved_fingerprint', 'resolution', 'request_event_seq']) {
+      if (!interactionColumns.some((existing) => existing.name === column)) {
+        this.db.exec(`ALTER TABLE interactions ADD COLUMN ${column} TEXT`);
+      }
+    }
+    const turnColumns = this.db.pragma('table_info(turns)') as Array<{ name: string }>;
+    for (const column of ['enqueued_at', 'execution_json']) {
+      if (!turnColumns.some((existing) => existing.name === column)) {
+        this.db.exec(`ALTER TABLE turns ADD COLUMN ${column} TEXT`);
+      }
     }
     return;
   }
@@ -710,6 +901,12 @@ export class SessionStore {
     const rows = this.db
       .prepare('SELECT * FROM sessions WHERE tenant_id = ? ORDER BY created_at')
       .all(tenantId) as SessionRow[];
+    return rows.map(toSession);
+  }
+
+  /** 仅供启动恢复/内部重放使用；外部控制面必须继续走 listSessions(tenant)。 */
+  listAllSessions(): SessionRecord[] {
+    const rows = this.db.prepare('SELECT * FROM sessions ORDER BY created_at').all() as SessionRow[];
     return rows.map(toSession);
   }
 
@@ -888,12 +1085,235 @@ export class SessionStore {
     return { removed: tx(), prunedThrough: cutoff };
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // per-task 有界 canonical feed（2.9 / 3.9）
+  //
+  // 语义分层（与平台的契约）：
+  //  - 分类上限（message/step/artifact）：类型交错时产生**窗口内** gap（reason=count）；
+  //  - 字节预算（单任务 / 全局）：从最旧删起，删除构成前缀时推进 prunedThrough
+  //    （get_task 游标 < 水位 → session_history_pruned），窗口内缺号仍然只用 gaps 表达；
+  //  - 保护行：每会话最新终态 task_status 与每会话最新一条事件绝不淘汰；
+  //    pending 交互在独立表，天然不受影响。
+  // ─────────────────────────────────────────────────────────────────
+
+  private feedEnabled(): boolean {
+    const f = this.feed;
+    return f.maxMessages > 0 || f.maxSteps > 0 || f.maxArtifacts > 0 || f.taskMaxBytes > 0 || f.globalMaxBytes > 0;
+  }
+
+  /** appendEvent 后同步执行：分类上限 + 单任务字节。预算失败不影响写入（下次写入重试）。 */
+  private enforceFeedBudgets(sessionId: string, tenantId: string): void {
+    if (!this.feedEnabled()) return;
+    try {
+      const limits: Array<[string, number]> = [
+        ['task_message', this.feed.maxMessages],
+        ['task_step', this.feed.maxSteps],
+        ['task_artifact', this.feed.maxArtifacts],
+      ];
+      for (const [type, max] of limits) {
+        if (max <= 0) continue;
+        const count = Number(
+          (
+            this.db
+              .prepare(
+                'SELECT COUNT(*) AS n FROM events WHERE tenant_id = ? AND session_id = ? AND type = ?',
+              )
+              .get(tenantId, sessionId, type) as { n: number }
+          ).n,
+        );
+        if (count <= max) continue;
+        const victims = (
+          this.db
+            .prepare(
+              `SELECT event_seq FROM events WHERE tenant_id = ? AND session_id = ? AND type = ?
+                 ORDER BY event_seq LIMIT ?`,
+            )
+            .all(tenantId, sessionId, type, count - max) as Array<{ event_seq: number }>
+        ).map((row) => row.event_seq);
+        this.deleteEventsAndRecordGap(sessionId, tenantId, victims, 'count');
+      }
+      if (this.feed.taskMaxBytes > 0) this.enforceSessionByteBudget(sessionId, tenantId);
+    } catch {
+      /* 预算执行失败不影响写入：下次 append 会再检查 */
+    }
+  }
+
+  /**
+   * 单任务字节预算：payload 总字节（UTF-8）超限时从最旧事件删起。
+   * 保护行（最新终态 task_status、该会话最新一条事件）即使仍在超限也不删 ——
+   * 预算的目的是防时间线无限膨胀，不是把会话删成空集。
+   */
+  private enforceSessionByteBudget(sessionId: string, tenantId: string): void {
+    const total = this.sessionPayloadBytes(sessionId, tenantId);
+    if (total <= this.feed.taskMaxBytes) return;
+    const protectedSeqs = new Set<number>();
+    const statusRow = this.db
+      .prepare(
+        `SELECT MAX(event_seq) AS n FROM events
+           WHERE tenant_id = ? AND session_id = ? AND type = 'task_status'`,
+      )
+      .get(tenantId, sessionId) as { n: number | null };
+    if (statusRow.n !== null) protectedSeqs.add(statusRow.n);
+    const latestRow = this.db
+      .prepare(
+        'SELECT MAX(event_seq) AS n FROM events WHERE tenant_id = ? AND session_id = ?',
+      )
+      .get(tenantId, sessionId) as { n: number | null };
+    if (latestRow.n !== null) protectedSeqs.add(latestRow.n);
+
+    const rows = this.db
+      .prepare(
+        `SELECT event_seq, LENGTH(CAST(payload AS BLOB)) AS bytes FROM events
+           WHERE tenant_id = ? AND session_id = ? ORDER BY event_seq`,
+      )
+      .all(tenantId, sessionId) as Array<{ event_seq: number; bytes: number }>;
+    let running = total;
+    const victims: number[] = [];
+    for (const row of rows) {
+      if (running <= this.feed.taskMaxBytes) break;
+      if (protectedSeqs.has(row.event_seq)) continue;
+      victims.push(row.event_seq);
+      running -= row.bytes;
+    }
+    if (victims.length > 0) this.deleteEventsAndRecordGap(sessionId, tenantId, victims, 'task_bytes');
+  }
+
+  /**
+   * 进程全局字节预算：从**全局最旧**（created_at, tenant, session, seq）删起，
+   * 同样保护各会话最新终态与最新一条。
+   *
+   * 生产路径是**惰性**的（appendEvent 里每会话每 64 条检查一次，全库 SUM 摊销亚毫秒）；
+   * 公开为方法是为了运维/测试显式收口（例如清理后手动压一次水位）。
+   */
+  enforceGlobalFeedBytes(): void {
+    const total = Number(
+      (this.db.prepare('SELECT COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS n FROM events').get() as {
+        n: number;
+      }).n,
+    );
+    if (total <= this.feed.globalMaxBytes) return;
+    const protectedKeys = new Set<string>();
+    for (const row of this.db
+      .prepare(
+        `SELECT tenant_id, session_id, MAX(event_seq) AS n FROM events GROUP BY tenant_id, session_id`,
+      )
+      .all() as Array<{ tenant_id: string; session_id: string; n: number }>) {
+      protectedKeys.add(`${row.tenant_id}\u0000${row.session_id}\u0000${row.n}`);
+    }
+    for (const row of this.db
+      .prepare(
+        `SELECT tenant_id, session_id, MAX(event_seq) AS n FROM events
+           WHERE type = 'task_status' GROUP BY tenant_id, session_id`,
+      )
+      .all() as Array<{ tenant_id: string; session_id: string; n: number }>) {
+      protectedKeys.add(`${row.tenant_id}\u0000${row.session_id}\u0000${row.n}`);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT tenant_id, session_id, event_seq, LENGTH(CAST(payload AS BLOB)) AS bytes FROM events
+           ORDER BY created_at, tenant_id, session_id, event_seq`,
+      )
+      .all() as Array<{ tenant_id: string; session_id: string; event_seq: number; bytes: number }>;
+    let running = total;
+    const bySession = new Map<string, number[]>();
+    for (const row of rows) {
+      if (running <= this.feed.globalMaxBytes) break;
+      if (protectedKeys.has(`${row.tenant_id}\u0000${row.session_id}\u0000${row.event_seq}`)) continue;
+      const key = `${row.tenant_id}\u0000${row.session_id}`;
+      const list = bySession.get(key) ?? [];
+      list.push(row.event_seq);
+      bySession.set(key, list);
+      running -= row.bytes;
+    }
+    for (const [key, seqs] of bySession) {
+      const sep = key.indexOf('\u0000');
+      const tenantId = key.slice(0, sep);
+      const sessionId = key.slice(sep + 1);
+      this.deleteEventsAndRecordGap(sessionId, tenantId, seqs, 'global_bytes');
+    }
+  }
+
+  private sessionPayloadBytes(sessionId: string, tenantId: string): number {
+    return Number(
+      (
+        this.db
+          .prepare(
+            `SELECT COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS n FROM events
+               WHERE tenant_id = ? AND session_id = ?`,
+          )
+          .get(tenantId, sessionId) as { n: number }
+      ).n,
+    );
+  }
+
+  /**
+   * 删除事件并显式记录 gap 区间（reason），随后推进连续前缀水位。
+   * 区间记「本次删除的最小/最大 seq」：eventGaps 扫描出的缺号与之**相交**即取 reason，
+   * 相邻批次不合并（匹配语义不依赖端点重合）。
+   */
+  private deleteEventsAndRecordGap(
+    sessionId: string,
+    tenantId: string,
+    seqs: number[],
+    reason: 'count' | 'task_bytes' | 'global_bytes',
+  ): void {
+    if (seqs.length === 0) return;
+    const min = Math.min(...seqs);
+    const max = Math.max(...seqs);
+    const tx = this.db.transaction(() => {
+      const placeholders = seqs.map(() => '?').join(',');
+      const res = this.db
+        .prepare(
+          `DELETE FROM events WHERE tenant_id = ? AND session_id = ? AND event_seq IN (${placeholders})`,
+        )
+        .run(tenantId, sessionId, ...seqs);
+      this.db
+        .prepare(
+          `INSERT INTO feed_gaps (tenant_id, session_id, from_seq, to_seq, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (tenant_id, session_id, from_seq, to_seq) DO UPDATE SET reason = excluded.reason`,
+        )
+        .run(tenantId, sessionId, min, max, reason, now());
+      this.advancePruneFloor(sessionId, tenantId);
+      return res.changes;
+    });
+    tx();
+  }
+
+  /**
+   * 重算连续前缀水位：删除后从 floor+1 起的最小现存序号 minRow，
+   * [floor+1 .. minRow-1] 全空即可把水位推进到 minRow-1。
+   * 事件全删时不推进 —— 发号取 max(MAX(event_seq)=0, floor)+1 = floor+1，天然不会撞历史。
+   */
+  private advancePruneFloor(sessionId: string, tenantId: string): void {
+    const floor = this.getPrunedThrough(sessionId, tenantId);
+    const minRow = this.db
+      .prepare(
+        'SELECT MIN(event_seq) AS n FROM events WHERE tenant_id = ? AND session_id = ?',
+      )
+      .get(tenantId, sessionId) as { n: number | null };
+    if (minRow.n === null || minRow.n <= floor + 1) return;
+    const cutoff = minRow.n - 1;
+    this.db
+      .prepare(
+        `INSERT INTO event_prunes (tenant_id, session_id, pruned_through, removed, pruned_at)
+         VALUES (?, ?, ?, 0, ?)
+         ON CONFLICT (tenant_id, session_id) DO UPDATE SET
+           pruned_through = MAX(event_prunes.pruned_through, excluded.pruned_through),
+           pruned_at = excluded.pruned_at`,
+      )
+      .run(tenantId, sessionId, cutoff, now());
+  }
+
   createTurn(input: {
     sessionId: string;
     turnId?: string;
     tenantId?: string;
     status?: TurnStatus;
     startedAt?: string;
+    enqueuedAt?: string;
+    execution?: TurnExecutionSnapshot;
   }): TurnRecord {
     const tenantId = input.tenantId ?? DEFAULT_TENANT;
     if (!this.getSession(input.sessionId, tenantId)) {
@@ -916,13 +1336,25 @@ export class SessionStore {
       ordinal,
       status: input.status ?? 'queued',
       startedAt: input.startedAt,
+      enqueuedAt: input.enqueuedAt ?? now(),
+      execution: input.execution,
     };
     this.db
       .prepare(
-        `INSERT INTO turns (tenant_id, session_id, turn_id, ordinal, status, started_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO turns
+          (tenant_id, session_id, turn_id, ordinal, status, started_at, enqueued_at, execution_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(tenantId, input.sessionId, turnId, ordinal, turn.status, turn.startedAt ?? null);
+      .run(
+        tenantId,
+        input.sessionId,
+        turnId,
+        ordinal,
+        turn.status,
+        turn.startedAt ?? null,
+        turn.enqueuedAt ?? null,
+        turn.execution === undefined ? null : JSON.stringify(turn.execution),
+      );
     return turn;
   }
 
@@ -975,6 +1407,29 @@ export class SessionStore {
       )
       .get(tenantId, sessionId) as TurnRow | undefined;
     return row ? toTurn(row) : undefined;
+  }
+
+  /** spawn 前的持久化闸门：只有仍为 queued 的 Turn 能进入 running；失败则绝不启动 CLI。 */
+  claimTurnForLaunch(sessionId: string, turnId: string, tenantId = DEFAULT_TENANT): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE turns SET status = 'running', started_at = ?
+          WHERE tenant_id = ? AND session_id = ? AND turn_id = ? AND status = 'queued'`,
+      )
+      .run(now(), tenantId, sessionId, turnId);
+    return result.changes === 1;
+  }
+
+  listQueuedTurns(tenantId?: string): TurnRecord[] {
+    const rows = tenantId === undefined
+      ? this.db.prepare(
+          `SELECT * FROM turns WHERE status = 'queued' ORDER BY enqueued_at, session_id, ordinal`,
+        ).all() as TurnRow[]
+      : this.db.prepare(
+          `SELECT * FROM turns WHERE tenant_id = ? AND status = 'queued'
+            ORDER BY enqueued_at, session_id, ordinal`,
+        ).all(tenantId) as TurnRow[];
+    return rows.map(toTurn);
   }
 
   appendEvent(input: {
@@ -1043,6 +1498,16 @@ export class SessionStore {
       return event;
     });
     const event = tx();
+    // per-task 有界 feed：分类上限 + 单任务字节每条同步执行（行数受预算约束，检查开销有界）；
+    // 全局字节按 64 条粒度惰性检查（全库 SUM 摊销亚毫秒）。
+    this.enforceFeedBudgets(input.sessionId, tenantId);
+    if (this.feed.globalMaxBytes > 0 && event.eventSeq % 64 === 0) {
+      try {
+        this.enforceGlobalFeedBytes();
+      } catch {
+        /* 同 retention：裁剪失败不影响写入 */
+      }
+    }
     // 惰性 retention：每 100 条检查一次，避免每条事件都跑一次 DELETE
     if (this.retentionMaxEvents > 0 && event.eventSeq % 100 === 0) {
       try {
@@ -1055,6 +1520,31 @@ export class SessionStore {
       }
     }
     return event;
+  }
+
+  /** 某类事件的最新持久快照；终态幂等重放必须读 SQLite，而不是依赖内存句柄是否已清理。 */
+  getLatestEvent(sessionId: string, type: string, tenantId = DEFAULT_TENANT): SessionEvent | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM events
+          WHERE tenant_id = ? AND session_id = ? AND type = ?
+          ORDER BY event_seq DESC LIMIT 1`,
+      )
+      .get(tenantId, sessionId, type) as EventRow | undefined;
+    return row ? toEvent(row) : undefined;
+  }
+
+  /** 指定 artifact 的首次/原 canonical 事件；重放旧 transfer 不得借用同 Session 最新附件的 eventSeq。 */
+  getArtifactEvent(sessionId: string, artifactId: string, tenantId = DEFAULT_TENANT): SessionEvent | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM events
+          WHERE tenant_id = ? AND session_id = ? AND type = 'task_artifact'
+            AND json_extract(payload, '$.artifactId') = ?
+          ORDER BY event_seq LIMIT 1`,
+      )
+      .get(tenantId, sessionId, artifactId) as EventRow | undefined;
+    return row ? toEvent(row) : undefined;
   }
 
   listEvents(
@@ -1182,8 +1672,15 @@ export class SessionStore {
   /**
    * 事件序号缺口（1.0 `eventWindow.gaps`）：retention 或写入失败造成的缺号必须**显式**告诉平台，
    * 否则补洞方会以为「拿到连续窗口」而静默丢内容。空数组 = 完整。
+   *
+   * `reason`（2.9/3.9）：缺口与 feed_gaps 记录的淘汰区间**相交**时给出淘汰原因
+   * （count / task_bytes / global_bytes）；写入失败等无记录来源的缺口不带该字段。
+   * 前缀删除不产生窗口内缺口 —— 那由 prunedThrough / session_history_pruned 语义表达。
    */
-  eventGaps(sessionId: string, tenantId = DEFAULT_TENANT): Array<{ from: number; to: number }> {
+  eventGaps(
+    sessionId: string,
+    tenantId = DEFAULT_TENANT,
+  ): Array<{ from: number; to: number; reason?: 'count' | 'task_bytes' | 'global_bytes' }> {
     const rows = this.db
       .prepare(
         `SELECT prev + 1 AS gap_from, event_seq - 1 AS gap_to FROM (
@@ -1192,7 +1689,21 @@ export class SessionStore {
          ) WHERE prev IS NOT NULL AND event_seq > prev + 1`,
       )
       .all(tenantId, sessionId) as Array<{ gap_from: number; gap_to: number }>;
-    return rows.map((row) => ({ from: row.gap_from, to: row.gap_to }));
+    if (rows.length === 0) return [];
+    const recorded = this.db
+      .prepare(
+        'SELECT from_seq, to_seq, reason FROM feed_gaps WHERE tenant_id = ? AND session_id = ?',
+      )
+      .all(tenantId, sessionId) as Array<{ from_seq: number; to_seq: number; reason: string }>;
+    return rows.map((row) => {
+      const hit = recorded.find(
+        (g) => g.from_seq <= row.gap_to && g.to_seq >= row.gap_from,
+      );
+      const reason = hit?.reason as 'count' | 'task_bytes' | 'global_bytes' | undefined;
+      return reason
+        ? { from: row.gap_from, to: row.gap_to, reason }
+        : { from: row.gap_from, to: row.gap_to };
+    });
   }
 
   requestInteraction(input: {
@@ -1246,6 +1757,62 @@ export class SessionStore {
     return record;
   }
 
+  /** pending 与 request 事件同事务创建，并保存可重放的 eventSeq。 */
+  openInteraction(input: {
+    sessionId: string;
+    requestId: string;
+    kind: InteractionKind;
+    payload: unknown;
+    turnId?: string;
+    expiresAt?: string;
+    tenantId?: string;
+  }): { interaction: InteractionRecord; event: SessionEvent } {
+    const tenantId = input.tenantId ?? DEFAULT_TENANT;
+    const tx = this.db.transaction(() => {
+      const interaction = this.requestInteraction({ ...input, tenantId });
+      const event = this.appendEvent({
+        sessionId: input.sessionId,
+        tenantId,
+        type: 'task_interaction_request',
+        payload: {
+          requestId: input.requestId,
+          kind: input.kind,
+          payload: input.payload,
+          expiresAt: input.expiresAt,
+        },
+      });
+      this.db
+        .prepare(
+          `UPDATE interactions SET request_event_seq = ?
+            WHERE tenant_id = ? AND session_id = ? AND request_id = ?`,
+        )
+        .run(event.eventSeq, tenantId, input.sessionId, input.requestId);
+      return { interaction: this.getInteraction(input.sessionId, input.requestId, tenantId)!, event };
+    });
+    return tx();
+  }
+
+  /** 原子占据交互交付 flight；只有 pending 能进入 submitting，调用方随后才可 await adapter。 */
+  beginInteractionResponse(input: {
+    sessionId: string;
+    requestId: string;
+    responseId: string;
+    responseFingerprint: string;
+    tenantId?: string;
+  }): InteractionRecord {
+    const tenantId = input.tenantId ?? DEFAULT_TENANT;
+    const result = this.db
+      .prepare(
+        `UPDATE interactions SET state = 'submitting', response_id = ?, response_fingerprint = ?
+          WHERE tenant_id = ? AND session_id = ? AND request_id = ? AND state = 'pending'`,
+      )
+      .run(input.responseId, input.responseFingerprint, tenantId, input.sessionId, input.requestId);
+    if (result.changes !== 1) {
+      throw new SessionStoreError('session_conflict', `交互不在 pending：${input.requestId}`);
+    }
+    return this.getInteraction(input.sessionId, input.requestId, tenantId) as InteractionRecord;
+  }
+
   resolveInteraction(input: {
     sessionId: string;
     requestId: string;
@@ -1258,8 +1825,9 @@ export class SessionStore {
     const tenantId = input.tenantId ?? DEFAULT_TENANT;
     const current = this.getInteraction(input.sessionId, input.requestId, tenantId);
     if (!current) throw new SessionStoreError('interaction_not_found', `交互不存在：${input.requestId}`);
-    if (current.state !== 'pending' && current.responseId === input.responseId) return current;
-    if (current.state !== 'pending') {
+    const resolvable = current.state === 'pending' || current.state === 'submitting';
+    if (!resolvable && current.responseId === input.responseId) return current;
+    if (!resolvable) {
       throw new SessionStoreError('session_conflict', `交互已结算：${input.requestId}`);
     }
     this.db
@@ -1278,6 +1846,157 @@ export class SessionStore {
         input.requestId,
       );
     return this.getInteraction(input.sessionId, input.requestId, tenantId) as InteractionRecord;
+  }
+
+  /** 在一个事务内追加响应 occurrence、分配独立 resultSeq 并更新请求投影；不写 canonical events。 */
+  recordInteractionResult(input: {
+    sessionId: string;
+    requestId: string;
+    tenantId?: string;
+    responseId?: string;
+    responseFingerprint?: string;
+    responseAnchor?: boolean;
+    requestState: InteractionRequestState;
+    responseStatus?: InteractionResponseStatus;
+    state: 'accepted' | 'declined' | 'cancelled' | 'expired' | 'failed';
+    resolution?: Record<string, unknown>;
+    errorCode?: string;
+    at?: string;
+    transition?: {
+      state: InteractionState;
+      responseId?: string;
+      responseFingerprint?: string;
+      resolvedFingerprint?: string;
+      resolution?: Record<string, unknown>;
+      resultPayload?: unknown;
+    };
+  }): InteractionResultRecord {
+    const tenantId = input.tenantId ?? DEFAULT_TENANT;
+    const tx = this.db.transaction(() => {
+      const current = this.getInteraction(input.sessionId, input.requestId, tenantId);
+      if (!current) throw new SessionStoreError('interaction_not_found', `交互不存在：${input.requestId}`);
+      if (input.responseAnchor && input.responseId) {
+        const anchor = this.getInteractionResponseAnchor(
+          input.sessionId,
+          input.requestId,
+          input.responseId,
+          tenantId,
+        );
+        if (anchor) throw new SessionStoreError('session_conflict', `responseId 已有锚点：${input.responseId}`);
+      }
+      const resultSeq = Number(
+        (
+          this.db
+            .prepare(
+              `SELECT COALESCE(MAX(result_seq), 0) AS n FROM interaction_results
+                WHERE tenant_id = ? AND session_id = ? AND request_id = ?`,
+            )
+            .get(tenantId, input.sessionId, input.requestId) as { n: number }
+        ).n,
+      ) + 1;
+      const at = input.at ?? now();
+      this.db
+        .prepare(
+          `INSERT INTO interaction_results
+            (tenant_id, session_id, request_id, result_seq, response_id, response_fingerprint,
+             response_anchor, request_state, response_status, state, resolution, error_code, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          tenantId,
+          input.sessionId,
+          input.requestId,
+          resultSeq,
+          input.responseId ?? null,
+          input.responseFingerprint ?? null,
+          input.responseAnchor ? 1 : 0,
+          input.requestState,
+          input.responseStatus ?? null,
+          input.state,
+          input.resolution === undefined ? null : JSON.stringify(input.resolution),
+          input.errorCode ?? null,
+          at,
+        );
+      const transition = input.transition;
+      const resultPayload = transition?.resultPayload ?? input.resolution ?? current.resultPayload ?? null;
+      this.db
+        .prepare(
+          `UPDATE interactions SET state = ?, response_id = ?, response_fingerprint = ?,
+             resolved_fingerprint = ?, resolution = ?, result_seq = ?, result_payload = ?
+            WHERE tenant_id = ? AND session_id = ? AND request_id = ?`,
+        )
+        .run(
+          transition?.state ?? current.state,
+          transition?.responseId ?? current.responseId ?? null,
+          transition?.responseFingerprint ?? current.responseFingerprint ?? null,
+          transition?.resolvedFingerprint ?? current.resolvedFingerprint ?? null,
+          transition?.resolution === undefined
+            ? current.resolution === undefined
+              ? null
+              : JSON.stringify(current.resolution)
+            : JSON.stringify(transition.resolution),
+          resultSeq,
+          resultPayload === null ? null : JSON.stringify(resultPayload),
+          tenantId,
+          input.sessionId,
+          input.requestId,
+        );
+      const row = this.db
+        .prepare(
+          `SELECT * FROM interaction_results
+            WHERE tenant_id = ? AND session_id = ? AND request_id = ? AND result_seq = ?`,
+        )
+        .get(tenantId, input.sessionId, input.requestId, resultSeq) as InteractionResultRow;
+      return toInteractionResult(row);
+    });
+    return tx();
+  }
+
+  /** 按 responseId+规范化指纹找首次 occurrence，包含 conflict/duplicate，避免冲突重放不断增号。 */
+  getInteractionResponseReceipt(
+    sessionId: string,
+    requestId: string,
+    responseId: string,
+    responseFingerprint: string,
+    tenantId = DEFAULT_TENANT,
+  ): InteractionResultRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM interaction_results
+          WHERE tenant_id = ? AND session_id = ? AND request_id = ? AND response_id = ? AND response_fingerprint = ?
+          ORDER BY result_seq LIMIT 1`,
+      )
+      .get(tenantId, sessionId, requestId, responseId, responseFingerprint) as InteractionResultRow | undefined;
+    return row ? toInteractionResult(row) : undefined;
+  }
+
+  getInteractionResponseAnchor(
+    sessionId: string,
+    requestId: string,
+    responseId: string,
+    tenantId = DEFAULT_TENANT,
+  ): InteractionResultRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM interaction_results
+          WHERE tenant_id = ? AND session_id = ? AND request_id = ? AND response_id = ? AND response_anchor = 1`,
+      )
+      .get(tenantId, sessionId, requestId, responseId) as InteractionResultRow | undefined;
+    return row ? toInteractionResult(row) : undefined;
+  }
+
+  listLatestInteractionResults(sessionId: string, tenantId = DEFAULT_TENANT): InteractionResultRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.* FROM interaction_results r
+          JOIN (
+            SELECT request_id, MAX(result_seq) AS latest FROM interaction_results
+             WHERE tenant_id = ? AND session_id = ? GROUP BY request_id
+          ) latest ON latest.request_id = r.request_id AND latest.latest = r.result_seq
+          WHERE r.tenant_id = ? AND r.session_id = ? ORDER BY r.request_id`,
+      )
+      .all(tenantId, sessionId, tenantId, sessionId) as InteractionResultRow[];
+    return rows.map(toInteractionResult);
   }
 
   getInteraction(
@@ -1343,6 +2062,42 @@ export class SessionStore {
       )
       .get(tenantId, requestId) as InteractionRow | undefined;
     return row ? toInteraction(row) : undefined;
+  }
+
+  // ---------- 通用幂等（HTTP operation/Idempotency-Key） ----------
+
+  /**
+   * 在同一 SQLite 事务内执行业务写入并保存回执。回调不得 await/spawn/访问网络。
+   * 同 key 同指纹返回原结果；不同指纹 fail closed，绝不再次执行业务回调。
+   */
+  runIdempotent<T>(input: {
+    tenantId: string;
+    scope: string;
+    key: string;
+    fingerprint: string;
+  }, write: () => T): { value: T; replay: boolean } {
+    const tx = this.db.transaction(() => {
+      const existing = this.db
+        .prepare('SELECT * FROM idempotency WHERE tenant_id = ? AND scope = ? AND key = ?')
+        .get(input.tenantId, input.scope, input.key) as
+        | { fingerprint: string; result: string }
+        | undefined;
+      if (existing) {
+        if (existing.fingerprint !== input.fingerprint) {
+          throw new SessionStoreError('idempotency_conflict', `幂等键内容冲突：${input.key}`);
+        }
+        return { value: parseJson(existing.result) as T, replay: true };
+      }
+      const value = write();
+      this.db
+        .prepare(
+          `INSERT INTO idempotency (tenant_id, scope, key, fingerprint, result, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(input.tenantId, input.scope, input.key, input.fingerprint, JSON.stringify(value), now());
+      return { value, replay: false };
+    });
+    return tx();
   }
 
   // ---------- 持久授权账本（approvals） ----------
@@ -1474,6 +2229,34 @@ export class SessionStore {
     return this.getArtifact(artifact.artifactId, artifact.tenantId) ?? artifact;
   }
 
+  /** Artifact + canonical event + committed transfer 同事务提交，供 complete 故障后安全重试。 */
+  commitArtifact(
+    input: Omit<ArtifactRecord, 'createdAt'> & { createdAt?: string },
+    transferId: string,
+  ): { artifact: ArtifactRecord; event: SessionEvent } {
+    const tx = this.db.transaction(() => {
+      const transfer = this.getTransfer(transferId, input.tenantId);
+      if (!transfer) throw new SessionStoreError('artifact_not_found', `传输不存在：${transferId}`);
+      const artifact = this.putArtifact(input);
+      const event = this.appendEvent({
+        sessionId: artifact.sessionId,
+        tenantId: artifact.tenantId,
+        type: 'task_artifact',
+        payload: {
+          artifactId: artifact.artifactId,
+          name: artifact.name,
+          mimeType: artifact.mimeType,
+          size: artifact.size,
+          sha256: artifact.sha256,
+          kind: artifact.kind,
+        },
+      });
+      this.saveTransfer({ ...transfer, state: 'committed', tempPath: undefined, nextOffset: artifact.size });
+      return { artifact, event };
+    });
+    return tx();
+  }
+
   saveTransfer(
     input: Omit<ArtifactTransferRecord, 'createdAt' | 'updatedAt'> & {
       createdAt?: string;
@@ -1496,6 +2279,7 @@ export class SessionStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (tenant_id, transfer_id) DO UPDATE SET
            next_offset = excluded.next_offset,
+           temp_path = excluded.temp_path,
            state = excluded.state,
            updated_at = excluded.updated_at`,
       )
@@ -1651,14 +2435,23 @@ export class SessionStore {
     const result = this.db
       .prepare(
         `UPDATE turns SET status = 'failed', stop_reason = 'session_interrupted', finished_at = ?
-          WHERE tenant_id = ? AND session_id = ? AND status IN ('queued','running')`,
+          WHERE tenant_id = ? AND session_id = ? AND status = 'running'`,
       )
       .run(at, tenantId, sessionId);
     this.db
       .prepare(
-        `UPDATE sessions SET phase = CASE WHEN mode = 'conversation' THEN 'waiting_user' ELSE 'settled' END,
-           status = CASE WHEN mode = 'conversation' THEN 'running' ELSE 'failed' END,
-           closed_at = CASE WHEN mode = 'conversation' THEN closed_at ELSE ? END,
+        `UPDATE sessions SET
+           phase = CASE
+             WHEN EXISTS (SELECT 1 FROM turns q WHERE q.tenant_id = sessions.tenant_id
+                          AND q.session_id = sessions.session_id AND q.status = 'queued') THEN 'queued'
+             WHEN mode = 'conversation' THEN 'waiting_user' ELSE 'settled' END,
+           status = CASE
+             WHEN EXISTS (SELECT 1 FROM turns q WHERE q.tenant_id = sessions.tenant_id
+                          AND q.session_id = sessions.session_id AND q.status = 'queued') THEN 'running'
+             WHEN mode = 'conversation' THEN 'running' ELSE 'failed' END,
+           closed_at = CASE WHEN mode = 'task' AND NOT EXISTS (
+             SELECT 1 FROM turns q WHERE q.tenant_id = sessions.tenant_id
+             AND q.session_id = sessions.session_id AND q.status = 'queued') THEN ? ELSE closed_at END,
            updated_at = ?
          WHERE tenant_id = ? AND session_id = ?`,
       )
@@ -1666,24 +2459,66 @@ export class SessionStore {
     return result.changes;
   }
 
+  /** 恢复所有遗留开放交互；结果只写 occurrence 表，绝不在终态后追加 canonical feed。 */
+  private recoverOpenInteractions(sessionId: string, tenantId: string): void {
+    for (const interaction of this.listInteractions(sessionId, tenantId)) {
+      if (interaction.state !== 'pending' && interaction.state !== 'submitting') continue;
+      const submitting = interaction.state === 'submitting';
+      const expired = !submitting && interaction.expiresAt !== undefined && Date.parse(interaction.expiresAt) <= Date.now();
+      const requestState = submitting ? 'failed' : expired ? 'expired' : 'cancelled';
+      const resolution = submitting
+        ? { errorCode: 'interaction_delivery_unknown' }
+        : { reason: 'session_interrupted' };
+      this.recordInteractionResult({
+        sessionId,
+        tenantId,
+        requestId: interaction.requestId,
+        responseId: interaction.responseId,
+        responseFingerprint: interaction.responseFingerprint,
+        responseAnchor: submitting,
+        requestState,
+        responseStatus: submitting ? 'invalid' : undefined,
+        state: submitting ? 'failed' : expired ? 'expired' : 'cancelled',
+        resolution,
+        errorCode: submitting ? 'interaction_delivery_unknown' : expired ? 'interaction_expired' : 'cancelled',
+        transition: {
+          state: requestState,
+          responseId: interaction.responseId,
+          responseFingerprint: interaction.responseFingerprint,
+          resolution,
+          resultPayload: resolution,
+        },
+      });
+    }
+  }
+
   /**
    * 进程启动时的一次性恢复：上一进程留下的 running Session 不能假装还在跑。
    * task 模式直接落 failed + tombstone；conversation 保留历史并进入 waiting_user。
    */
-  recoverInterrupted(tenantId = DEFAULT_TENANT): number {
+  recoverInterrupted(tenantId?: string): number {
     let recovered = 0;
-    for (const session of this.listSessions(tenantId)) {
-      if (session.status !== 'running' || session.phase === 'waiting_user') continue;
+    const sessions = tenantId === undefined ? this.listAllSessions() : this.listSessions(tenantId);
+    for (const session of sessions) {
+      const active = session.status === 'running' && session.phase !== 'waiting_user';
+      const hadRunning = this.listTurns(session.sessionId, session.tenantId).some((turn) => turn.status === 'running');
+      const hasOpenInteraction = this.listInteractions(session.sessionId, session.tenantId).some(
+        (interaction) => interaction.state === 'pending' || interaction.state === 'submitting',
+      );
+      if (!active && !hasOpenInteraction) continue;
       const tx = this.db.transaction(() => {
-        this.markActiveTurnsInterrupted(session.sessionId, tenantId);
+        if (active) this.markActiveTurnsInterrupted(session.sessionId, session.tenantId);
+        this.recoverOpenInteractions(session.sessionId, session.tenantId);
+        if (!active || !hadRunning) return;
         this.appendEvent({
           sessionId: session.sessionId,
-          tenantId,
+          tenantId: session.tenantId,
           type: 'session_interrupted',
           payload: { previousPhase: session.phase, at: now() },
         });
-        if (session.mode === 'task') {
-          this.closeSession(session.sessionId, 'failed', 'session_interrupted', tenantId);
+        const hasQueued = this.listTurns(session.sessionId, session.tenantId).some((turn) => turn.status === 'queued');
+        if (session.mode === 'task' && !hasQueued) {
+          this.closeSession(session.sessionId, 'failed', 'session_interrupted', session.tenantId);
         }
         recovered += 1;
       });

@@ -258,6 +258,148 @@ describe('SessionStore', () => {
     expect(store.listTurns('bt_conv')[0]?.status).toBe('failed');
   });
 
+  it('恢复只中断 running，queued 保留执行快照且重复恢复不新增事件', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_queued', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });
+    store.createTurn({
+      sessionId: 'bt_queued',
+      status: 'queued',
+      execution: { args: [], prompt: 'resume safely', timeoutMs: 5000 },
+    });
+    store.createSession({ sessionId: 'bt_mixed', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
+    store.createTurn({ sessionId: 'bt_mixed', status: 'running' });
+    store.createTurn({ sessionId: 'bt_mixed', status: 'queued' });
+
+    expect(store.recoverInterrupted()).toBe(1);
+    expect(store.getSession('bt_queued')).toMatchObject({ status: 'running', phase: 'queued' });
+    expect(store.listTurns('bt_queued')[0]).toMatchObject({
+      status: 'queued',
+      execution: { prompt: 'resume safely' },
+    });
+    expect(store.listTurns('bt_mixed').map((turn) => turn.status)).toEqual(['failed', 'queued']);
+    expect(store.getSession('bt_mixed')?.phase).toBe('queued');
+    const events = store.listEvents('bt_mixed').length;
+    expect(store.recoverInterrupted()).toBe(0);
+    expect(store.listEvents('bt_mixed')).toHaveLength(events);
+    expect(store.claimTurnForLaunch('bt_queued', store.listTurns('bt_queued')[0]!.turnId)).toBe(true);
+    expect(store.claimTurnForLaunch('bt_queued', store.listTurns('bt_queued')[0]!.turnId)).toBe(false);
+  });
+
+  it('全租户启动恢复不回退 default，外部列表仍按租户隔离', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_tenant_running', tenantId: 'tenant_b', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });
+    store.createTurn({ sessionId: 'bt_tenant_running', tenantId: 'tenant_b', status: 'running' });
+    expect(store.recoverInterrupted()).toBe(1);
+    expect(store.getSession('bt_tenant_running', 'tenant_b')).toMatchObject({ status: 'failed', phase: 'settled' });
+    expect(store.listEvents('bt_tenant_running', { tenantId: 'tenant_b' }).some((event) => event.type === 'session_interrupted')).toBe(true);
+    expect(store.listSessions().map((session) => session.sessionId)).not.toContain('bt_tenant_running');
+    expect(store.listSessions('tenant_b').map((session) => session.sessionId)).toContain('bt_tenant_running');
+  });
+
+  it('启动恢复把遗留 submitting 交互结算为 delivery_unknown', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_submitting', mode: 'task', agentType: 'codex', cwd: '/tmp/work' });
+    store.createTurn({ sessionId: 'bt_submitting', status: 'running' });
+    store.requestInteraction({
+      sessionId: 'bt_submitting',
+      requestId: 'ir_submitting',
+      kind: 'permission',
+      payload: { options: [{ optionId: 'allow_once', kind: 'allow_once' }] },
+    });
+    store.beginInteractionResponse({
+      sessionId: 'bt_submitting',
+      requestId: 'ir_submitting',
+      responseId: 'resp_submitting',
+    });
+    for (const sessionId of ['bt_submitting_terminal', 'bt_submitting_waiting']) {
+      store.createSession({
+        sessionId,
+        mode: sessionId.endsWith('waiting') ? 'conversation' : 'task',
+        agentType: 'codex',
+        cwd: '/tmp/work',
+      });
+      store.requestInteraction({
+        sessionId,
+        requestId: `ir_${sessionId}`,
+        kind: 'permission',
+        payload: { options: [] },
+      });
+      store.beginInteractionResponse({ sessionId, requestId: `ir_${sessionId}`, responseId: 'resp_late' });
+      if (sessionId.endsWith('waiting')) store.updateSession(sessionId, { phase: 'waiting_user' });
+      else store.closeSession(sessionId, 'success', 'done');
+    }
+
+    expect(store.recoverInterrupted()).toBe(1);
+    expect(store.getInteraction('bt_submitting', 'ir_submitting')).toMatchObject({
+      state: 'failed',
+      responseId: 'resp_submitting',
+      resultSeq: expect.any(Number),
+      resultPayload: { errorCode: 'interaction_delivery_unknown' },
+    });
+    expect(store.getLatestEvent('bt_submitting', 'task_interaction_result')).toBeUndefined();
+    expect(store.listLatestInteractionResults('bt_submitting')[0]).toMatchObject({
+      state: 'failed',
+      requestState: 'failed',
+      errorCode: 'interaction_delivery_unknown',
+    });
+    for (const sessionId of ['bt_submitting_terminal', 'bt_submitting_waiting']) {
+      expect(store.getInteraction(sessionId, `ir_${sessionId}`)).toMatchObject({
+        state: 'failed',
+        resultPayload: { errorCode: 'interaction_delivery_unknown' },
+      });
+    }
+  });
+
+  it('启动恢复把遗留 pending 结算为 cancelled，且不伪造 responseId', () => {
+    const store = open();
+    store.createSession({ sessionId: 'bt_pending', mode: 'conversation', agentType: 'codex', cwd: '/tmp/work' });
+    store.updateSession('bt_pending', { phase: 'waiting_user' });
+    store.requestInteraction({
+      sessionId: 'bt_pending',
+      requestId: 'ir_pending',
+      kind: 'form',
+      payload: { requestedSchema: {} },
+    });
+    expect(store.recoverInterrupted()).toBe(0);
+    expect(store.getInteraction('bt_pending', 'ir_pending')).toMatchObject({
+      state: 'cancelled',
+      responseId: undefined,
+      resultSeq: 1,
+    });
+    expect(store.listLatestInteractionResults('bt_pending')[0]).toMatchObject({
+      requestState: 'cancelled',
+      state: 'cancelled',
+      responseId: undefined,
+      resultSeq: 1,
+    });
+    expect(store.getLatestEvent('bt_pending', 'task_interaction_result')).toBeUndefined();
+  });
+
+  it('通用幂等同键重放、异参冲突，重开 DB 后仍有效', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-idempotency-'));
+    dirs.push(dir);
+    const path = join(dir, 'state.db');
+    let store = new SessionStore(path);
+    let writes = 0;
+    const input = { tenantId: 'default', scope: 'test', key: 'key-1', fingerprint: 'fp-1' };
+    const first = store.runIdempotent(input, () => ({ value: 'result-1', writes: ++writes }));
+    expect(first).toEqual({ value: { value: 'result-1', writes: 1 }, replay: false });
+    const replay = store.runIdempotent(input, () => ({ value: 'result-2', writes: ++writes }));
+    expect(replay).toEqual({ value: { value: 'result-1', writes: 1 }, replay: true });
+    expect(writes).toBe(1);
+    expect(() => store.runIdempotent({ ...input, fingerprint: 'fp-2' }, () => ({ ok: true }))).toThrowError(
+      expect.objectContaining({ code: 'idempotency_conflict' }),
+    );
+    store.close();
+    store = new SessionStore(path);
+    stores.push(store);
+    expect(store.runIdempotent(input, () => ({ value: 'never', writes: ++writes }))).toMatchObject({
+      replay: true,
+      value: { value: 'result-1', writes: 1 },
+    });
+    expect(writes).toBe(1);
+  });
+
   it('重新打开数据库后历史仍在', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-bridge-session-'));
     dirs.push(dir);

@@ -30,6 +30,18 @@ export const BRIDGE_ERROR_CODES = [
   // —— 权限策略（1.0 Phase 2）——
   'permission_mode_unsupported', // 本机/该工具不满足 full 运行条件（无映射、缺 external_sandbox）
   'permission_policy_denied', // 本机策略不允许该权限组合（default 策略下请求 full、受管参数模式带自定义 args）
+  // 已尝试向 adapter 写入交互响应，但结果无法确认；必须结束回合并禁止重试，避免重复授权/重复表单提交。
+  'interaction_delivery_unknown',
+  'interaction_invalid_response',
+  'interaction_response_conflict',
+  // 单次交互等待到期且当前 options 不提供 reject_once：以 cancelled outcome 完成请求并结束回合
+  //（spec「等待状态、超时与取消」；有 reject_once 时按其原 optionId 拒绝、回合继续，不用此码）。
+  'interaction_timeout',
+  // full 模式的残余权限请求且 options 不提供 reject_once：fail closed 取消回合并结束
+  //（spec「权限与问题的组合语义」：不转交人工、不伪造 reject 选项）。
+  'interaction_denied',
+  'agent_protocol_error',
+  'idempotency_conflict',
   // —— 会话历史（1.0）——
   // 两者都是 410 Gone：任务曾经存在，但内容已不可完整取得，重试同一个 taskId 也不会变好。
   'session_deleted', // taskId 命中 tombstone（内容已随 retention 删除，且永不复用）
@@ -87,6 +99,13 @@ export const ERROR_HTTP_STATUS: Record<BridgeErrorCode, number> = {
   tenant_not_supported: 403,
   permission_mode_unsupported: 400,
   permission_policy_denied: 403,
+  interaction_delivery_unknown: 500,
+  interaction_invalid_response: 400,
+  interaction_response_conflict: 409,
+  interaction_timeout: 504,
+  interaction_denied: 403,
+  agent_protocol_error: 502,
+  idempotency_conflict: 409,
   session_deleted: 410,
   session_history_pruned: 410,
   task_not_found: 404,

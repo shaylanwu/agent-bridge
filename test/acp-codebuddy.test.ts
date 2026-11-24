@@ -32,12 +32,12 @@ describe('CodeBuddy ACP adapter', () => {
     expect(codebuddyAcpArgs()).toEqual(['--serve', '--acp', '--port', '0']);
   });
 
-  it('能力矩阵：9 个工具声明原生 ACP（dsh 的 acp profile 实测可用）', () => {
+  it('能力矩阵：9 个工具声明原生 ACP（agy 1.5.9 已通过真实首轮与续接；gemini 停服退役）', () => {
     const acpAgents = AGENTS.filter((agent) => agent.acp).map((agent) => agent.kind);
     expect(acpAgents).toEqual([
       'codebuddy-cli',
       'ds-harness',
-      'gemini',
+      'agy',
       'opencode',
       'mimo-code',
       'grok-cli',
@@ -45,9 +45,9 @@ describe('CodeBuddy ACP adapter', () => {
       'minimax-code',
       'trae-cli',
     ]);
-    // 9 个声明 ACP，但只有 8 个会回问权限：dsh 是 automation-only（实测从不发 session/request_permission）
+    // 9 个声明 ACP，但只有 7 个声明会回问权限：dsh 是 automation-only，agy 的 permission/form 尚未逐项实测。
     const asking = AGENTS.filter((agent) => agent.acp && (agent.acpInteractionKinds ?? ['permission', 'form']).length > 0);
-    expect(asking).toHaveLength(8);
+    expect(asking).toHaveLength(7);
   });
 
   it('清理 WorkBuddy 继承的端口/会话变量，保留显式 auth token', () => {
@@ -69,8 +69,8 @@ describe('CodeBuddy ACP adapter', () => {
     expect(env['PATH']).toBe('/bin');
   });
 
-  it('无 authEnv 的原生 ACP（gemini/opencode 等）无需 token', () => {
-    expect(canRunAcp({ command: 'gemini', args: ['--acp'] }, {})).toBe(true);
+  it('无 authEnv 的原生 ACP（opencode/dsh 等）无需 token', () => {
+    expect(canRunAcp({ command: 'opencode', args: ['acp'] }, {})).toBe(true);
     expect(canRunAcp({ command: 'codebuddy', args: [], authEnv: 'CODEBUDDY_AUTH_TOKEN' }, {})).toBe(
       false,
     );

@@ -43,3 +43,16 @@ export function redact(text: string, opts: RedactOptions = {}): string {
   }
   return out;
 }
+
+/** 错误诊断专用：保留 URL origin/path 便于定位，剥离可能含短期 code/token 的 query 与 fragment。 */
+export function redactDiagnostic(text: string, opts: RedactOptions = {}): string {
+  const withoutSecrets = text.replace(/https?:\/\/[^\s"'<>]+/g, (raw) => {
+    try {
+      const url = new URL(raw);
+      return `${url.origin}${url.pathname}${url.search || url.hash ? '?…' : ''}`;
+    } catch {
+      return raw;
+    }
+  });
+  return redact(withoutSecrets, opts);
+}

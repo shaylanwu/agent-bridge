@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { chunkLog, assertServerMessage, ProtocolError, PROTOCOL_CAPABILITIES, toCloudEvent } from '../src/protocol';
+import { chunkLog, assertServerMessage, ProtocolError, PROTOCOL_CAPABILITIES, PROTOCOL_VERSION, toCloudEvent } from '../src/protocol';
 import { captureWorktreeDiff, isGitWorkTree, truncateDiff } from '../src/infra/git';
 import { resolveDiffMaxBytes } from '../src/infra/config';
 import {
@@ -19,7 +19,15 @@ import { BRIDGE_ERROR_CODES, BridgeError, tokenDenyCode } from '../src/core/erro
 import { redact } from '../src/core/redact';
 import { TaskSupervisor } from '../src/core/task-supervisor';
 import { browserOpenCommand, createPkce } from '../src/infra/auth';
-import { AGENTS, agentDefOf, probeCredential } from '../src/adapters/agent-adapters';
+import {
+  AGENTS,
+  agentDefOf,
+  probeCredential,
+  probeCredentialWithKeyring,
+  probeCredentialRuntime,
+  windowsCredentialTargetPresent,
+  type AgentDef,
+} from '../src/adapters/agent-adapters';
 import { buildWinCommandLine } from '../src/adapters/win-exec';
 import { isUnder, startTask } from '../src/runner';
 import { loadConfig, normalizeAllowedCwd, resolveMaxQueued, resolveMaxTasks } from '../src/infra/config';
@@ -135,7 +143,7 @@ describe('适配器注册表', () => {
   });
 
   it('已确认的 CLI 声明原生 resume 模板', () => {
-    for (const kind of ['claude-code', 'codebuddy-cli', 'qoder-cli', 'ds-harness']) {
+    for (const kind of ['claude-code', 'codebuddy-cli', 'qoder-cli', 'ds-harness', 'grok-cli']) {
       const args = agentDefOf(kind)?.resumeArgs?.join(' ') ?? '';
       expect(args).toContain('{{sessionId}}');
       expect(args).toContain('{{prompt}}');
@@ -165,18 +173,141 @@ describe('凭据探测', () => {
     }
   });
 
-  it('没有判据的工具返回 unknown', () => {
-    expect(Object.keys(AGENTS.map((a) => a.kind)).length).toBeGreaterThan(0);
-    const def = AGENTS.find((a) => a.kind === 'mimo-code');
-    if (!def) throw new Error('缺少 mimo 适配器');
-    // mimo 只有 env 判据，清掉后应为 missing 而非 unknown
-    const saved = process.env['MIMO_API_KEY'];
-    delete process.env['MIMO_API_KEY'];
+  it('grok 的凭据路径指向 Grok Build 真实会创建的文件', () => {
+    const def = agentDefOf('grok-cli');
+    if (!def) throw new Error('缺少 grok 适配器');
+    const files = def.credential.files.map((p) => p.replace(/\\/g, '/'));
+    // OAuth 登录态 + 自定义模型 Key 两个来源
+    expect(files.some((p) => p.endsWith('.grok/auth.json'))).toBe(true);
+    expect(files.some((p) => p.endsWith('.grok/config.toml'))).toBe(true);
+    // ⛔ 社区版路径：官方 Grok Build 从不创建，探测它等于稳定误报「缺凭据」
+    expect(files.some((p) => p.endsWith('.grok/user-settings.json'))).toBe(false);
+  });
+
+  it('只有 env 判据且未设置 → missing；毫无判据 → unknown', () => {
+    const base = agentDefOf('mimo-code');
+    if (!base) throw new Error('缺少 mimo 适配器');
+    // ⚠️ 不能用真实适配器直接断言：探测结果取决于本机有没有那个凭据文件
+    //（mimo 现在同时有 env 与 files 判据，装了就用 configured，没装就 missing）。
+    // 这里构造两个「判据形状确定」的 def，测试才与运行环境解耦。
+    const envOnly: AgentDef = {
+      ...base,
+      credential: { envs: ['AGENT_BRIDGE_TEST_KEY'], files: [], loginCommand: 'x' },
+    };
+    const saved = process.env['AGENT_BRIDGE_TEST_KEY'];
+    delete process.env['AGENT_BRIDGE_TEST_KEY'];
     try {
-      expect(probeCredential(def).status).toBe('missing');
+      expect(probeCredential(envOnly).status).toBe('missing');
     } finally {
-      if (saved !== undefined) process.env['MIMO_API_KEY'] = saved;
+      if (saved !== undefined) process.env['AGENT_BRIDGE_TEST_KEY'] = saved;
     }
+    // 两种判据都为空 = 无法判断，如实返回 unknown（不要猜成 missing）
+    const noEvidence: AgentDef = { ...base, credential: { envs: [], files: [], loginCommand: 'x' } };
+    expect(probeCredential(noEvidence).status).toBe('unknown');
+  });
+
+  it('agy 显式登记 Windows keyring 目标，匹配只认完整 target，不认前缀', () => {
+    const def = agentDefOf('agy')!;
+    expect(def.credential.windowsTargets).toEqual(['gemini:antigravity']);
+    expect(
+      windowsCredentialTargetPresent(
+        '    目标: LegacyGeneric:target=gemini:antigravity\r\n    用户: antigravity\r\n',
+        'gemini:antigravity',
+      ),
+    ).toBe(true);
+    expect(
+      windowsCredentialTargetPresent('LegacyGeneric:target=gemini:antigravity-other', 'gemini:antigravity'),
+    ).toBe(false);
+  });
+
+  it('Windows keyring 目标存在 → configured，来源只含目标名', async () => {
+    const def = agentDefOf('agy')!;
+    const result = await probeCredentialWithKeyring(def, {
+      platform: 'win32',
+      listWindowsTargets: async () => 'LegacyGeneric:target=gemini:antigravity\r\n',
+    });
+    expect(result).toEqual({ status: 'configured', source: 'keyring:gemini:antigravity' });
+  });
+
+  it('keyring 未命中或命令失败/超时 → 保留 unknown，不伪造 configured', async () => {
+    const def = agentDefOf('agy')!;
+    expect(
+      await probeCredentialWithKeyring(def, {
+        platform: 'win32',
+        listWindowsTargets: async () => 'LegacyGeneric:target=other-tool',
+      }),
+    ).toEqual({ status: 'unknown' });
+    expect(
+      await probeCredentialWithKeyring(def, {
+        platform: 'win32',
+        listWindowsTargets: async () => {
+          throw new Error('timeout');
+        },
+      }),
+    ).toEqual({ status: 'unknown' });
+  });
+
+  it('非 Windows 不调用 cmdkey，env/file 的直接 configured 证据优先', async () => {
+    const def = agentDefOf('agy')!;
+    let called = false;
+    const result = await probeCredentialWithKeyring(def, {
+      platform: 'linux',
+      listWindowsTargets: async () => {
+        called = true;
+        return 'LegacyGeneric:target=gemini:antigravity';
+      },
+    });
+    expect(result.status).toBe('unknown');
+    expect(called).toBe(false);
+
+    const withEnv: AgentDef = { ...def, credential: { ...def.credential, envs: ['AGENT_BRIDGE_TEST_KEY'] } };
+    process.env['AGENT_BRIDGE_TEST_KEY'] = 'present';
+    try {
+      const direct = await probeCredentialWithKeyring(withEnv, {
+        platform: 'win32',
+        listWindowsTargets: async () => {
+          called = true;
+          return '';
+        },
+      });
+      expect(direct).toEqual({ status: 'configured', source: 'env:AGENT_BRIDGE_TEST_KEY' });
+      expect(called).toBe(false);
+    } finally {
+      delete process.env['AGENT_BRIDGE_TEST_KEY'];
+    }
+  });
+
+  it('Qoder/Trae 使用真实凭据证据，不再把安装目录当登录态', () => {
+    const qoder = agentDefOf('qoder-cli')!;
+    expect(qoder.credential.envs).toContain('QODER_PERSONAL_ACCESS_TOKEN');
+    expect(qoder.credential.files.some((p) => p.replace(/\\/g, '/').endsWith('.qoder/.auth/user'))).toBe(true);
+    expect(qoder.credential.files).not.toContain(join(homedir(), '.qoder'));
+
+    const trae = agentDefOf('trae-cli')!;
+    expect(trae.credential.envs).toContain('TRAECLI_PERSONAL_ACCESS_TOKEN');
+    expect(trae.credential.files).toEqual([]);
+    expect(trae.credential.statusCommand?.args).toEqual(['login', 'status']);
+  });
+
+  it('Trae 官方状态命令仅认退出码；非零/异常不伪造 configured', async () => {
+    const trae = agentDefOf('trae-cli')!;
+    const def: AgentDef = {
+      ...trae,
+      credential: { ...trae.credential, envs: [], files: [], windowsTargets: undefined },
+    };
+    expect(
+      await probeCredentialRuntime(def, 'traecli', { runStatusCommand: async () => true }),
+    ).toEqual({ status: 'configured', source: 'command:login status' });
+    expect(
+      await probeCredentialRuntime(def, 'traecli', { runStatusCommand: async () => false }),
+    ).toEqual({ status: 'unknown' });
+    expect(
+      await probeCredentialRuntime(def, 'traecli', {
+        runStatusCommand: async () => {
+          throw new Error('timeout');
+        },
+      }),
+    ).toEqual({ status: 'unknown' });
   });
 });
 
@@ -489,6 +620,18 @@ describe('能力协商', () => {
   it('capabilities 含 diff / service-token，供平台按能力降级', () => {
     expect(PROTOCOL_CAPABILITIES).toContain('diff');
     expect(PROTOCOL_CAPABILITIES).toContain('service-token');
+  });
+
+  it('v1 hello 契约：protocolVersion=1 且 hello 上行 capabilities 与能力清单逐项一致（2.7）', () => {
+    // hello 是 bridge 单向宣告（无版本协商/回退）：版本与能力清单就是对外契约本体，
+    // 必须与 PROTOCOL_VERSION / PROTOCOL_CAPABILITIES 完全一致 —— 漂移等于平台静默降级。
+    expect(PROTOCOL_VERSION).toBe(1);
+    // 清单自身无重复（重复项会让平台的能力计数失真）
+    expect(new Set(PROTOCOL_CAPABILITIES).size).toBe(PROTOCOL_CAPABILITIES.length);
+    // bridge-client 组装的 hello 帧：能力逐项来自同一清单（含 execution 侧字段由 hello 组装测试覆盖）
+    const helloCapabilities = [...PROTOCOL_CAPABILITIES];
+    expect(helloCapabilities).toEqual(expect.arrayContaining(['task-message', 'task-snapshot', 'session-feed']));
+    expect(helloCapabilities.filter((c) => c === 'diff')).toHaveLength(1);
   });
 });
 
@@ -804,7 +947,7 @@ describe('任务调度 TaskSupervisor（架构第二期）', () => {
     h2.cancel();
   });
 
-  it('幂等：终态后重发放终态快照，不产生新进程', async () => {
+  it('终态后重发（直连层）是一次新执行：终态幂等由调度入口的 SQLite 前置负责', async () => {
     if (!installed) return;
     const sup = new TaskSupervisor(1);
     const base = { taskId: 'x', agentType: 'claude-code', cwd: tmpdir(), args: ['--version'] as string[] };
@@ -812,14 +955,21 @@ describe('任务调度 TaskSupervisor（架构第二期）', () => {
     const h2 = sup.submit({ ...base, taskId: 'dup-term' }, { onLog: () => undefined, onStatus: () => undefined });
     h2.cancel();
     expect(await h2.done).toBe('cancelled');
-    const replayed: { status: string; errorCode?: string }[] = [];
+    // 语义（3.3，SQLite 唯一权威）：终态条目在落库回调返回后即回收 —— supervisor 直连
+    // 重发不再从内存回放终态，而是按新任务排队执行。生产路径（WS/HTTP/网关）的同 ID
+    // 重发由 task-dispatch 的 SQLite 终态回放拦截（test/task-dispatch-permission.test.ts）。
+    const replayed: { status: string; phase?: string }[] = [];
     const h3 = sup.submit(
       { ...base, taskId: 'dup-term' },
-      { onLog: () => undefined, onStatus: (s, i) => replayed.push({ status: s, errorCode: i?.errorCode }) },
+      {
+        onLog: () => undefined,
+        onStatus: (s, i) => replayed.push({ status: s, phase: i?.phase }),
+      },
     );
-    expect(replayed).toEqual([{ status: 'cancelled', errorCode: 'cancelled' }]);
-    expect(await h3.done).toBe('cancelled');
-    expect(sup.runningCount).toBe(1);
+    expect(replayed[0]).toMatchObject({ status: 'running', phase: 'queued' });
+    expect(sup.queuedCount).toBe(1);
+    h3.cancel();
+    await h3.done;
     h1.cancel();
   });
 

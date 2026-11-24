@@ -10,7 +10,7 @@
  * 实例由 bootstrap 创建并沿 session / dispatch / control-plane 传递（不用模块级单例）。
  */
 
-import type { TaskStatus } from '../protocol.js';
+import type { TaskPhase, TaskStatus } from '../protocol.js';
 import type { PlanItem } from '../adapters/step-parsers.js';
 
 export type TaskSource = 'platform' | 'control-plane';
@@ -37,7 +37,8 @@ export interface TaskView {
   cwdShort: string;
   source: TaskSource;
   status: TaskStatus;
-  phase?: 'queued' | 'running';
+  phase?: TaskPhase;
+  interactionId?: string;
   queuePosition?: number;
   error?: string;
   /** 当前/最近步骤（started 未 finished 优先，否则最近一个 finished） */
@@ -104,7 +105,8 @@ export class TaskRegistry {
     taskId: string,
     status: TaskStatus,
     info?: {
-      phase?: 'queued' | 'running';
+      phase?: TaskPhase;
+      interactionId?: string;
       queuePosition?: number;
       error?: string;
       result?: string;
@@ -117,6 +119,7 @@ export class TaskRegistry {
     if (!v) return;
     v.status = status;
     v.phase = info?.phase ?? (status === 'running' ? 'running' : undefined);
+    v.interactionId = status === 'running' ? info?.interactionId : undefined;
     v.queuePosition = info?.queuePosition;
     v.error = info?.error;
     if (info?.result !== undefined) v.finalText = info.result;
