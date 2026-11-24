@@ -34,7 +34,8 @@
     "site:preview": "npm --prefix site run preview",
     "site:check": "npm --prefix site run check",
     "openspec:validate": "bash .harness/skills/openspec-workflow/scripts/validate-change.sh",
-    "e2e:smoke": "node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs"
+    "e2e:smoke": "node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs",
+    "e2e:gateway": "node scripts/gateway-e2e.mjs"
   },
   "keywords": [
     "ai",
