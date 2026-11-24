@@ -60,9 +60,21 @@ numbers.**
 | `artifact-inline` | `get_artifact` can inline content; beyond 1 MB it returns `too_large` and you switch to chunked download |
 | `approval-ledger` | An interactive `allow_always` can be remembered (default mode, fingerprint match, expiry) and revoked with `agent-bridge approvals revoke` |
 
+## Credential sources
+
+Scans check only for the presence of environment variables, known credential files, or explicitly registered
+OS keyring targets, or official read-only status commands; secrets are never read. `credentialSource` is
+`env:<NAME>`, `file:<path>`, `keyring:<target>`, or `command:<args>`. agy uses
+`keyring:gemini:antigravity` on Windows. Trae's official `login status` uses only its exit code and never reports
+output. Probe failures preserve the conservative result and do not interrupt scans of other agents.
+
+agy 1.5.9 declares both `headless` and `acp-stdio`; older versions remain headless-only. Set
+`AGENT_BRIDGE_EXTERNAL_PROXY` explicitly, or let Windows use the system proxy when unset, to avoid Google 502s
+caused by an inherited, unusable host proxy.
+
 ## Controlled error codes
 
-23 codes, mirrored in the AsyncAPI contract. Clients branch on `code`; prose is for humans only.
+28 codes, mirrored in the AsyncAPI contract. Clients branch on `code`; prose is for humans only.
 
 | Code | HTTP (RFC 9457) | Meaning |
 | --- | --- | --- |
@@ -84,6 +96,13 @@ numbers.**
 | `tenant_not_supported` | 403 | Non-default tenant presented before tenant-scoped reads |
 | `permission_mode_unsupported` | 400 | This host/tool cannot serve `full` (no mapping, or `external_sandbox` unset) |
 | `permission_policy_denied` | 403 | Local policy forbids that combination (`full` under `default`, custom args in managed-arg modes) |
+| `interaction_delivery_unknown` | 500 | Adapter delivery is uncertain; the interaction fails permanently and the turn ends |
+| `interaction_invalid_response` | 400 | Response validation failed; pending survives for a corrected response |
+| `interaction_response_conflict` | 409 | Same idempotency key or resolved interaction received a different response |
+| `interaction_timeout` | 504 | A pending interaction expired with no `reject_once` offered: completed with a cancelled outcome and the turn ends |
+| `interaction_denied` | 403 | Residual permission request under `full` (no `reject_once` offered): fail-closed, turn cancelled, never escalated to a human |
+| `agent_protocol_error` | 502 | Agent ended a turn with an unresolved interaction |
+| `idempotency_conflict` | 409 | Same idempotency key, different request fingerprint |
 | `session_deleted` | 410 | The taskId hit a tombstone; content was reclaimed by retention and the ID is never reused |
 | `session_history_pruned` | 410 | The cursor falls inside retention-trimmed history, so the full range cannot be returned |
 | `task_not_found` | 404 | The taskId never existed, or belongs to another tenant |
@@ -117,8 +136,8 @@ When it actually starts, `phase` becomes `"running"`. The concurrency cap is `ma
 All 12 agents (verified 2026-10-24 via live runs plus official docs) parse their child's JSONL
 events into a dynamic step flow: `task_step { taskId, seq, action, label?, state, ok?, ref?, at }`.
 Steps are decided by the model at runtime — no predefined total; the platform renders "steps so far
-plus the current one". Six format families: claude-style ×5 (claude-code / codebuddy-cli / grok-cli /
-qoder-cli / trae-cli), opencode-style ×2 (opencode / mimo-code), plus codex / gemini / kimi-code /
+plus the current one". Seven format families: claude-style ×5 (claude-code / codebuddy-cli / grok-cli /
+qoder-cli / trae-cli), opencode-style ×2 (opencode / mimo-code), plus codex / agy / kimi-code /
 ds-harness / minimax-code.
 
 ## Service identity

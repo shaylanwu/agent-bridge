@@ -9,6 +9,9 @@ description: Every endpoint of the optional loopback control plane — generated
 
 | Method | Path | Summary |
 | --- | --- | --- |
+| `GET` | [`/.well-known/agent-card.json`](#op-get-well-known-agent-card-json) | A2A agent card（add-a2a-acp-gateway 提案；默认关闭） |
+| `POST` | [`/a2a`](#op-post-a2a) | A2A JSON-RPC 2.0 入口（GetTask / SendMessage / CancelTask / SubscribeToTask） |
+| `POST` | [`/acp`](#op-post-acp) | ACP v1 over HTTP（vendor-specific：请求 POST + prompt 下行 SSE） |
 | `GET` | [`/`](#op-get) | 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点） |
 | `GET` | [`/v1/health`](#op-get-v1-health) | Liveness / readiness / version |
 | `GET` | [`/v1/metrics`](#op-get-v1-metrics) | Minimal Prometheus metrics |
@@ -33,6 +36,143 @@ description: Every endpoint of the optional loopback control plane — generated
 | `GET` | [`/v1/tasks/{id}/file`](#op-get-v1-tasks-id-file) | 任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB） |
 | `GET` | [`/v1/tasks/{id}/diff`](#op-get-v1-tasks-id-diff) | Terminal diff only — the task is never re-run to produce it |
 | `POST` | [`/v1/tasks/{id}:cancel`](#op-post-v1-tasks-id-cancel) | Cancel a task (idempotent; already-settled tasks return 200 with alreadySettled) |
+
+
+<a id="op-get-well-known-agent-card-json"></a>
+
+### GET /.well-known/agent-card.json
+
+**A2A agent card（add-a2a-acp-gateway 提案；默认关闭）**
+
+静态描述（name/version/skills/capabilities），不含任务数据——与面板页壳同口径免令牌。 `capabilities` 只声明真实已实现的能力（streaming/pushNotifications 当前为 false， 订阅实现后才会翻 true）。skills 来自静态适配器表（12 个 CLI），不触发扫描。 需 `[gateway] enabled = true`（或 `AGENT_BRIDGE_GATEWAY=1`）才会挂此路由，否则 404。
+
+**Auth**：No token required  (`abs_<kid>_<secret>`)
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Agent Card（A2A v1.0 字段 + 0.3 兼容字段） |
+| `404` | 网关未启用（默认关闭） |
+
+
+**Example**
+
+```json
+{}
+```
+
+
+
+
+<a id="op-post-a2a"></a>
+
+### POST /a2a
+
+**A2A JSON-RPC 2.0 入口（GetTask / SendMessage / CancelTask / SubscribeToTask）**
+
+JSON-RPC 2.0 单对象（不支持 batch）。方法名 v1.0 PascalCase 与 0.3 小写都接受。 版本协商走 `A2A-Version` 请求头（空/缺省按 0.3，`1.0` 用 TASK_STATE_* 拼写，其余 `-32009`）。 逐方法鉴权；跨租户/不存在统一 `-32001`；`task_log` 只在 `Task.metadata.bridge.taskLogEndpoint` 给指引，不冒充 A2A Message/Artifact。 - **GetTask**（`tasks/get`，scope `session:read`/`task:read`）：SQLite 快照 → A2A Task。 - **SendMessage**（`message/send`，scope `task:create`）：`message.parts`（仅 text）拼接为 prompt；**bridge 扩展字段在 `message.metadata`**——`agentType`（受管白名单内）与 `cwd` 必填，`timeoutMs` 可选。`messageId` 即幂等键：重发同 messageId 返回同一 taskId （`Task.metadata.idempotentReplay: true`），同 messageId 异参回 `-32000` + `data.code: idempotency_conflict`。**立即返回**（等价 returnImmediately）：长任务后续状态走 GetTask 轮询或 SubscribeToTask 订阅。 - **CancelTask**（`tasks/cancel`，scope `task:cancel`）：与 `POST /v1/tasks/{id}:cancel` 同一条编排（SIGTERM → 2s → SIGKILL）；终态任务回 `-32002`（规范语义）； 非网关通道创建的任务同样 `-32002`。 - **SubscribeToTask**（`tasks/resubscribe`，scope `session:read`/`task:read`）：SSE 流， `eventSeq` 补洞（起点 `params.metadata.afterEventSeq`，缺省 0）。帧格式为 bridge 网关 自定义：`task`（完整快照，首帧与终帧）/ `message` / `status` / `artifact`（各带 eventSeq）/ `log|step`（调试扩展）/ `done`。终态任务按规范回 `-32004`。
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Parameters**
+
+| Field | in | Type | Required | Description |
+| --- | --- | --- | --- | --- |
+| `A2A-Version` | header | `string` |  | 空/缺省按 0.3 语义；patch 号不参与协商。 |
+
+
+**Request body**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `jsonrpc` | `string` = `2.0` | ✓ |  |
+| `id` | `any` |  | string 或 number；通知（无 id）按 null 回 |
+| `method` | `GetTask` \| `tasks/get` \| `SendMessage` \| `message/send` \| `CancelTask` \| `tasks/cancel` \| `SubscribeToTask` \| `tasks/resubscribe` | ✓ |  |
+| `params` | `object` |  |  |
+
+
+**Example**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "GetTask"
+}
+```
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | JSON-RPC 2.0（成功 result=Task；错误 error.code 如 -32001/-32002/-32004/-32005/-32009/-32601；SendMessage 成功亦 200） |
+| `401` | 缺令牌（problem+json，与 /v1/* 同一套） |
+| `403` | scope 不足 / 非回环来源 |
+| `404` | 网关未启用（默认关闭） |
+
+
+**Example**
+
+```json
+{}
+```
+
+
+
+
+<a id="op-post-acp"></a>
+
+### POST /acp
+
+**ACP v1 over HTTP（vendor-specific：请求 POST + prompt 下行 SSE）**
+
+JSON-RPC 2.0 单对象。ACP v1 稳定方法集 + 本网关的 HTTP 承载约定 （ACP Transports RFD 未定稿期间的 vendor 选择）： - **initialize**：只声明真实能力（loadSession=false —— 会话不持久续接； prompt 只收 text block；fs/terminal 客户端能力不开放）。 - **session/new**（scope `device:read`）：固化 `params.cwd` 与 `params._meta.agentType`（12 个受管 CLI 必须显式选择，网关不猜）→ `{sessionId}`。 - **session/prompt**（scope `task:create`，conversation 多轮）：首轮创建 bridge conversation 会话（`run_task` 语义）；后续轮 `send_message` 续接同一会话（CLI 原生续接，上下文由 CLI 持有、token 只传增量）。响应是 SSE 流：`event: prompt`（taskId + first/continue）→ `event: update`（`session/update` 通知，agent_message_chunk）→ 交互时 `event: request`（agent→client 请求，见下）→ `event: result`（本轮 turn 结束： `{stopReason, content}`，`waiting_user → end_turn`；turn 失败/超时走 JSON-RPC error， 会话随之关闭）。会话空闲回收复用 conversation 的 `idleTimeoutMs`；bridge 重启后 ACP 绑定丢失（内存态）。 - **session/cancel**（scope `task:cancel`）：取消当前轮次（`cancel_turn` 编排， operationId 幂等）；无活动轮次静默成功（v1 notification 语义）。 - **交互应答（响应报文）**：无 `method`、带 `id` + `result` 的 body。`id` 必须是 网关在 `event: request` 帧里下发的出站请求 id。permission 的 result 是 `{outcome: {outcome: 'selected'|'cancelled', optionId}}`；elicitation 的 result 是 `{action: 'accept'|'decline'|'cancel', content?}`。网关转成 `task_interaction_response` 走与 `POST /v1/interactions/{id}:respond` **同一条** dispatch 路径（permission 要 `task:approve`，form/auth-url 要 `task:respond`）。
+
+**Auth**：Bearer service token required  (`abs_<kid>_<secret>`)
+
+**Request body**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `jsonrpc` | `string` = `2.0` | ✓ |  |
+| `id` | `any` |  | string 或 number；交互应答时必须是网关下发的字符串 |
+| `method` | `initialize` \| `session/new` \| `session/prompt` \| `session/cancel` |  |  |
+| `params` | `object` |  |  |
+| `result` | `any` |  | 交互应答结果（permission outcome / elicitation action） |
+
+
+**Example**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize"
+}
+```
+
+
+**Responses**
+
+| Status | Meaning |
+| --- | --- |
+| `200` | JSON-RPC 2.0 响应；session/prompt 是 text/event-stream（SSE 帧：prompt/update/request/result/heartbeat） |
+| `400` | 非法信封 / 畸形应答（json body） |
+| `401` | 缺令牌 |
+| `403` | scope 不足 / 非回环来源 |
+| `404` | 网关未启用或未找到出站请求 |
+| `409` | 交互应答被 dispatch 拒绝（json body，含 errorCode） |
+
+
+**Example**
+
+```json
+{}
+```
+
+
 
 
 <a id="op-get"></a>

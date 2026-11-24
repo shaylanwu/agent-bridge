@@ -298,6 +298,7 @@ AI CLI 的步骤由模型实时决定，没有预定义总步数；平台拿到�
 | `at` | `string` (date-time) | ✓ |  |
 | `turnId` | `string` |  |  |
 | `eventSeq` | `integer` |  |  |
+| `toolCall` | `object` |  | 富 toolCall（4.8）：工具调用的规范化子集。kind 用 ACP 的 read/edit/delete/move/search/execute/think/fetch/switch_mode/other； content 是有界 text/diff/terminal 块（单块 16KB 截断，上行出口脱敏）； rawInput/rawOutput 不上行；无法可靠提取的适配器省略该字段。 |
 
 **示例**
 
@@ -376,6 +377,8 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 | `hasMoreBefore` | `boolean` |  | 窗口起点之前还有内容（尾部窗口在长会话上为 true，回翻控制器据此继续往前取）。 |
 | `prunedThrough` | `integer` |  | 历史裁剪水位；未裁剪的会话不带此字段。请求游标小于它时 errorCode=session_history_pruned。 |
 | `partialMessages` | array&lt;object&gt; |  | 本回合已吐出但还没定稿的助手文本（只在内存里、不落库）；中途重连时用来避免空白。 终态之后为空数组或缺失 —— 那时该读 events 里的 complete。没有流式文本通道的适配器 （headless）此处为空，属如实缺省。 |
+| `pendingInteraction` | `object` |  | 当前 pending/submitting 交互；独立于 Feed retention。 |
+| `interactionResults` | array&lt;object&gt; |  | 每个 requestId 的最新 result occurrence；不占 eventSeq。 |
 | `eventWindow` | `object` |  | 事件窗口完整性；gaps 为空数组表示序号连续。 |
 | `errorCode` | `string` |  |  |
 
@@ -439,7 +442,9 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 
 <a id="msg-task_artifact"></a>
 
-### task_artifact — 入站附件已提交
+### task_artifact — 附件事件（入站提交 / 任务产物元数据）
+
+入站附件提交时带 sha256（内容已入 CAS）。 任务产物元数据（无 adapter 明确 artifact 事件时）只给 name/mimeType/size（stat 元数据）， sha256 省略并显式给出 contentUnavailableReason —— 平台不得假设内容可得。
 
 **字段**
 
@@ -452,8 +457,10 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 | `name` | `string` | ✓ |  |
 | `mimeType` | `string` | ✓ |  |
 | `size` | `integer` | ✓ |  |
-| `sha256` | `string` | ✓ |  |
+| `sha256` | `string` |  | 内容已读并校验时给；元数据路径省略 |
 | `kind` | `string` | ✓ |  |
+| `source` | `agent` \| `platform` |  |  |
+| `contentUnavailableReason` | `string` |  | no_adapter_artifact_event = 仅 changedFiles 元数据（spec：无 adapter 明确事件不读取内容） |
 | `eventSeq` | `integer` |  |  |
 
 **示例**
@@ -467,7 +474,9 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
   "mimeType": "string",
   "size": 1,
   "sha256": "string",
-  "kind": "string"
+  "kind": "string",
+  "source": "agent",
+  "contentUnavailableReason": "string"
 }
 ```
 
@@ -536,6 +545,7 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
 | `type` | `string` = `artifact_download_ready` | ✓ |  |
 | `transferId` | `string` | ✓ |  |
 | `artifactId` | `string` | ✓ |  |
+| `nextOffset` | `integer` | ✓ |  |
 | `size` | `integer` | ✓ |  |
 | `sha256` | `string` | ✓ |  |
 | `chunkSize` | `integer` | ✓ |  |
@@ -547,6 +557,7 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
   "type": "artifact_download_ready",
   "transferId": "string",
   "artifactId": "string",
+  "nextOffset": 1,
   "size": 1,
   "sha256": "string",
   "chunkSize": 1
@@ -603,6 +614,40 @@ delta 是流式增量，complete 是最终完整文本；messageId 供平台幂�
   "type": "artifact_download_result",
   "transferId": "string",
   "status": "completed",
+  "errorCode": "string"
+}
+```
+
+
+<a id="msg-artifact_transfer_status"></a>
+
+### artifact_transfer_status — 附件传输状态/中止回执
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_transfer_status` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `direction` | `upload` \| `download` |  |  |
+| `state` | `uploading` \| `committed` \| `aborted` \| `failed` | ✓ |  |
+| `nextOffset` | `integer` |  |  |
+| `chunkSize` | `integer` |  |  |
+| `artifactId` | `string` |  |  |
+| `reason` | `string` |  |  |
+| `errorCode` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_transfer_status",
+  "transferId": "string",
+  "direction": "upload",
+  "state": "uploading",
+  "artifactId": "string",
+  "reason": "string",
   "errorCode": "string"
 }
 ```
@@ -723,11 +768,14 @@ URL 仅存 bridge 进程内，带 TTL；不写入 SQLite 或日志。过期回 i
 | `taskId` | `string` | ✓ |  |
 | `requestId` | `string` | ✓ |  |
 | `state` | `accepted` \| `declined` \| `cancelled` \| `expired` \| `failed` | ✓ |  |
+| `requestState` | `pending` \| `submitting` \| `resolved` \| `failed` \| `expired` \| `cancelled` | ✓ |  |
+| `responseStatus` | `accepted` \| `duplicate` \| `invalid` \| `late` |  |  |
 | `responseId` | `string` |  |  |
-| `resultSeq` | `integer` |  |  |
-| `resultPayload` | `object` |  |  |
+| `resultSeq` | `integer` | ✓ | 按 requestId 独立递增；不占 eventSeq |
+| `resolution` | `object` |  |  |
+| `resultPayload` | `object` |  | 兼容字段；仅含安全摘要 |
 | `errorCode` | `string` |  |  |
-| `eventSeq` | `integer` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
 
 **示例**
 
@@ -737,8 +785,12 @@ URL 仅存 bridge 进程内，带 TTL；不写入 SQLite 或日志。过期回 i
   "taskId": "string",
   "requestId": "string",
   "state": "accepted",
+  "requestState": "pending",
+  "responseStatus": "accepted",
   "responseId": "string",
-  "errorCode": "string"
+  "resultSeq": 1,
+  "errorCode": "string",
+  "at": "string"
 }
 ```
 
@@ -1105,6 +1157,64 @@ close_session / cancel_turn 的幂等回执；终态后仍会返回。
   "type": "artifact_download_chunk_ack",
   "transferId": "string",
   "nextOffset": 1
+}
+```
+
+
+<a id="msg-artifact_transfer_status"></a>
+
+### artifact_transfer_status — 查询附件传输状态
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_transfer_status` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_transfer_status",
+  "transferId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-artifact_transfer_abort"></a>
+
+### artifact_transfer_abort — 中止附件传输
+
+**字段**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_transfer_abort` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `reason` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**示例**
+
+```json
+{
+  "type": "artifact_transfer_abort",
+  "transferId": "string",
+  "reason": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
 }
 ```
 

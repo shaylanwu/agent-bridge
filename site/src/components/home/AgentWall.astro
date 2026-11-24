@@ -1,6 +1,6 @@
 ---
 /**
- * Agent 墙：把支持的 11 个 AI Agent（官方品牌图标 + 名称）列在首页。
+ * Agent 墙：把支持的 12 个 AI Agent（官方品牌图标 + 名称）列在首页。
  *
  * 图标由 sync-contracts.mjs 从主包 assets/agent-icons/ 同步到 src/assets/agents/，
  * 内联渲染以保留各家官方品牌色（与官网一致）；站点不维护第二份图标。
@@ -17,8 +17,8 @@ const { title } = Astro.props;
 const NAMES: Record<string, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
-  gemini: 'Gemini CLI',
-  'grok-cli': 'Grok CLI',
+  agy: 'Antigravity CLI',
+  'grok-cli': 'Grok Build',
   opencode: 'opencode',
   'ds-harness': 'DeepSeek Harness',
   'kimi-code': 'Kimi Code',

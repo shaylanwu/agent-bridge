@@ -219,6 +219,39 @@ channels:
             at: { type: string, format: date-time }
             turnId: { type: string }
             eventSeq: { type: integer, minimum: 1 }
+            toolCall:
+              type: object
+              description: |
+                富 toolCall（4.8）：工具调用的规范化子集。kind 用 ACP 的
+                read/edit/delete/move/search/execute/think/fetch/switch_mode/other；
+                content 是有界 text/diff/terminal 块（单块 16KB 截断，上行出口脱敏）；
+                rawInput/rawOutput 不上行；无法可靠提取的适配器省略该字段。
+              required: [name]
+              properties:
+                toolCallId: { type: string }
+                name: { type: string }
+                kind:
+                  type: string
+                  enum: [read, edit, delete, move, search, execute, think, fetch, switch_mode, other]
+                title: { type: string }
+                status: { type: string }
+                locations:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: object
+                    properties:
+                      path: { type: string }
+                      line: { type: integer }
+                content:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: object
+                    required: [kind, text]
+                    properties:
+                      kind: { type: string, enum: [text, diff, terminal] }
+                      text: { type: string, maxLength: 16384 }
       task_message:
         name: task_message
         title: canonical 会话消息
@@ -292,6 +325,14 @@ channels:
                   truncated:
                     type: boolean
                     description: 已达上限（32 KiB），后续增量不再累积。
+            pendingInteraction:
+              type: object
+              additionalProperties: true
+              description: 当前 pending/submitting 交互；独立于 Feed retention。
+            interactionResults:
+              type: array
+              description: 每个 requestId 的最新 result occurrence；不占 eventSeq。
+              items: { type: object, additionalProperties: true }
             eventWindow:
               type: object
               description: 事件窗口完整性；gaps 为空数组表示序号连续。
@@ -300,12 +341,16 @@ channels:
                 latestEventSeq: { type: integer }
                 gaps:
                   type: array
+                  description: 缺口区间；reason 给出预算淘汰原因（count/task_bytes/global_bytes），其它来源缺口不带。
                   items:
                     type: object
                     required: [from, to]
                     properties:
                       from: { type: integer }
                       to: { type: integer }
+                      reason:
+                        type: string
+                        enum: [count, task_bytes, global_bytes]
             errorCode: { type: string }
       artifact_content:
         name: artifact_content
@@ -332,10 +377,14 @@ channels:
             errorCode: { type: string }
       task_artifact:
         name: task_artifact
-        title: 入站附件已提交
+        title: 附件事件（入站提交 / 任务产物元数据）
+        description: |
+          入站附件提交时带 sha256（内容已入 CAS）。
+          任务产物元数据（无 adapter 明确 artifact 事件时）只给 name/mimeType/size（stat 元数据），
+          sha256 省略并显式给出 contentUnavailableReason —— 平台不得假设内容可得。
         payload:
           type: object
-          required: [type, taskId, artifactId, name, mimeType, size, sha256, kind]
+          required: [type, taskId, artifactId, name, mimeType, size, kind]
           properties:
             type: { type: string, const: task_artifact }
             taskId: { type: string }
@@ -343,8 +392,12 @@ channels:
             name: { type: string }
             mimeType: { type: string }
             size: { type: integer, minimum: 0 }
-            sha256: { type: string }
+            sha256: { type: string, description: 内容已读并校验时给；元数据路径省略 }
             kind: { type: string }
+            source: { type: string, enum: [agent, platform] }
+            contentUnavailableReason:
+              type: string
+              description: 'no_adapter_artifact_event = 仅 changedFiles 元数据（spec：无 adapter 明确事件不读取内容）'
             eventSeq: { type: integer, minimum: 1 }
       artifact_upload_ready:
         name: artifact_upload_ready
@@ -373,11 +426,12 @@ channels:
         title: 下载就绪
         payload:
           type: object
-          required: [type, transferId, artifactId, size, sha256, chunkSize]
+          required: [type, transferId, artifactId, nextOffset, size, sha256, chunkSize]
           properties:
             type: { type: string, const: artifact_download_ready }
             transferId: { type: string }
             artifactId: { type: string }
+            nextOffset: { type: integer, minimum: 0 }
             size: { type: integer, minimum: 0 }
             sha256: { type: string }
             chunkSize: { type: integer, minimum: 1 }
@@ -403,6 +457,22 @@ channels:
             type: { type: string, const: artifact_download_result }
             transferId: { type: string }
             status: { type: string, enum: [completed, failed] }
+            errorCode: { type: string }
+      artifact_transfer_status:
+        name: artifact_transfer_status
+        title: 附件传输状态/中止回执
+        payload:
+          type: object
+          required: [type, transferId, state]
+          properties:
+            type: { type: string, const: artifact_transfer_status }
+            transferId: { type: string }
+            direction: { type: string, enum: [upload, download] }
+            state: { type: string, enum: [uploading, committed, aborted, failed] }
+            nextOffset: { type: integer, minimum: 0 }
+            chunkSize: { type: integer, minimum: 1 }
+            artifactId: { type: string }
+            reason: { type: string }
             errorCode: { type: string }
       artifact_upload_result:
         name: artifact_upload_result
@@ -455,17 +525,20 @@ channels:
         description: 终态后仍可按 requestId + resultSeq 重放。
         payload:
           type: object
-          required: [type, taskId, requestId, state]
+          required: [type, taskId, requestId, state, requestState, resultSeq, at]
           properties:
             type: { type: string, const: task_interaction_result }
             taskId: { type: string }
             requestId: { type: string }
             state: { type: string, enum: [accepted, declined, cancelled, expired, failed] }
+            requestState: { type: string, enum: [pending, submitting, resolved, failed, expired, cancelled] }
+            responseStatus: { type: string, enum: [accepted, duplicate, invalid, late] }
             responseId: { type: string }
-            resultSeq: { type: integer, minimum: 1 }
-            resultPayload: { type: object, additionalProperties: true }
+            resultSeq: { type: integer, minimum: 1, description: 按 requestId 独立递增；不占 eventSeq }
+            resolution: { type: object, additionalProperties: true }
+            resultPayload: { type: object, additionalProperties: true, description: 兼容字段；仅含安全摘要 }
             errorCode: { type: string }
-            eventSeq: { type: integer, minimum: 1 }
+            at: { type: string, format: date-time }
       message_ack:
         name: message_ack
         title: 多轮消息回执
@@ -651,6 +724,31 @@ channels:
             type: { type: string, const: artifact_download_chunk_ack }
             transferId: { type: string }
             nextOffset: { type: integer, minimum: 0 }
+      artifact_transfer_status:
+        name: artifact_transfer_status
+        title: 查询附件传输状态
+        payload:
+          type: object
+          required: [type, transferId]
+          properties:
+            type: { type: string, const: artifact_transfer_status }
+            transferId: { type: string }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
+      artifact_transfer_abort:
+        name: artifact_transfer_abort
+        title: 中止附件传输
+        payload:
+          type: object
+          required: [type, transferId]
+          properties:
+            type: { type: string, const: artifact_transfer_abort }
+            transferId: { type: string }
+            reason: { type: string }
+            requestedBy: { type: string, maxLength: 128 }
+            purpose: { type: string, maxLength: 64 }
+            serviceToken: { type: string, maxLength: 256 }
       artifact_upload_complete:
         name: artifact_upload_complete
         title: 完成附件上传
@@ -793,6 +891,7 @@ operations:
       - $ref: '#/channels/upstream/messages/artifact_download_ready'
       - $ref: '#/channels/upstream/messages/artifact_download_chunk'
       - $ref: '#/channels/upstream/messages/artifact_download_result'
+      - $ref: '#/channels/upstream/messages/artifact_transfer_status'
       - $ref: '#/channels/upstream/messages/pong'
   onDownstream:
     title: 平台下发指令
@@ -808,6 +907,8 @@ operations:
       - $ref: '#/channels/downstream/messages/artifact_upload_complete'
       - $ref: '#/channels/downstream/messages/artifact_download_start'
       - $ref: '#/channels/downstream/messages/artifact_download_chunk_ack'
+      - $ref: '#/channels/downstream/messages/artifact_transfer_status'
+      - $ref: '#/channels/downstream/messages/artifact_transfer_abort'
       - $ref: '#/channels/downstream/messages/cancel_task'
       - $ref: '#/channels/downstream/messages/close_session'
       - $ref: '#/channels/downstream/messages/cancel_turn'
@@ -884,6 +985,13 @@ components:
         - tenant_not_supported
         - permission_mode_unsupported
         - permission_policy_denied
+        - interaction_delivery_unknown
+        - interaction_invalid_response
+        - interaction_response_conflict
+        - interaction_timeout
+        - interaction_denied
+        - agent_protocol_error
+        - idempotency_conflict
         - session_deleted
         - session_history_pruned
         - task_not_found

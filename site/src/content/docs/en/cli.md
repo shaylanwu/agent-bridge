@@ -152,3 +152,30 @@ or a Windows logon scheduled task; both support `--dry-run`.
 agent-bridge --version | -v
 agent-bridge help | --help | -h
 ```
+
+## Per-agent capabilities (summary)
+
+`agent_list` reports capabilities per agent **honestly** — omitted means "unverified", not "assumed to
+work". The authoritative field is `executionModes` (per execution mode); the table below is the short
+form. The full matrix (full-permission argv per tool, internal channels, and the honest-measurement
+footnotes) lives in the two READMEs and is updated in the same batch as this table.
+
+| agentType | headless | ACP | session continuation |
+| --- | --- | --- | --- |
+| `claude-code` | yes | — | native `--resume` |
+| `codebuddy-cli` | yes | yes | native `--resume` |
+| `codex` | yes | — | app-server thread |
+| `ds-harness` | yes | yes (automation-only) | native `--session-id` / ACP resume |
+| `agy` | yes | yes | native `--conversation` / ACP session |
+| `opencode` | yes | yes | ACP session |
+| `mimo-code` | yes | yes | ACP session |
+| `qoder-cli` | yes | — | native `--resume` |
+| `grok-cli` | yes | yes | native `--resume` / ACP session |
+| `kimi-code` | yes | yes | ACP session |
+| `minimax-code` | yes | yes | ACP session |
+| `trae-cli` | yes | yes | ACP session |
+
+ACP permission mode is always `default` (native confirmation flow; `full` requests either go headless
+or are refused — never silently downgraded). Two internal channels (codex app-server threads, the
+Claude resident stream-json process) are not listed as separate `executionModes`; they are at least as
+capable as the mode they replace and declarations only ever stay conservative.

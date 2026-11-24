@@ -25,7 +25,149 @@ security:
 tags:
   - name: device
   - name: tasks
+  - name: a2a-gateway
 paths:
+  /.well-known/agent-card.json:
+    get:
+      tags: [a2a-gateway]
+      summary: A2A agent card（add-a2a-acp-gateway 提案；默认关闭）
+      description: |
+        静态描述（name/version/skills/capabilities），不含任务数据——与面板页壳同口径免令牌。
+        `capabilities` 只声明真实已实现的能力（streaming/pushNotifications 当前为 false，
+        订阅实现后才会翻 true）。skills 来自静态适配器表（12 个 CLI），不触发扫描。
+        需 `[gateway] enabled = true`（或 `AGENT_BRIDGE_GATEWAY=1`）才会挂此路由，否则 404。
+      security: []
+      responses:
+        '200':
+          description: Agent Card（A2A v1.0 字段 + 0.3 兼容字段）
+          content:
+            application/json:
+              schema: { type: object }
+        '404': { description: 网关未启用（默认关闭） }
+  /a2a:
+    post:
+      tags: [a2a-gateway]
+      summary: A2A JSON-RPC 2.0 入口（GetTask / SendMessage / CancelTask / SubscribeToTask）
+      description: |
+        JSON-RPC 2.0 单对象（不支持 batch）。方法名 v1.0 PascalCase 与 0.3 小写都接受。
+        版本协商走 `A2A-Version` 请求头（空/缺省按 0.3，`1.0` 用 TASK_STATE_* 拼写，其余 `-32009`）。
+        逐方法鉴权；跨租户/不存在统一 `-32001`；`task_log` 只在 `Task.metadata.bridge.taskLogEndpoint`
+        给指引，不冒充 A2A Message/Artifact。
+
+        - **GetTask**（`tasks/get`，scope `session:read`/`task:read`）：SQLite 快照 → A2A Task。
+        - **SendMessage**（`message/send`，scope `task:create`）：`message.parts`（仅 text）拼接为
+          prompt；**bridge 扩展字段在 `message.metadata`**——`agentType`（受管白名单内）与 `cwd`
+          必填，`timeoutMs` 可选。`messageId` 即幂等键：重发同 messageId 返回同一 taskId
+          （`Task.metadata.idempotentReplay: true`），同 messageId 异参回 `-32000` + `data.code:
+          idempotency_conflict`。**立即返回**（等价 returnImmediately）：长任务后续状态走 GetTask
+          轮询或 SubscribeToTask 订阅。
+        - **CancelTask**（`tasks/cancel`，scope `task:cancel`）：与 `POST /v1/tasks/{id}:cancel`
+          同一条编排（SIGTERM → 2s → SIGKILL）；终态任务回 `-32002`（规范语义）；
+          非网关通道创建的任务同样 `-32002`。
+        - **SubscribeToTask**（`tasks/resubscribe`，scope `session:read`/`task:read`）：SSE 流，
+          `eventSeq` 补洞（起点 `params.metadata.afterEventSeq`，缺省 0）。帧格式为 bridge 网关
+          自定义：`task`（完整快照，首帧与终帧）/ `message` / `status` / `artifact`（各带
+          eventSeq）/ `log|step`（调试扩展）/ `done`。终态任务按规范回 `-32004`。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: A2A-Version
+          in: header
+          required: false
+          schema: { type: string, examples: ['1.0', '0.3'] }
+          description: 空/缺省按 0.3 语义；patch 号不参与协商。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc: { type: string, const: '2.0' }
+                id: { description: string 或 number；通知（无 id）按 null 回 }
+                method: { type: string, enum: [GetTask, tasks/get, SendMessage, message/send, CancelTask, tasks/cancel, SubscribeToTask, tasks/resubscribe] }
+                params:
+                  type: object
+                  properties:
+                    id: { type: string, description: 任务 id（GetTask/CancelTask/SubscribeToTask） }
+                    message:
+                      type: object
+                      description: SendMessage 的消息体（parts 仅 text；metadata 带 bridge 扩展字段）
+                    metadata:
+                      type: object
+                      description: SubscribeToTask 的补洞游标（afterEventSeq）
+      responses:
+        '200':
+          description: JSON-RPC 2.0（成功 result=Task；错误 error.code 如 -32001/-32002/-32004/-32005/-32009/-32601；SendMessage 成功亦 200）
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { description: 缺令牌（problem+json，与 /v1/* 同一套） }
+        '403': { description: scope 不足 / 非回环来源 }
+        '404': { description: 网关未启用（默认关闭） }
+  /acp:
+    post:
+      tags: [a2a-gateway]
+      summary: ACP v1 over HTTP（vendor-specific：请求 POST + prompt 下行 SSE）
+      description: |
+        JSON-RPC 2.0 单对象。ACP v1 稳定方法集 + 本网关的 HTTP 承载约定
+        （ACP Transports RFD 未定稿期间的 vendor 选择）：
+
+        - **initialize**：只声明真实能力（loadSession=false —— 会话不持久续接；
+          prompt 只收 text block；fs/terminal 客户端能力不开放）。
+        - **session/new**（scope `device:read`）：固化 `params.cwd` 与
+          `params._meta.agentType`（12 个受管 CLI 必须显式选择，网关不猜）→ `{sessionId}`。
+        - **session/prompt**（scope `task:create`，conversation 多轮）：首轮创建 bridge conversation
+          会话（`run_task` 语义）；后续轮 `send_message` 续接同一会话（CLI 原生续接，上下文由
+          CLI 持有、token 只传增量）。响应是 SSE 流：`event: prompt`（taskId + first/continue）→
+          `event: update`（`session/update` 通知，agent_message_chunk）→ 交互时
+          `event: request`（agent→client 请求，见下）→ `event: result`（本轮 turn 结束：
+          `{stopReason, content}`，`waiting_user → end_turn`；turn 失败/超时走 JSON-RPC error，
+          会话随之关闭）。会话空闲回收复用 conversation 的 `idleTimeoutMs`；bridge 重启后
+          ACP 绑定丢失（内存态）。
+        - **session/cancel**（scope `task:cancel`）：取消当前轮次（`cancel_turn` 编排，
+          operationId 幂等）；无活动轮次静默成功（v1 notification 语义）。
+        - **交互应答（响应报文）**：无 `method`、带 `id` + `result` 的 body。`id` 必须是
+          网关在 `event: request` 帧里下发的出站请求 id。permission 的 result 是
+          `{outcome: {outcome: 'selected'|'cancelled', optionId}}`；elicitation 的 result 是
+          `{action: 'accept'|'decline'|'cancel', content?}`。网关转成
+          `task_interaction_response` 走与 `POST /v1/interactions/{id}:respond` **同一条**
+          dispatch 路径（permission 要 `task:approve`，form/auth-url 要 `task:respond`）。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc]
+              properties:
+                jsonrpc: { type: string, const: '2.0' }
+                id: { description: string 或 number；交互应答时必须是网关下发的字符串 }
+                method: { type: string, enum: [initialize, session/new, session/prompt, session/cancel] }
+                params:
+                  type: object
+                  properties:
+                    cwd: { type: string, description: session/new 的会话根目录 }
+                    sessionId: { type: string, description: ACP 会话 id（acp_ 前缀） }
+                    prompt: { description: ContentBlock 数组（仅 type=text）；session/prompt }
+                    _meta: { type: object, description: 扩展字段（session/new 带 agentType） }
+                result: { description: 交互应答结果（permission outcome / elicitation action） }
+      responses:
+        '200':
+          description: JSON-RPC 2.0 响应；session/prompt 是 text/event-stream（SSE 帧：prompt/update/request/result/heartbeat）
+          content:
+            application/json:
+              schema: { type: object }
+            text/event-stream:
+              schema: { type: string, description: 'event: prompt|update|request|result|heartbeat' }
+        '400': { description: 非法信封 / 畸形应答（json body） }
+        '401': { description: 缺令牌 }
+        '403': { description: scope 不足 / 非回环来源 }
+        '404': { description: 网关未启用或未找到出站请求 }
+        '409': { description: 交互应答被 dispatch 拒绝（json body，含 errorCode） }
   /:
     get:
       tags: [device]

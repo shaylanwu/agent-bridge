@@ -9,6 +9,9 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 
 | 方法 | 路径 | 摘要 |
 | --- | --- | --- |
+| `GET` | [`/.well-known/agent-card.json`](#op-get-well-known-agent-card-json) | A2A agent card（add-a2a-acp-gateway 提案；默认关闭） |
+| `POST` | [`/a2a`](#op-post-a2a) | A2A JSON-RPC 2.0 入口（GetTask / SendMessage / CancelTask / SubscribeToTask） |
+| `POST` | [`/acp`](#op-post-acp) | ACP v1 over HTTP（vendor-specific：请求 POST + prompt 下行 SSE） |
 | `GET` | [`/`](#op-get) | 内嵌 Web 任务面板（页面壳免令牌，数据仍走带鉴权的 /v1/* 端点） |
 | `GET` | [`/v1/health`](#op-get-v1-health) | 存活 / 就绪 / 版本 |
 | `GET` | [`/v1/metrics`](#op-get-v1-metrics) | Minimal Prometheus metrics |
@@ -33,6 +36,137 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `GET` | [`/v1/tasks/{id}/file`](#op-get-v1-tasks-id-file) | 任务产物文件预览（锁任务 cwd + allowed_cwd 白名单，≤512KB） |
 | `GET` | [`/v1/tasks/{id}/diff`](#op-get-v1-tasks-id-diff) | 仅取终态 diff |
 | `POST` | [`/v1/tasks/{id}:cancel`](#op-post-v1-tasks-id-cancel) | 取消任务 |
+
+
+<a id="op-get-well-known-agent-card-json"></a>
+
+### GET /.well-known/agent-card.json
+
+**A2A agent card（add-a2a-acp-gateway 提案；默认关闭）**
+
+**鉴权**：无需令牌  (`abs_<kid>_<secret>`)
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `404` |  |
+
+
+**示例**
+
+```json
+{}
+```
+
+
+
+
+<a id="op-post-a2a"></a>
+
+### POST /a2a
+
+**A2A JSON-RPC 2.0 入口（GetTask / SendMessage / CancelTask / SubscribeToTask）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**参数**
+
+| 字段 | in | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `A2A-Version` | header | `string` |  |  |
+
+
+**请求体**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `jsonrpc` | `string` = `2.0` | ✓ |  |
+| `id` | `any` |  |  |
+| `method` | `GetTask` \| `tasks/get` \| `SendMessage` \| `message/send` \| `CancelTask` \| `tasks/cancel` \| `SubscribeToTask` \| `tasks/resubscribe` | ✓ |  |
+| `params` | `object` |  |  |
+
+
+**示例**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "GetTask"
+}
+```
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `401` |  |
+| `403` |  |
+| `404` |  |
+
+
+**示例**
+
+```json
+{}
+```
+
+
+
+
+<a id="op-post-acp"></a>
+
+### POST /acp
+
+**ACP v1 over HTTP（vendor-specific：请求 POST + prompt 下行 SSE）**
+
+**鉴权**：需要 Bearer 服务令牌  (`abs_<kid>_<secret>`)
+
+**请求体**
+
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `jsonrpc` | `string` = `2.0` | ✓ |  |
+| `id` | `any` |  |  |
+| `method` | `initialize` \| `session/new` \| `session/prompt` \| `session/cancel` |  |  |
+| `params` | `object` |  |  |
+| `result` | `any` |  |  |
+
+
+**示例**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize"
+}
+```
+
+
+**响应**
+
+| 状态码 | 含义 |
+| --- | --- |
+| `200` |  |
+| `400` |  |
+| `401` |  |
+| `403` |  |
+| `404` |  |
+| `409` |  |
+
+
+**示例**
+
+```json
+{}
+```
+
+
 
 
 <a id="op-get"></a>

@@ -294,6 +294,7 @@ State transitions, and the only message that carries terminal results: exit code
 | `at` | `string` (date-time) | ✓ |  |
 | `turnId` | `string` |  |  |
 | `eventSeq` | `integer` |  |  |
+| `toolCall` | `object` |  |  |
 
 **Example**
 
@@ -368,6 +369,8 @@ State transitions, and the only message that carries terminal results: exit code
 | `hasMoreBefore` | `boolean` |  |  |
 | `prunedThrough` | `integer` |  |  |
 | `partialMessages` | array&lt;object&gt; |  |  |
+| `pendingInteraction` | `object` |  |  |
+| `interactionResults` | array&lt;object&gt; |  |  |
 | `eventWindow` | `object` |  |  |
 | `errorCode` | `string` |  |  |
 
@@ -429,7 +432,7 @@ State transitions, and the only message that carries terminal results: exit code
 
 <a id="msg-task_artifact"></a>
 
-### task_artifact — 入站附件已提交
+### task_artifact — 附件事件（入站提交 / 任务产物元数据）
 
 **Fields**
 
@@ -442,8 +445,10 @@ State transitions, and the only message that carries terminal results: exit code
 | `name` | `string` | ✓ |  |
 | `mimeType` | `string` | ✓ |  |
 | `size` | `integer` | ✓ |  |
-| `sha256` | `string` | ✓ |  |
+| `sha256` | `string` |  |  |
 | `kind` | `string` | ✓ |  |
+| `source` | `agent` \| `platform` |  |  |
+| `contentUnavailableReason` | `string` |  |  |
 | `eventSeq` | `integer` |  |  |
 
 **Example**
@@ -457,7 +462,9 @@ State transitions, and the only message that carries terminal results: exit code
   "mimeType": "string",
   "size": 1,
   "sha256": "string",
-  "kind": "string"
+  "kind": "string",
+  "source": "agent",
+  "contentUnavailableReason": "string"
 }
 ```
 
@@ -526,6 +533,7 @@ State transitions, and the only message that carries terminal results: exit code
 | `type` | `string` = `artifact_download_ready` | ✓ |  |
 | `transferId` | `string` | ✓ |  |
 | `artifactId` | `string` | ✓ |  |
+| `nextOffset` | `integer` | ✓ |  |
 | `size` | `integer` | ✓ |  |
 | `sha256` | `string` | ✓ |  |
 | `chunkSize` | `integer` | ✓ |  |
@@ -537,6 +545,7 @@ State transitions, and the only message that carries terminal results: exit code
   "type": "artifact_download_ready",
   "transferId": "string",
   "artifactId": "string",
+  "nextOffset": 1,
   "size": 1,
   "sha256": "string",
   "chunkSize": 1
@@ -593,6 +602,40 @@ State transitions, and the only message that carries terminal results: exit code
   "type": "artifact_download_result",
   "transferId": "string",
   "status": "completed",
+  "errorCode": "string"
+}
+```
+
+
+<a id="msg-artifact_transfer_status"></a>
+
+### artifact_transfer_status — 附件传输状态/中止回执
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_transfer_status` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `direction` | `upload` \| `download` |  |  |
+| `state` | `uploading` \| `committed` \| `aborted` \| `failed` | ✓ |  |
+| `nextOffset` | `integer` |  |  |
+| `chunkSize` | `integer` |  |  |
+| `artifactId` | `string` |  |  |
+| `reason` | `string` |  |  |
+| `errorCode` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_transfer_status",
+  "transferId": "string",
+  "direction": "upload",
+  "state": "uploading",
+  "artifactId": "string",
+  "reason": "string",
   "errorCode": "string"
 }
 ```
@@ -707,11 +750,14 @@ State transitions, and the only message that carries terminal results: exit code
 | `taskId` | `string` | ✓ |  |
 | `requestId` | `string` | ✓ |  |
 | `state` | `accepted` \| `declined` \| `cancelled` \| `expired` \| `failed` | ✓ |  |
+| `requestState` | `pending` \| `submitting` \| `resolved` \| `failed` \| `expired` \| `cancelled` | ✓ |  |
+| `responseStatus` | `accepted` \| `duplicate` \| `invalid` \| `late` |  |  |
 | `responseId` | `string` |  |  |
-| `resultSeq` | `integer` |  |  |
+| `resultSeq` | `integer` | ✓ |  |
+| `resolution` | `object` |  |  |
 | `resultPayload` | `object` |  |  |
 | `errorCode` | `string` |  |  |
-| `eventSeq` | `integer` |  |  |
+| `at` | `string` (date-time) | ✓ |  |
 
 **Example**
 
@@ -721,8 +767,12 @@ State transitions, and the only message that carries terminal results: exit code
   "taskId": "string",
   "requestId": "string",
   "state": "accepted",
+  "requestState": "pending",
+  "responseStatus": "accepted",
   "responseId": "string",
-  "errorCode": "string"
+  "resultSeq": 1,
+  "errorCode": "string",
+  "at": "string"
 }
 ```
 
@@ -1083,6 +1133,64 @@ Platform → bridge. Requests cancellation of a running task.
   "type": "artifact_download_chunk_ack",
   "transferId": "string",
   "nextOffset": 1
+}
+```
+
+
+<a id="msg-artifact_transfer_status"></a>
+
+### artifact_transfer_status — 查询附件传输状态
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_transfer_status` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_transfer_status",
+  "transferId": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
+}
+```
+
+
+<a id="msg-artifact_transfer_abort"></a>
+
+### artifact_transfer_abort — 中止附件传输
+
+**Fields**
+
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `string` = `artifact_transfer_abort` | ✓ |  |
+| `transferId` | `string` | ✓ |  |
+| `reason` | `string` |  |  |
+| `requestedBy` | `string` |  |  |
+| `purpose` | `string` |  |  |
+| `serviceToken` | `string` |  |  |
+
+**Example**
+
+```json
+{
+  "type": "artifact_transfer_abort",
+  "transferId": "string",
+  "reason": "string",
+  "requestedBy": "string",
+  "purpose": "string",
+  "serviceToken": "string"
 }
 ```
 

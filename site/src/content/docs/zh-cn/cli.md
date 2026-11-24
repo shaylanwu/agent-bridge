@@ -144,3 +144,28 @@ Windows 登录计划任务；均支持 `--dry-run`。
 agent-bridge --version | -v
 agent-bridge help | --help | -h
 ```
+
+## 逐工具能力（简版）
+
+`agent_list` **如实**逐工具上报能力 —— 缺省即「未验证」，不是「假定能跑」。权威字段是
+`executionModes`（逐执行模式）；下表是简版汇总。完整矩阵（各工具的 full 参数、内部通道与
+实测口径脚注）在两份 README 中，与本表同批维护。
+
+| agentType | headless | ACP | 续会话 |
+| --- | --- | --- | --- |
+| `claude-code` | ✓ | — | 原生 `--resume` |
+| `codebuddy-cli` | ✓ | ✓ | 原生 `--resume` |
+| `codex` | ✓ | — | app-server 线程 |
+| `ds-harness` | ✓ | ✓（仅自动化） | 原生 `--session-id` / ACP resume |
+| `agy` | ✓ | ✓ | 原生 `--conversation` / ACP 会话 |
+| `opencode` | ✓ | ✓ | ACP 会话 |
+| `mimo-code` | ✓ | ✓ | ACP 会话 |
+| `qoder-cli` | ✓ | — | 原生 `--resume` |
+| `grok-cli` | ✓ | ✓ | 原生 `--resume` / ACP 会话 |
+| `kimi-code` | ✓ | ✓ | ACP 会话 |
+| `minimax-code` | ✓ | ✓ | ACP 会话 |
+| `trae-cli` | ✓ | ✓ | ACP 会话 |
+
+ACP 模式的权限恒为 `default`（走原生确认；`full` 请求要么走 headless、要么被拒绝，绝不静默降级）。
+两条内部通道（codex app-server 线程、Claude 常驻 stream-json 进程）不单列为 `executionMode`
+取值；它们**至少不弱于**所替代的模式，声明只会保守、不会夸大。

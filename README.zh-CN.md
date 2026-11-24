@@ -11,7 +11,7 @@
 
 ## 简介
 
-AI 编码 Agent（Claude Code、Codex、Gemini CLI 等）装在开发者的电脑上。网页平台看不到它们：浏览器沙箱拿不到
+AI 编码 Agent（Claude Code、Codex、Antigravity CLI 等）装在开发者的电脑上。网页平台看不到它们：浏览器沙箱拿不到
 `PATH`、可执行文件和凭据存储；平台部署在别处，也连不进 NAT 后面的笔记本。
 
 `agent-bridge-service` 补上这一环：它运行在拥有这些 CLI 的机器上，向平台保持一条出站 WebSocket，
@@ -25,8 +25,8 @@ AI 编码 Agent（Claude Code、Codex、Gemini CLI 等）装在开发者的电�
 
 ## 功能
 
-- **内置 12 个适配器** —— Claude Code、CodeBuddy CLI、Codex、DeepSeek Harness、Gemini CLI、opencode、Mimo Code、
-  Qoder CLI、Grok CLI、Kimi Code、MiniMax Code、Trae CLI。
+- **内置 12 个适配器** —— Claude Code、CodeBuddy CLI、Codex、DeepSeek Harness、Antigravity CLI、opencode、Mimo Code、
+  Qoder CLI、Grok Build、Kimi Code、MiniMax Code、Trae CLI。
 - **三态探测** —— `就绪` / `已装缺凭据` / `未装`，并在「找到二进制但执行失败（`--version` 非 0）」时标记为**装坏**。
 - **零入站网络** —— 由 bridge 主动连出，平台从不向你的网络发起连接。
 - **绑定无需复制粘贴 token** —— 本地回环回调 + PKCE S256，复用浏览器里已登录的会话；SSH/无头机器走设备码，CI 可用 `--token`。
@@ -107,15 +107,24 @@ agent-bridge sessions purge --older-than=14       # 删除闲置 14 天以上的
 ──────────────────────────────────────────────────────────
 Claude Code        2.1.282              就绪
 Codex              0.163.0              就绪
-DeepSeek Harness   0.1.5-rc.3           就绪
-Gemini CLI         0.64.0               缺凭据
+DeepSeek Harness   0.2.1-rc.2           就绪
+Antigravity CLI     1.5.9                就绪
 opencode           1.19.3               缺凭据
 Qoder CLI          1.1.75               就绪
 MiniMax Code       -                    装坏
 Kimi Code          -                    未装
 
-共 12 个工具，可用 4 个
+共 12 个工具，可用 5 个
 ```
+
+凭据证据来自环境变量、已知凭据文件或适配器显式登记的 OS keyring 目标。agy 在 Windows 上探测
+`gemini:antigravity`，只上报 `credentialSource = "keyring:gemini:antigravity"`；不会读取或上传秘密。
+Qoder 探测 `~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`；Trae 使用 `TRAECLI_PERSONAL_ACCESS_TOKEN`
+或官方 `traecli login status` 的退出码，不再把安装目录当成登录凭据，状态命令输出不上报。
+
+agy 的外部请求可用 `AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定代理；未指定时，Windows 自动读取当前用户系统代理。
+这避免 WorkBuddy 进程代理与系统代理不一致导致 Google API 502；不会把本机端口写死进代码。agy 1.5.9 起
+声明 ACP，旧版只保留 headless；已实测首轮和原生续接，未逐项实测的 permission/form 不声明。
 
 ### 稳定设备身份与本地状态
 
@@ -182,27 +191,28 @@ external_sandbox = false        # 仅 CodeBuddy 的 full 需要
 
 `agent_list` 如实标注每项能力 —— **省略即「未验证」，不是「假定能跑」**：
 
-| agentType | full 追加参数（接在任务模板后） | 执行模式 | 续会话 |
+| agentType | full 参数 | 执行模式 | 续会话 |
 | --- | --- | --- | --- |
 | `claude-code` | `--dangerously-skip-permissions` | headless | 原生 `--resume` |
 | `codebuddy-cli` | `-y`（+ 固定 `CODEBUDDY_IS_SANDBOX=1`，需 `external_sandbox = true`） | headless、ACP | 原生 `--resume` |
 | `codex` | `--dangerously-bypass-approvals-and-sandbox` | headless | app-server 线程 |
 | `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless、ACP | 原生 `--session-id` / ACP `session/resume` |
-| `gemini` | `--yolo` | headless、ACP | ACP 会话 |
+| `agy` | `--dangerously-skip-permissions` | headless、ACP | 原生 `--conversation` / ACP 会话 |
 | `opencode` | `--auto` | headless、ACP | ACP 会话 |
 | `mimo-code` | `--dangerously-skip-permissions` | headless、ACP | ACP 会话 |
 | `qoder-cli` | `--dangerously-skip-permissions` | headless | 原生 `--resume` |
-| `grok-cli` | `--always-approve` | headless、ACP | ACP 会话 |
+| `grok-cli` | `--always-approve` | headless、ACP | 原生 `--resume` / ACP 会话 |
 | `kimi-code` | *（不追加 —— `-p` 已是 auto）* | headless、ACP | ACP 会话 |
 | `minimax-code` | `--permission full` | headless、ACP | ACP 会话 |
 | `trae-cli` | `--yolo` | headless、ACP | ACP 会话 |
 
 ACP 模式恒为 `default`（走原生权限确认，不用绕过参数），所以 `full` 请求要么走 headless、要么被拒绝，
-不会悄悄降级。后续 `send_message` 回合按上表的通道续会话；只有完全没有续会话通道的工具才会重放
-canonical transcript。
+不会悄悄降级。agy 的 full 旗标使用专用模板放在 `-p` 之前，确保 prompt 始终位于 argv 末尾。
+full conversation 使用受管 headless + 完整 canonical transcript 重放；default 的后续 `send_message` 回合按上表通道续会话，
+只有没有可用续会话通道时才重放 transcript。
 
 有两条内部通道**不单列为 `executionMode`**，因为通道是 bridge 自选的（`run_task` 没有 `executionMode` 字段）：
-codex 的会话走 app-server `thread/resume`，Claude/Qoder 走常驻 stream-json 进程。它们写在上表里而不编码成
+codex 的会话走 app-server `thread/resume`，Claude 走常驻 stream-json 进程；Qoder 走 headless + 原生 `--resume`。它们写在上表里而不编码成
 `executionMode` 取值，并且**至少不弱于**它替代的那个模式所声明的 continuation —— 声明只会保守，不会夸大。
 7 个本机无凭据工具的 ACP `native-session` 依据是 ACP 规范 + `codebuddy`/`ds-harness` 的实测，不是逐个实测；
 若某个 agent 连 `session/load` 与 `session/resume` 都不认，该回合会开新会话**并把完整 transcript 当首轮
@@ -271,6 +281,22 @@ event_retention_max_events = 5000   # 单会话事件上限（0 = 全留，上�
 所以 `eventSeq` 始终单调递增，被裁掉的号**不会重新发放**。只裁事件：turns / artifacts / interactions 是
 「任务发生过」的证据，一律保留。启动参数 `--event-retention-max-events=` 可临时覆盖。
 
+**在按条数保留之上，canonical feed 还有 per-task 预算**（默认策略而非产品硬上限 —— 用 `[feed]` 段逐维调整或关闭）：
+
+```toml
+[feed]
+max_messages     = 200        # 每会话保留的最新 task_message 条数（0 = 关闭该维）
+max_steps        = 200        # 每会话保留的最新 task_step 条数（0 = 关闭该维）
+max_artifacts    = 50         # 每会话保留的最新 task_artifact 条数（0 = 关闭该维）
+task_max_bytes   = 4194304    # 单会话事件 payload 总字节预算（0 = 关闭该维）
+global_max_bytes = 67108864   # 全库事件 payload 总字节预算（0 = 关闭该维）
+```
+
+不写该段 = 使用上述默认值；单维写 0 = 只关这一维。淘汰**永不触碰**各会话最新终态 `task_status`
+与最新一条事件（pending 交互在独立表，天然不受影响）。窗口内的淘汰显式可见：
+`eventWindow.gaps` 的元素带 `reason: count | task_bytes | global_bytes`；
+前缀删除则推进 `prunedThrough`（旧游标会收到 `session_history_pruned`，而不是被静默挖洞）。
+
 **打开状态库时先跑一次 `PRAGMA quick_check`**（`SessionStore` 的 `integrityCheck`，缺省开启，可显式关闭）。
 理由不是洁癖：损坏的 SQLite 文件通常**能正常打开**、schema 也读得出来，只是跑到一半读页失败 ——
 那种现场是「任务执行到一半报内部错误」，几乎无法排查。自检把故障提前到启动：不合格就拒绝启动，
@@ -302,13 +328,13 @@ event_retention_max_events = 5000   # 单会话事件上限（0 = 全留，上�
 与 `task_step`；结构化地看「正在写的文本」只有快照里的 `partialMessages`。`delta` 请当作保留位，
 不要等它。
 
-ACP：`codebuddy-cli`、`ds-harness`、`gemini`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、
+ACP：`codebuddy-cli`、`ds-harness`、`agy`、`opencode`、`mimo-code`、`kimi-code`、`minimax-code`、
 `grok-cli`、`trae-cli` 声明了原生 ACP，conversation/task 会优先走 ACP（原生 session、结构化权限请求）。
 `ds-harness` 在这条通道上是 **automation-only**（实测）：跑工具只发 `tool_call`、从不回问权限，所以它的
 `executionModes.interactionKinds` 声明为空数组；续会话靠自家的 `session/resume`，标准 `session/load`
 会回 `-32601 Method not found`（客户端先试 load 再退 resume）。
-`codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer、审批）；Claude/Qoder 的
-conversation 保持常驻 `stream-json` 进程（Turn 间复用）；其余工具保持 headless。
+`codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer、审批）；Claude 的
+conversation 保持常驻 `stream-json` 进程（Turn 间复用）；Qoder 用 headless + 原生 `--resume`，其余工具保持各自已声明通道。
 CodeBuddy 优先用显式 `CODEBUDDY_AUTH_TOKEN`；未设置时从本机 CodeBuddyExtension 的明文
 `auth/*.info` 读取登录态并注入 ACP 子进程。两者都没有时回落 `codebuddy -p`，不会启动无认证子进程。
 
@@ -368,7 +394,7 @@ bridge 不持有超出启动它的系统用户的任何权限，**不开放任�
 │   └─ config (~/.agent-…) │  可选：127.0.0.1 回调           │                        │
 └──────────────────────────┘  （仅用于授权）                  └────────────────────────┘
             │
-            └── 拉起 ──▶ claude / codex / dsh / gemini / …（用户自己的 CLI 与凭据）
+            └── 拉起 ──▶ claude / codex / dsh / agy / …（用户自己的 CLI 与凭据）
 ```
 
 | 模块                    | 职责                                                                   |
@@ -420,8 +446,8 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 | 方向          | 消息                                                                    |
 | ------------- | ----------------------------------------------------------------------- |
-| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`、`artifact_content`、`session_ack`、`message_ack`、`task_interaction_request`、`task_interaction_result`、`interaction_url`、`artifact_upload_ready`、`artifact_upload_chunk_ack`、`artifact_upload_result`、`artifact_download_ready`、`artifact_download_chunk`、`artifact_download_result`、`capacity_update`、`pong` |
-| 平台 → bridge | `run_task`、`send_message`、`task_interaction_response`、`get_interaction_url`、`get_artifact`、`artifact_upload_start`、`artifact_upload_chunk`、`artifact_upload_complete`、`artifact_download_start`、`artifact_download_chunk_ack`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
+| bridge → 平台 | `hello`、`agent_list`、`scan_progress`、`scan_result`、`task_log`、`task_status`、`task_step`、`task_message`、`task_artifact`、`task_snapshot`、`artifact_content`、`session_ack`、`message_ack`、`task_interaction_request`、`task_interaction_result`、`interaction_url`、`artifact_upload_ready`、`artifact_upload_chunk_ack`、`artifact_upload_result`、`artifact_download_ready`、`artifact_download_chunk`、`artifact_download_result`、`artifact_transfer_status`、`capacity_update`、`pong` |
+| 平台 → bridge | `run_task`、`send_message`、`task_interaction_response`、`get_interaction_url`、`get_artifact`、`artifact_upload_start`、`artifact_upload_chunk`、`artifact_upload_complete`、`artifact_download_start`、`artifact_download_chunk_ack`、`artifact_transfer_status`、`artifact_transfer_abort`、`cancel_task`、`close_session`、`cancel_turn`、`get_task`、`scan`、`ping` |
 
 ### 能力协商（hello.capabilities）
 
@@ -458,12 +484,23 @@ cli.ts → cli/（参数 · 渲染 · 帮助 · 分发）→ commands/（一个�
 
 | 级别 | 工具 | 说明 |
 | --- | --- | --- |
-| 结构化（`steps: true`） | 全部 12 个工具 | 按事件格式分 6 族解析（claude 同构 5 个、opencode 同构 2 个、codex / gemini / kimi / dsh / minimax 各一） |
+| 结构化（`steps: true`） | 全部 12 个工具 | 按事件格式分 7 族解析（claude 同构 5 个、opencode 同构 2 个、codex / agy / kimi / dsh / minimax 各一） |
 | 纯文本（`steps: false`） | 无 | 降级位保留给未来不支持结构化输出的工具 |
 
 ⚠️ 行为变化：claude-code / codebuddy-cli / kimi-code / qoder-cli / trae-cli / ds-harness / minimax-code
 的任务输出（`task_log`）从纯文本变为 **JSONL 事件流**（信息更全，`task_step` 提供结构化视图）；
-codex / opencode / mimo-code / grok-cli / gemini 本来就是（或转为）JSONL。
+codex / opencode / mimo-code / grok-cli / agy 本来就是（或转为）JSONL。
+
+**富 `toolCall`（可选字段）**：步骤可携带规范化的工具调用子集 —— `toolCallId` / `name` /
+`kind`（ACP 的 `read|edit|delete|move|search|execute|think|fetch|switch_mode|other`）/
+`title` / `status` / `locations`（路径）/ `content`（有界 `text|diff|terminal` 块，单块 16KB、
+上行出口脱敏）。`rawInput` / `rawOutput` **绝不上行**；无法可靠提取的适配器省略该字段、
+保留 legacy 字段。当前来源：ACP `tool_call` 更新（原生字段直传）与 claude 同构解析器族
+（工具名→kind 映射 + `file_path`/`path` 进 locations + `tool_result` 输出映射 terminal 块）。
+
+**中间 agent 消息**：headless 结构化输出里的 assistant 文本块现在成为 canonical `task_message`
+事件（`state: "complete"`，每条 assistant 消息一条，CLI 提供原生 `messageId` 时优先使用），
+不再只埋在 `task_log` 里。thinking 块不进消息；流式增量仍走内存 `partialMessages` 通道。
 
 演进规则：新增可选字段 = 协议版本不变；语义变更或新增必填字段 = 版本 +1。
 
@@ -485,6 +522,20 @@ timeout）后在 `cwd` 上取一次差异，随 `task_status` 一起回传：
 约束：非 git 目录返回空 diff **而不报错**；超过 `diff_max_bytes`（默认 256 KB）按**行边界**截断并置
 `diffTruncated: true`；未跟踪的新文件会先 `git add -N` 再取 diff，取完立即 `git reset -q` 还原索引 ——
 **不提交、不改动工作区、不留 intent-to-add 残留**。
+
+**变更文件生成产物元数据事件（4.9）**：带 `captureDiff` 的任务终态时，每个仍存在（且通过下方路径安全
+检查）的变更文件会作为 `task_artifact` 事件上行（`kind: "output"`、`source: "agent"`、`name`、
+`mimeType`、`size` —— 仅 stat 元数据）。内容**刻意不读**：没有 adapter 明确声明的 artifact 事件时
+bridge 只发元数据 —— `sha256` 省略，`contentUnavailableReason: "no_adapter_artifact_event"` 显式说明
+原因；对此类 artifactId 的 `get_artifact` 如实回 `artifact_not_found`。凭据路径、`..`、绝对路径、
+目录与符号链接逃逸连名字都不上行。
+
+**产物读取的路径安全**（内容读取的前提，现在与未来的 adapter 事件通道一致）：读取根是**该任务自身
+cwd 的 realpath 子树**（`allowed_cwd` 只决定任务能否启动）；realpath 解析后必须仍在根内 —— `..`、
+绝对路径、目录、凭据位置（`.ssh`、`.aws`、`.env`、`id_rsa` 等）一律拒绝；文件只打开一次，同一 fd
+上 `fstat` 定尺寸并流式读取计算 SHA-256（POSIX 有 `O_NOFOLLOW` 处用之；Windows 以 realpath 前置
+检查 + 单 fd 读取为等价实现）。inline 上限内随消息上行；超上限只给 size/sha256 —— 大内容走分块
+artifact transfer，绝不塞进消息体。**不扫描工作区**。
 
 ### 服务身份与作用域（P0-8）
 
@@ -528,6 +579,12 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | `device_busy` | 并发与队列都满 |
 | `timeout` / `cancelled` | 超时（含排队超时）/ 被取消 |
 | `agent_error` | CLI 非 0 退出，或进程启动失败 |
+| `interaction_delivery_unknown` | 无法确认交互响应是否写入 adapter；交互置为 failed、回合终止且禁止重试 |
+| `interaction_invalid_response` / `interaction_response_conflict` | 响应校验失败 / 幂等键或已结算响应冲突 |
+| `interaction_timeout` | 单次交互等待到期且 options 未提供 `reject_once`：以 cancelled outcome 完成请求并结束回合 |
+| `interaction_denied` | full 模式的残余权限请求（options 未提供 `reject_once`）：fail closed —— cancelled outcome、取消回合、绝不转交人工 |
+| `agent_protocol_error` | Agent 在交互未决时结束回合或违反执行协议 |
+| `idempotency_conflict` | 同一幂等键携带了不同的请求指纹 |
 | `session_not_continuable` | 该工具没有任何续接回合的通道（`executionModes[].continuation` 为 `single-turn`），`sessionMode = conversation` 在**创建时**即被拒绝 |
 | `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | 服务令牌四类失败 |
 | `protocol_incompatible` / `internal` | 版本不匹配 / bridge 自身异常 |
@@ -615,6 +672,100 @@ curl --noproxy '*' -H "Authorization: Bearer abs_…" -H "Idempotency-Key: 3f9a�
 错误统一是 RFC 9457 `application/problem+json`，`code` 与协议层同一套受控枚举（客户端按 `code` 分支，
 不用匹配文案）。`Idempotency-Key` 让重试的 `POST /v1/tasks` 返回同一个 `taskId`，不会跑两遍。
 契约：`contracts/openapi.control-plane.yaml`。
+
+### A2A / ACP 网关（可选，默认关闭）
+
+给外部编排器（A2A 客户端、ACP editor）一个**标准协议表面**，替代各自实现 bridge 私有 wire。
+网关不另开端口：挂在控制面的 HTTP server 上（回环绑定、鉴权、审计与 `/v1/*` 同一套），
+是**适配层**——复用 `TaskSupervisor / SessionStore / Emitter`，不复制调度与持久化。
+配置 `[gateway] enabled = true`（或临时 `AGENT_BRIDGE_GATEWAY=1`）后生效，未启用时一律 404。
+`a2a` / `acp` 子开关可单独关掉某个表面。
+
+| 方法 | 路径 | scope |
+| --- | --- | --- |
+| GET | `/.well-known/agent-card.json` | 无（静态描述，不含任务数据；capabilities 只声明已实现项） |
+| POST | `/a2a` | 逐方法：读 `session:read`/`task:read`，发送 `task:create`，取消 `task:cancel` |
+| POST | `/acp` | 逐方法：握手/会话 `device:read`，prompt `task:create`，cancel `task:cancel`，交互应答 `task:approve`/`task:respond` |
+
+#### A2A 表面
+
+- **版本协商**：`A2A-Version` 头（空/缺省按 0.3；`1.0` 用 `TASK_STATE_*` 拼写；其余 `-32009`）。
+  方法名 `GetTask` 与 `tasks/get` 两种拼写都接受。
+- **`tasks/get`（只读）**：SQLite 快照 → A2A Task（`history` 只含 complete 消息；`task_log` 不冒充
+  消息/附件，只在 `Task.metadata.bridge.taskLogEndpoint` 给指引；附件以 file part 指向控制面下载端点）。
+- **`message/send`（创建任务）**：`message.parts`（仅 text）拼为 prompt；**bridge 扩展字段在
+  `message.metadata`**——`agentType`（受管白名单内）与 `cwd` 必填、`timeoutMs` 可选。
+  `messageId` 即幂等键（重发同 id 返回同一 task）；**立即返回**（长任务后续走 get/订阅）。
+  与 `POST /v1/tasks` 同一条编排（并发上限/权限策略/幂等语义单一真源）。
+- **`tasks/cancel`**：与 `:cancel` 同一条取消编排（SIGTERM → 2s → SIGKILL）；终态回 `-32002`。
+- **`tasks/resubscribe`（SSE 补洞）**：`eventSeq` 游标（`params.metadata.afterEventSeq`，缺省 0）；
+  帧格式 `task`/`message`/`status`/`artifact`（带 eventSeq）+ `log|step` 调试扩展 + `done`；
+  终态任务回 `-32004`（规范语义）。
+- **状态映射**：queued→`SUBMITTED`、running→`WORKING`、waiting_interaction/waiting_user→`INPUT_REQUIRED`、
+  success→`COMPLETED`、failed/timeout→`FAILED`（真实归因放 `metadata.bridge.statusDetail`）、cancelled→`CANCELED`。
+- **隔离**：跨租户/不存在统一 JSON-RPC `-32001`（不泄露「存在但不是你的」）。
+
+##### A2A 映射细则（6.4 / 6.8）
+
+- **TaskStatusUpdateEvent** ↔ `tasks/resubscribe` 的 SSE `status` 帧：携带 `state` + `eventSeq`；
+  **终态帧关闭流**（`done`）—— Task 对象本身没有 `final` 字段，终态由 `status.state` 到达
+  终值（`COMPLETED` / `FAILED` / `CANCELED`）表达，与 A2A v1.0.1 一致。
+- **Message / Part** ↔ `task_message`：只有 `state: "complete"` 的消息进入 A2A history（text part）。
+  流式 **delta 绝不冒充 A2A 消息** —— 它是 bridge 内部的 `partialMessages`（仅快照可见）；
+  `task_log` 是调试输出，从 `Task.metadata.bridge.taskLogEndpoint` 指引获取，不成为消息 part。
+- **Artifact** ↔ `task_artifact`：有内容的附件（平台上传）映射为 **file part**（指向控制面下载端点）；
+  元数据 only 的任务产物（无 adapter artifact 事件，见上文产物节）只有 `name/mimeType/size`
+  并如实标注不可得，绝不伪造可下载的 part。
+- **权限不是 A2A 原生能力**：等待中的任务表现为 `INPUT_REQUIRED`，但批准/应答闭环只存在于
+  bridge wire（`task_interaction_request/response`）与 ACP 表面（`session/request_permission` /
+  `elicitation/create`）。A2A 客户端要回答交互必须走这两条通道之一；bridge 不为它发明 A2A 扩展。
+- **bridge 扩展 URI** 位于 `message.metadata` / `Task.metadata.bridge.*`，全部是增量可选字段：
+
+| 扩展 | 位置 | 含义 |
+| --- | --- | --- |
+| `agentType` | `message.metadata` | 受管 CLI 白名单项（必填） |
+| `cwd` | `message.metadata` | 任务工作目录（必填） |
+| `timeoutMs` / `captureDiff` / `permissionMode` | `message.metadata` | 可选的任务级覆盖 |
+| `bridge.taskLogEndpoint` | `Task.metadata` | 调试日志位置（不是消息来源） |
+| `bridge.statusDetail` | `Task.metadata` | 多个 bridge 状态坍缩到一个 A2A 状态时的真实归因 |
+| `afterEventSeq` | resubscribe `params.metadata` | 补洞游标（eventSeq；缺省 0 = 全量回放） |
+| `idempotentReplay` | send 响应 `Task.metadata` | 同 `messageId` 重发 → 同一任务，不重复执行 |
+
+#### MCP 宿主（stdio，逐 server 配置）
+
+config.toml 的 `[mcp.servers.<name>]` 启动本机 stdio MCP server；bridge 作为 MCP client 提供
+`tools/list`、`tools/call` 与 **elicitation**（`McpElicitationClient`；传输层测试覆盖 elicitation
+表面及其版本承载差异 —— 协议协商隔离在 client 内，不渗入 bridge wire）。**诚实边界**：
+elicitation 的 handler 由调用方注入；MCP 问题接入平台 `task_interaction_request` **尚未启用** ——
+宿主与客户端已就绪并有测试，接入交付后才作声明。MCP 工具调用绝不因模型文本被自动批准。
+
+#### ACP 表面（ACP v1 over HTTP，vendor 承载）
+
+ACP v1 的 HTTP 承载尚未定稿（Transports RFD 进行中），本网关的约定：**请求走 `POST /acp`**、
+**prompt 下行与交互请求走 SSE**、**客户端应答走另一条 `POST /acp` 的响应报文**。
+
+- **`initialize`**：只声明真实能力——`loadSession: false`（会话不持久续接）、prompt 只收
+  text block、fs/terminal 客户端能力不开放。
+- **`session/new`**：固化 `params.cwd` 与 `params._meta.agentType`（12 个受管 CLI 必须显式选择）。
+- **`session/prompt`（conversation 多轮，add-acp-session-memory）**：首轮创建 bridge conversation
+  会话（`run_task` 语义）；后续轮 `send_message` 续接**同一会话**——CLI 原生续接（resume /
+  ACP session / 重放兜底，12 适配器续接矩阵），**上下文由 CLI 持有、token 只传增量**。
+  响应是 SSE 流：`event: prompt`（taskId + first/continue 标记）→ `event: update`（`session/update`
+  通知，agent_message_chunk）→ 交互时 `event: request`（见下）→ `event: result`
+  （本轮 turn 结束：`{stopReason, content}`，`waiting_user → end_turn`；turn 失败/超时走
+  JSON-RPC error，会话随之关闭——后续 prompt 如实拒绝并提示 `session/new`）。
+  会话空闲回收复用 conversation 的 `idleTimeoutMs`。bridge 重启后 acp 会话绑定丢失（内存态），
+  旧会话不假装可续。
+- **`session/cancel`**：取消当前轮次（`cancel_turn` 编排，operationId 幂等）；无活动轮次静默成功。
+- **交互闭环**：任务进入 `waiting_interaction` 时，prompt 流中注入 `event: request` 帧
+  （`session/request_permission` 或 `elicitation/create`——permission 走标准选项，
+  form/auth-url 走 elicitation（form/url 两种 mode））。客户端用 `POST /acp` 发响应报文
+  （无 method、带网关下发的 id + result）应答；网关转成 `task_interaction_response` 走与
+  `POST /v1/interactions/{id}:respond` **同一条** dispatch 路径（权限判定双保险）。
+- 端到端取证：`npm run e2e:gateway`（真 bridge 进程 + 真服务令牌 + 真跑一次本机 CLI，
+  覆盖 A2A send/get/cancel、messageId 幂等与 ACP prompt/cancel 全链路；**多轮记忆含真 CLI
+  两轮对话断言**。CLI 出网代理与系统不一致时用 `E2E_PROXY=http://127.0.0.1:<port>` 指定）。
+- 详见 `contracts/openapi.control-plane.yaml` 的 `a2a-gateway` tag。
 
 ### 扫描结果实时回传与品牌图标
 

@@ -115,7 +115,7 @@ act for this user?); the bridge authenticates (is this token real, in scope, un-
 - [ ] Public `code` returned for `invalid_device_id`, both 409 conflicts, credential failures, and `authorization_pending`
 - [ ] `hello.protocolVersion` is `1` and URL/hello ID equality checked; unknown capabilities degraded gracefully
 - [ ] Terminal `task_status` handled idempotently (it can arrive twice after a reconnect)
-- [ ] All 23 error codes mapped to something a human can act on
+- [ ] All 28 error codes mapped to something a human can act on
 - [ ] Queued tasks rendered via `phase`, not by inventing a status
 - [ ] `executionModes[].continuation` checked before opening a conversation, `session_not_continuable` handled
 - [ ] Watchdog settles tasks that went silent

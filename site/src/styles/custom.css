@@ -882,7 +882,7 @@ starlight-theme-toggle {
 }
 
 /* 暗色主题：深色/黑色系 logo 反白（白名单见 AgentWall 的 INVERT_ON_DARK），
-   避免与深底融合；彩色品牌 logo（Claude/Gemini/CodeBuddy 等）不受影响 */
+   避免与深底融合；彩色品牌 logo（Claude/CodeBuddy/Antigravity 等）不受影响 */
 :root:not([data-theme='light']) .home-agents li[data-invert] .home-agent-logo svg {
   filter: brightness(0) invert(1);
 }

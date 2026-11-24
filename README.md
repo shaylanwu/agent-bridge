@@ -13,7 +13,7 @@ Built from the same machine-readable contracts, so it cannot drift from the code
 
 ## Overview
 
-AI coding agents (Claude Code, Codex, Gemini CLI and friends) live on developers' laptops. A web platform
+AI coding agents (Claude Code, Codex, Antigravity CLI and friends) live on developers' laptops. A web platform
 cannot inspect them: browsers are sandboxed and have no access to `PATH`, executable files or credential
 stores. And a platform hosted elsewhere cannot reach a laptop behind NAT.
 
@@ -31,8 +31,8 @@ small JSON protocol over HTTP + WebSocket.
 
 ## Features
 
-- **12 built-in adapters** — Claude Code, CodeBuddy CLI, Codex, DeepSeek Harness, Gemini CLI, opencode, Mimo Code,
-  Qoder CLI, Grok CLI, Kimi Code, MiniMax Code, Trae CLI.
+- **12 built-in adapters** — Claude Code, CodeBuddy CLI, Codex, DeepSeek Harness, Antigravity CLI, opencode, Mimo Code,
+  Qoder CLI, Grok Build, Kimi Code, MiniMax Code, Trae CLI.
 - **Three-state probing** — `ready` / `installed without credentials` / `not installed`, plus a
   `broken` flag when a binary exists but cannot execute (`--version` fails).
 - **Zero inbound network** — the bridge dials out; the platform never connects into your network.
@@ -123,15 +123,27 @@ Tool                Version              Status
 ──────────────────────────────────────────────────────────
 Claude Code         2.1.282              ready
 Codex               0.163.0              ready
-DeepSeek Harness    0.1.5-rc.3           ready
-Gemini CLI          0.64.0               no credentials
+DeepSeek Harness    0.2.1-rc.2           ready
+Antigravity CLI     1.5.9                ready
 opencode            1.19.3               no credentials
 Qoder CLI           1.1.75               ready
 MiniMax Code        -                    broken
 Kimi Code           -                    not installed
 
-11 tools scanned, 4 usable
+12 tools scanned, 5 usable
 ```
+
+Credential evidence comes from environment variables, known credential files, or explicitly registered OS
+keyring targets. For agy on Windows, the bridge checks `gemini:antigravity` and reports only
+`credentialSource = "keyring:gemini:antigravity"`; it never reads or uploads the secret. Qoder uses
+`~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`. Trae uses `TRAECLI_PERSONAL_ACCESS_TOKEN` or the exit
+code of the official `traecli login status`; installation directories are not treated as credentials, and status
+output is never reported.
+
+For agy's external requests, set `AGENT_BRIDGE_EXTERNAL_PROXY` explicitly or let Windows read the current user's
+system proxy. This avoids Google API 502s when the WorkBuddy process proxy differs from the system proxy, without
+hardcoding a local port. agy declares ACP starting at 1.5.9; older versions remain headless-only. First and resumed
+turns were verified, while permission/form interactions that were not tested individually are not declared.
 
 ### Stable device identity and local state
 
@@ -206,28 +218,30 @@ verified full mapping, or CodeBuddy runs without `external_sandbox = true`, the 
 
 `agent_list` describes every tool honestly — an omitted capability means **not verified**, never "assume it works":
 
-| agentType | full argv (appended to the task template) | modes | continuation |
+| agentType | full argv | modes | continuation |
 | --- | --- | --- | --- |
 | `claude-code` | `--dangerously-skip-permissions` | headless | native `--resume` |
 | `codebuddy-cli` | `-y` (+ fixed `CODEBUDDY_IS_SANDBOX=1`, needs `external_sandbox = true`) | headless, ACP | native `--resume` |
 | `codex` | `--dangerously-bypass-approvals-and-sandbox` | headless | app-server thread |
 | `ds-harness` | `--permission-mode danger-full-access --approval-policy never` | headless, ACP | native `--session-id` / ACP `session/resume` |
-| `gemini` | `--yolo` | headless, ACP | ACP session |
+| `agy` | `--dangerously-skip-permissions` | headless, ACP | native `--conversation` / ACP session |
 | `opencode` | `--auto` | headless, ACP | ACP session |
 | `mimo-code` | `--dangerously-skip-permissions` | headless, ACP | ACP session |
 | `qoder-cli` | `--dangerously-skip-permissions` | headless | native `--resume` |
-| `grok-cli` | `--always-approve` | headless, ACP | ACP session |
+| `grok-cli` | `--always-approve` | headless, ACP | native `--resume` / ACP session |
 | `kimi-code` | *(none — `-p` already runs auto)* | headless, ACP | ACP session |
 | `minimax-code` | `--permission full` | headless, ACP | ACP session |
 | `trae-cli` | `--yolo` | headless, ACP | ACP session |
 
 ACP mode is always `default` (it uses native permission prompts instead of a bypass flag), so a `full` request
-is either served by headless or rejected — never silently downgraded. A later `send_message` turn resumes
-through the channel above; only a tool with no continuation channel replays the canonical transcript.
+is either served by headless or rejected — never silently downgraded. agy uses a dedicated full template that
+places the flag before `-p`, keeping the prompt as the final argv item. Full conversations use managed headless
+with full canonical-transcript replay; default `send_message` turns resume through the channel above and replay
+only when no continuation channel is available.
 
 Two internal channels are **not** separately requestable modes, because the bridge picks the channel itself
 (`run_task` has no `executionMode` field): codex conversations run over app-server `thread/resume`, and
-Claude/Qoder conversations over a resident stream-json process. They are described in the table instead of
+Claude conversations over a resident stream-json process; Qoder uses headless with native `--resume`. They are described in the table instead of
 being encoded as `executionMode` values, and each is at least as capable as the continuation declared for the
 mode it replaces — the declaration never overstates. ACP `native-session` for the seven agents without local
 credentials rests on the ACP spec plus the `codebuddy`/`ds-harness` probes, not on per-tool measurement; if an
@@ -304,6 +318,24 @@ number is never re-issued after its row was reclaimed. Only events are trimmed: 
 interactions are the evidence that the task happened and stay. `--event-retention-max-events=` overrides for
 one session.
 
+**On top of count-based retention, the canonical feed is bounded per task** (default policy, not a hard
+product limit — tune or disable per dimension via the `[feed]` section):
+
+```toml
+[feed]
+max_messages    = 200            # newest task_message events kept per session (0 = off)
+max_steps       = 200            # newest task_step events (0 = off)
+max_artifacts   = 50             # newest task_artifact events (0 = off)
+task_max_bytes  = 4194304        # payload byte budget per session (0 = off)
+global_max_bytes = 67108864      # payload byte budget across the whole DB (0 = off)
+```
+
+Omit the section to take the defaults shown above; set a dimension to `0` to disable just that dimension.
+Eviction always keeps the newest terminal `task_status` and the newest event of every session (pending
+interactions live in their own table and are never touched). An in-window eviction is reported explicitly:
+`eventWindow.gaps` entries carry `reason: count | task_bytes | global_bytes`, and prefix deletions advance
+`prunedThrough` (so old cursors get `session_history_pruned` instead of a silent hole).
+
 **The state DB runs `PRAGMA quick_check` when it is opened** (`SessionStore`'s `integrityCheck`, on by
 default, can be disabled). Not for tidiness: a corrupt SQLite file usually **opens fine** and even reads its
 schema, then fails on a page read halfway through a task — the crime scene is "task failed with an internal
@@ -343,13 +375,13 @@ stay readable after `close_session`; only deleted ones answer `session_deleted` 
 `agent-bridge sessions purge` deletes: `task_not_found` means the id never existed, `session_deleted` means
 give up and stop retrying.
 
-ACP: `codebuddy-cli`, `ds-harness`, `gemini`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`,
+ACP: `codebuddy-cli`, `ds-harness`, `agy`, `opencode`, `mimo-code`, `kimi-code`, `minimax-code`,
 `grok-cli`, and `trae-cli` declare native ACP and prefer it for tasks/conversations. `ds-harness` is
 automation-only on that channel: it announces `permission` nowhere (tools run without asking, so its
 `executionModes` declares an empty `interactionKinds`) and continues sessions through its own
 `session/resume` rather than the standard `session/load`. `codex` uses the
-`codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); Claude/Qoder
-conversations keep a resident `stream-json` process across turns; the rest stay headless.
+`codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); Claude
+conversations keep a resident `stream-json` process across turns; Qoder uses headless with native `--resume`.
 CodeBuddy prefers an explicit `CODEBUDDY_AUTH_TOKEN`; otherwise the bridge reads the plaintext
 `auth/*.info` from the local CodeBuddyExtension and injects it into the ACP child. If neither exists it
 keeps headless `codebuddy -p` and never starts an unauthenticated ACP child.
@@ -412,7 +444,7 @@ the loopback control plane, which is bound to `127.0.0.1` and never reaches the 
 │   └─ config (~/.agent-…) │  optional: 127.0.0.1 callback   │                        │
 └──────────────────────────┘  (authorization only)           └────────────────────────┘
             │
-            └── spawns ──▶ claude / codex / dsh / gemini / …  (the user's own CLI and credentials)
+            └── spawns ──▶ claude / codex / dsh / agy / …  (the user's own CLI and credentials)
 ```
 
 | Module                  | Responsibility                                                                        |
@@ -465,8 +497,8 @@ Protocol (JSON over one connection):
 
 | Direction         | Messages                                                                |
 | ----------------- | ----------------------------------------------------------------------- |
-| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `artifact_content`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `interaction_url`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `artifact_download_ready`, `artifact_download_chunk`, `artifact_download_result`, `capacity_update`, `pong` |
-| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `get_interaction_url`, `get_artifact`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `artifact_download_start`, `artifact_download_chunk_ack`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
+| bridge → platform | `hello`, `agent_list`, `scan_progress`, `scan_result`, `task_log`, `task_status`, `task_step`, `task_message`, `task_artifact`, `task_snapshot`, `artifact_content`, `session_ack`, `message_ack`, `task_interaction_request`, `task_interaction_result`, `interaction_url`, `artifact_upload_ready`, `artifact_upload_chunk_ack`, `artifact_upload_result`, `artifact_download_ready`, `artifact_download_chunk`, `artifact_download_result`, `artifact_transfer_status`, `capacity_update`, `pong` |
+| platform → bridge | `run_task`, `send_message`, `task_interaction_response`, `get_interaction_url`, `get_artifact`, `artifact_upload_start`, `artifact_upload_chunk`, `artifact_upload_complete`, `artifact_download_start`, `artifact_download_chunk_ack`, `artifact_transfer_status`, `artifact_transfer_abort`, `cancel_task`, `close_session`, `cancel_turn`, `get_task`, `scan`, `ping` |
 
 ### Capability negotiation (`hello.capabilities`)
 
@@ -505,13 +537,26 @@ per agent and reported honestly via `steps: true/false` in `agent_list`:
 
 | Grade | Agents | Behaviour |
 | --- | --- | --- |
-| Structured (`steps: true`) | all 12 agents | Steps parsed from JSONL event streams (6 format families: claude-style ×5, opencode-style ×2, codex / gemini / kimi / dsh / minimax) |
+| Structured (`steps: true`) | all 12 agents | Steps parsed from JSONL event streams (7 format families: claude-style ×5, opencode-style ×2, codex / agy / kimi / dsh / minimax) |
 | Plain text (`steps: false`) | none | Kept for future agents without structured output |
 
 ⚠️ Behaviour change: `task_log` for claude-code / codebuddy-cli / kimi-code / qoder-cli / trae-cli /
 ds-harness / minimax-code switches from plain text to the **stream-json event stream** (richer;
-`task_step` provides the structured view). codex / opencode / mimo-code / grok-cli / gemini were
+`task_step` provides the structured view). codex / opencode / mimo-code / grok-cli / agy were
 already JSONL.
+
+**Rich `toolCall` (optional field)**: steps may carry a normalized tool-call subset —
+`toolCallId` / `name` / `kind` (ACP's `read|edit|delete|move|search|execute|think|fetch|switch_mode|other`)
+/ `title` / `status` / `locations` (paths) / `content` (bounded `text|diff|terminal` blocks, 16 KB per
+block, redacted at the upstream exit). `rawInput` / `rawOutput` are **never** shipped; adapters that
+cannot extract a call reliably omit the field and keep the legacy ones. Sources today: ACP `tool_call`
+updates (native fields) and the claude-style parser family (tool-name → kind mapping + `file_path`/`path`
+locations + `tool_result` output as a terminal block).
+
+**Intermediate agent messages**: assistant text blocks inside headless structured output become canonical
+`task_message` events (`state: "complete"`, one per assistant message, CLI-native `messageId` where the
+CLI provides one) instead of being buried in `task_log`. Thinking blocks stay out; streaming deltas keep
+using the in-memory `partialMessages` channel.
 
 Evolution rule: a new optional field keeps the protocol version; a semantic change or a new required field bumps it.
 
@@ -532,6 +577,23 @@ Constraints: a non-git directory yields an empty diff **without an error**; text
 (default 256 KB) is cut on a **line boundary** with `diffTruncated: true`; untracked files are `git add -N`-ed
 for the duration of the capture and `git reset -q`-ed right after — **nothing is committed, the worktree is
 untouched, and no intent-to-add entry is left behind**.
+
+**Changed files become artifact metadata events (4.9).** When a `captureDiff` task settles, each changed file
+that still exists (and passes the path-safety check below) is emitted as a `task_artifact` event with
+`kind: "output"`, `source: "agent"`, `name`, `mimeType` and `size` (stat metadata only). The content is
+**deliberately not read**: without an adapter-declared artifact event the bridge ships metadata only —
+`sha256` is omitted and `contentUnavailableReason: "no_adapter_artifact_event"` says why. A `get_artifact`
+for such an artifactId answers `artifact_not_found` honestly; credential paths, `..`, absolute paths,
+directories and symlink escapes are not even named.
+
+**Path safety for artifact reads** (applies whenever content is read, now and for future adapter-declared
+artifact events): the read root is the **realpath subtree of the task's own cwd** (`allowed_cwd` only gates
+task launch); after realpath resolution the target must still be inside the root — `..`, absolute paths,
+directories and credential locations (`.ssh`, `.aws`, `.env`, `id_rsa`, …) are refused; the file is opened
+once, sized via `fstat` on that same fd, and read from it while hashing SHA-256 (POSIX `O_NOFOLLOW` where
+available; on Windows the realpath pre-check plus single-fd read is the equivalent). Within the inline cap
+the content ships inline; above it only size/sha256 — large payloads go through the chunked artifact
+transfer, never the message body. The workspace is never scanned.
 
 ### Service identity and scopes (P0-8)
 
@@ -577,6 +639,12 @@ v1. **But if a message carries a token, it must verify** — there is no "presen
 | `device_busy` | Concurrency limit and queue both full |
 | `timeout` / `cancelled` | Timed out (including while queued) / cancelled |
 | `agent_error` | Non-zero CLI exit, or the process failed to start |
+| `interaction_delivery_unknown` | Adapter delivery could not be confirmed; the interaction is failed, the turn is terminated, and retry is forbidden |
+| `interaction_invalid_response` / `interaction_response_conflict` | Response failed validation / idempotency-key or resolved-response conflict |
+| `interaction_timeout` | A pending interaction expired and the offered options did not include `reject_once`: the request was completed with a cancelled outcome and the turn ended |
+| `interaction_denied` | A residual permission request under `full` (no `reject_once` offered): fail-closed — cancelled outcome, turn ended, never escalated to a human |
+| `agent_protocol_error` | The agent ended a turn with an unresolved interaction or violated the execution protocol |
+| `idempotency_conflict` | The same idempotency key was reused with a different request fingerprint |
 | `session_not_continuable` | The tool has no way to continue a session (`executionModes[].continuation` is `single-turn`), so `sessionMode = conversation` is refused at creation |
 | `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | Service-token failures |
 | `protocol_incompatible` / `internal` | Version mismatch / bridge-side fault |
@@ -662,6 +730,122 @@ Errors are RFC 9457 `application/problem+json` carrying the same `code` enum as 
 client branches on `code` instead of matching prose. `Idempotency-Key` makes a retried `POST /v1/tasks` return
 the same `taskId` instead of running twice. Contract: `contracts/openapi.control-plane.yaml`.
 
+### A2A / ACP gateway (optional, off by default)
+
+A **standard protocol surface** for external orchestrators (A2A clients, ACP editors) instead of each of
+them re-implementing the bridge's private wire. The gateway opens **no extra port**: it mounts on the
+control-plane HTTP server (same loopback bind, tokens, and audit as `/v1/*`) and is a pure **adapter** —
+it reuses `TaskSupervisor / SessionStore / Emitter` and duplicates neither scheduling nor persistence.
+Enable with `[gateway] enabled = true` (or `AGENT_BRIDGE_GATEWAY=1` for a session); when disabled every
+gateway route returns 404. The `a2a` / `acp` sub-flags turn individual surfaces off.
+
+| Method | Path | Scope |
+| --- | --- | --- |
+| GET | `/.well-known/agent-card.json` | — (static description, no task data; capabilities declare only what is implemented) |
+| POST | `/a2a` | per method: reads need `session:read`/`task:read`, send needs `task:create`, cancel needs `task:cancel` |
+| POST | `/acp` | per method: handshake/session `device:read`, prompt `task:create`, cancel `task:cancel`, interaction answers `task:approve`/`task:respond` |
+
+#### A2A surface
+
+- **Version negotiation**: `A2A-Version` header (empty/absent means 0.3 per the spec; `1.0` selects the
+  `TASK_STATE_*` spelling family; anything else gets `-32009`). Both method spellings — `GetTask` and
+  `tasks/get` — are accepted.
+- **`tasks/get` (read-only)**: SQLite snapshot → A2A Task (`history` holds only complete messages;
+  `task_log` never masquerades as a message/artifact — its endpoint is referenced from
+  `Task.metadata.bridge.taskLogEndpoint`; artifacts become file parts pointing at control-plane
+  download endpoints).
+- **`message/send` (create a task)**: `message.parts` (text only) joined into the prompt; **bridge
+  extension fields live in `message.metadata`** — `agentType` (within the managed whitelist) and
+  `cwd` are required, `timeoutMs` optional. The `messageId` doubles as the idempotency key (resending
+  the same id returns the same task). **Returns immediately** — long-running tasks are followed via
+  get/subscribe. Uses the exact same orchestration as `POST /v1/tasks` (one source of truth for
+  concurrency limits, permission policy, and idempotency).
+- **`tasks/cancel`**: same cancellation path as `:cancel` (SIGTERM → 2s → SIGKILL); terminal tasks
+  answer `-32002`.
+- **`tasks/resubscribe` (SSE hole-filling)**: `eventSeq` cursor (`params.metadata.afterEventSeq`,
+  default 0); frame vocabulary `task`/`message`/`status`/`artifact` (each carrying eventSeq) plus
+  `log|step` debug extensions and `done`; terminal tasks answer `-32004` per the spec.
+- **Status mapping**: queued→`SUBMITTED`, running→`WORKING`, waiting_interaction/waiting_user→`INPUT_REQUIRED`,
+  success→`COMPLETED`, failed/timeout→`FAILED` (true cause in `metadata.bridge.statusDetail`),
+  cancelled→`CANCELED`.
+- **Isolation**: cross-tenant / missing tasks uniformly answer JSON-RPC `-32001` (never "exists but not
+  yours").
+
+##### A2A mapping details (6.4 / 6.8)
+
+- **TaskStatusUpdateEvent** ↔ the SSE `status` frames on `tasks/resubscribe`: each carries
+  `state` + `eventSeq`; the **terminal frame closes the stream** (`done`) — there is no `final` field on
+  the Task object itself; finality is expressed by `status.state` reaching a terminal value
+  (`COMPLETED` / `FAILED` / `CANCELED`), per A2A v1.0.1.
+- **Message / Part** ↔ `task_message`: only `state: "complete"` messages become A2A Message history
+  entries (text parts). Streaming **deltas never masquerade as A2A messages** — they are a bridge-internal
+  `partialMessages` concern (snapshot-only); `task_log` is debug output, referenced from
+  `Task.metadata.bridge.taskLogEndpoint`, never a message part.
+- **Artifact** ↔ `task_artifact`: content-bearing artifacts (platform uploads) become **file parts**
+  pointing at the control-plane download endpoint; metadata-only task outputs (no adapter artifact
+  event — see the artifact section above) expose `name/mimeType/size` and are honestly marked
+  unavailable, never fabricating a downloadable part.
+- **Permissions are not an A2A-native capability.** A waiting task surfaces as `INPUT_REQUIRED`, but the
+  approve/respond loop itself only exists on the bridge wire (`task_interaction_request/response`) and on
+  the ACP surface (`session/request_permission` / `elicitation/create`). An A2A client that wants to
+  answer an interaction must use one of those channels; the bridge will not invent A2A extensions for it.
+- **Bridge extension URIs** live under `message.metadata` / `Task.metadata.bridge.*` and are additive:
+
+| Extension | Where | Meaning |
+| --- | --- | --- |
+| `agentType` | `message.metadata` | managed CLI whitelist entry (required) |
+| `cwd` | `message.metadata` | task working directory (required) |
+| `timeoutMs` / `captureDiff` / `permissionMode` | `message.metadata` | optional per-task overrides |
+| `bridge.taskLogEndpoint` | `Task.metadata` | where debug logs live (not a message source) |
+| `bridge.statusDetail` | `Task.metadata` | true cause when a state collapses several bridge statuses |
+| `afterEventSeq` | resubscribe `params.metadata` | hole-filling cursor (eventSeq; absent = full replay) |
+| `idempotentReplay` | send response `Task.metadata` | same `messageId` replayed → same task, no re-run |
+
+#### MCP host (stdio, per-server config)
+
+`[mcp.servers.<name>]` in config.toml starts local stdio MCP servers; the bridge acts as an MCP client
+for `tools/list`, `tools/call` and **elicitation** (`McpElicitationClient`, transport-level tests cover
+the elicitation surface including version-carrying differences — protocol negotiation is isolated in the
+client and never leaks into the bridge wire). **Honest boundary**: elicitation handlers are injected by
+the caller; wiring MCP questions into platform `task_interaction_request` is **not enabled yet** — the
+host and client are ready and tested, and the integration will be declared only when it ships. MCP tool
+calls are never auto-approved by model text.
+
+#### ACP surface (ACP v1 over HTTP, vendor carrying)
+
+ACP v1 has no finalized HTTP transport yet (the Transports RFD is in progress), so this gateway's
+convention is: **requests go over `POST /acp`**, **prompt downstream + interaction requests flow over
+SSE**, and **client answers arrive as response envelopes on another `POST /acp`**.
+
+- **`initialize`**: declares only real capabilities — `loadSession: false` (sessions are not persisted
+  for resumption), text-only prompts, no fs/terminal client capabilities.
+- **`session/new`**: pins `params.cwd` and `params._meta.agentType` (one of the 12 managed CLIs must be
+  chosen explicitly).
+- **`session/prompt` (conversation multi-turn, add-acp-session-memory)**: the first turn creates a
+  bridge conversation session (`run_task` semantics); subsequent turns use `send_message` on the
+  **same session** — CLI-native continuation (resume / ACP session / replay fallback across the
+  12-adapter matrix), so **context lives in the CLI and only the delta travels over the wire**.
+  The response is an SSE stream: `event: prompt` (taskId + first/continue marker) → `event: update`
+  (`session/update` notifications, agent_message_chunk) → `event: request` when an interaction is
+  needed → `event: result` (turn completion: `{stopReason, content}` with `waiting_user → end_turn`;
+  a failed/timed-out turn becomes a JSON-RPC error and the session closes — later prompts are
+  honestly rejected with a `session/new` hint). Idle reaping reuses the conversation `idleTimeoutMs`.
+  After a bridge restart the ACP binding is lost (in-memory) — old sessions never pretend to be
+  continuable.
+- **`session/cancel`**: cancels the active turn (`cancel_turn` orchestration, idempotent
+  operationId); with no active turn it succeeds silently.
+- **Interaction loop**: when a task enters `waiting_interaction`, the prompt stream injects an
+  `event: request` frame (`session/request_permission` or `elicitation/create` — permission uses the
+  standard options; form/auth-url use elicitation with form/url modes). The client answers via
+  `POST /acp` with a response envelope (no method, carrying the gateway-issued id + result); the
+  gateway converts it into `task_interaction_response` and runs the **same** dispatch path as
+  `POST /v1/interactions/{id}:respond` (double-checked permissions).
+- End-to-end proof: `npm run e2e:gateway` (real bridge process + real service token + one real local
+  CLI run, covering A2A send/get/cancel, messageId idempotency, and the ACP prompt/cancel loop;
+  **multi-turn memory is asserted with a real two-round CLI dialogue**. If the CLIs' outbound proxy
+  differs from the system proxy, pass `E2E_PROXY=http://127.0.0.1:<port>`).
+- Full contract: the `a2a-gateway` tag in `contracts/openapi.control-plane.yaml`.
+
 ### Live scan progress and brand icons
 
 Probing 11 CLIs takes a few seconds, so results stream in instead of arriving as one batch: for every adapter
@@ -694,7 +878,7 @@ $ agent-bridge connect https://platform.example.com
   https://platform.example.com/bridge/authorize?code_challenge=…
 device bound: bd_9f1c…  (credentials written to ~/.agent-bridge/config.toml)
 [agent-bridge] connected
-[agent-bridge] reported 11 tools, waiting for tasks…
+[agent-bridge] reported 12 tools, waiting for tasks…
 ```
 
 **Scan without connecting** (useful when filing a support ticket)

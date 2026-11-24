@@ -53,9 +53,19 @@ sidebar:
 | `artifact-inline` | `get_artifact` 可内联内容（超过 1 MB 回 `too_large`，改走分块下载） |
 | `approval-ledger` | 交互里的 `allow_always` 可被记住（仅 `default` 模式 + 指纹命中 + 有到期时间），并可用 `agent-bridge approvals revoke` 撤销 |
 
+## 凭据来源
+
+扫描只检查环境变量、已知凭据文件或适配器登记的 OS keyring 目标是否存在，不读取秘密。
+`credentialSource` 分别为 `env:<NAME>`、`file:<路径>`、`keyring:<target>` 或 `command:<args>`；agy 在 Windows 使用
+`keyring:gemini:antigravity`。Trae 的官方 `login status` 只认退出码且不上报输出；探测命令失败时保持保守状态，
+不影响其他工具扫描。
+
+agy 1.5.9 起声明 `headless` 与 `acp-stdio`，旧版只保留 headless。外部代理可由
+`AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定；Windows 未指定时读取系统代理，避免继承错误宿主代理后访问 Google 502。
+
 ## 受控错误码
 
-23 个，与 AsyncAPI 契约镜像。客户端按 `code` 分支，文案只给人看。
+28 个，与 AsyncAPI 契约镜像。客户端按 `code` 分支，文案只给人看。
 
 | 错误码 | HTTP（RFC 9457） | 含义 |
 | --- | --- | --- |
@@ -77,6 +87,13 @@ sidebar:
 | `tenant_not_supported` | 403 | 带了非默认租户，但控制面尚未租户化读取 |
 | `permission_mode_unsupported` | 400 | 本机/该工具不满足 `full` 运行条件（无映射、缺 `external_sandbox`） |
 | `permission_policy_denied` | 403 | 本机策略不允许该权限组合（`default` 策略下请求 `full`、受管参数模式带自定义 args） |
+| `interaction_delivery_unknown` | 500 | 无法确认 adapter 交付结果；交互永久失败并结束回合，禁止重试 |
+| `interaction_invalid_response` | 400 | 响应校验失败；pending 保留，可用新 responseId 修正 |
+| `interaction_response_conflict` | 409 | 同一幂等键或已结算交互收到不同响应 |
+| `interaction_timeout` | 504 | 单次交互等待到期且 options 未提供 `reject_once`：cancelled outcome 完成请求并结束回合 |
+| `interaction_denied` | 403 | `full` 模式的残余权限请求（无 `reject_once` 可选）：fail closed，取消回合、绝不转交人工 |
+| `agent_protocol_error` | 502 | Agent 在交互未决时结束回合 |
+| `idempotency_conflict` | 409 | 同一幂等键携带不同请求指纹 |
 | `session_deleted` | 410 | taskId 命中 tombstone，内容已随 retention 删除且永不复用 |
 | `session_history_pruned` | 410 | 游标落在已被裁剪的历史区间，取不回完整内容 |
 | `task_not_found` | 404 | taskId 从未存在，或不属于该租户 |
@@ -108,8 +125,8 @@ sidebar:
 全部 12 个工具（2026-10-24 全量实测 + 官方文档核定）都会把子进程的 JSONL 事件
 解析成动态步骤流上行：`task_step { taskId, seq, action, label?, state, ok?, ref?, at }`。
 步骤由模型实时决定，没有预定义总步数 —— 平台渲染「已发生的步骤序列 + 当前步骤」。
-事件格式分 6 族：claude 同构 5 个（claude-code / codebuddy-cli / grok-cli / qoder-cli / trae-cli）、
-opencode 同构 2 个（opencode / mimo-code）、codex / gemini / kimi-code / ds-harness / minimax-code 各自一族。
+事件格式分 7 族：claude 同构 5 个（claude-code / codebuddy-cli / grok-cli / qoder-cli / trae-cli）、
+opencode 同构 2 个（opencode / mimo-code）、codex / agy / kimi-code / ds-harness / minimax-code 各自一族。
 
 ## 服务身份
 

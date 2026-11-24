@@ -63,7 +63,7 @@ sidebar:
 - **校验协议 1.0 身份**：`hello.protocolVersion` 为 `1`；非空 `deviceId` 匹配
   `^bd_(?:[0-9a-f]{32}|[0-9a-f]{12})$`，且必须等于 WS URL query。没有空 ID / Bearer 反查降级；
 - **按 `capabilities` 降级，不要按版本号猜。** 没有 `diff` 就别要 diff，也别渲染 diff 面板；
-- **按 `errorCode` 分支，不要按文案。** 见[协议总览](/agent-bridge/zh-cn/protocol/overview#受控错误码)里的 23 个码；
+- **按 `errorCode` 分支，不要按文案。** 见[协议总览](/agent-bridge/zh-cn/protocol/overview#受控错误码)里的 28 个码；
 - **多轮先看 `executionModes[].continuation`。** `sessionMode: "conversation"` 只对「至少有一种模式能续接」的工具
   成立；`single-turn` 的工具会在**创建时**回 `session_not_continuable`，不要先按成功处理；
 - **半截文本看 `task_snapshot.partialMessages`。** 本轮未定稿的助手文本只在快照里（`pm_<taskId>`，内存态、
@@ -98,7 +98,7 @@ bridge 校验令牌，并在终态 `task_status` 回显 `requestedBy`，让你�
 - [ ] `invalid_device_id`、两类 409、凭证失败与 `authorization_pending` 均返回公开顶层 `code`
 - [ ] `hello.protocolVersion` 为 `1` 且与 URL/hello 的 ID 一致；未知能力能优雅降级
 - [ ] 终态 `task_status` 幂等处理（重连后可能到两次）
-- [ ] 23 个错误码都映射成了人能行动的信息
+- [ ] 28 个错误码都映射成了人能行动的信息
 - [ ] 排队任务按 `phase` 渲染，而不是自造状态值
 - [ ] 开 conversation 前看过 `executionModes[].continuation`，并处理 `session_not_continuable`
 - [ ] 看门狗能收尾长时间无动静的任务
