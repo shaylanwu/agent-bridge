@@ -136,7 +136,9 @@ Kimi Code           -                    not installed
 Credential evidence comes from environment variables, known credential files, or explicitly registered OS
 keyring targets. For agy on Windows, the bridge checks `gemini:antigravity` and reports only
 `credentialSource = "keyring:gemini:antigravity"`; it never reads or uploads the secret. Qoder uses
-`~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`. Trae uses `TRAECLI_PERSONAL_ACCESS_TOKEN` or the exit
+`~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`. opencode accepts either the official
+`~/.local/share/opencode/auth.json` login state or a custom provider apiKey configured in
+`~/.config/opencode/opencode.json`. Trae uses `TRAECLI_PERSONAL_ACCESS_TOKEN` or the exit
 code of the official `traecli login status`; installation directories are not treated as credentials, and status
 output is never reported.
 

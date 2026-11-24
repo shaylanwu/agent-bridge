@@ -184,6 +184,17 @@ describe('凭据探测', () => {
     expect(files.some((p) => p.endsWith('.grok/user-settings.json'))).toBe(false);
   });
 
+  it('opencode 的凭据探测覆盖自定义 provider 配置文件', () => {
+    const def = agentDefOf('opencode');
+    if (!def) throw new Error('缺少 opencode 适配器');
+    const files = def.credential.files.map((p) => p.replace(/\\/g, '/'));
+    // 官方登录态 auth.json + 自定义 provider apiKey 的 opencode.json 两个来源
+    // （2026-11-24 实测：用户在 ~/.config/opencode/opencode.json 配置自定义 key 后 TUI
+    //   正常工作、auth.json 不存在——不探测 config 会把「可用」稳定误报成缺凭据）
+    expect(files.some((p) => p.endsWith('.local/share/opencode/auth.json'))).toBe(true);
+    expect(files.some((p) => p.endsWith('.config/opencode/opencode.json'))).toBe(true);
+  });
+
   it('只有 env 判据且未设置 → missing；毫无判据 → unknown', () => {
     const base = agentDefOf('mimo-code');
     if (!base) throw new Error('缺少 mimo 适配器');

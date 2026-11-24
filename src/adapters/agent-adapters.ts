@@ -247,6 +247,9 @@ export const AGENTS: AgentDef[] = [
       files: [
         join(home(), '.local', 'share', 'opencode', 'auth.json'),
         join(localAppData(), 'opencode', 'auth.json'),
+        // 2026-11-24 实测：自定义 provider apiKey 落在 ~/.config/opencode/opencode.json
+        //（该配置下 TUI 正常可用、auth.json 不存在）——不探测它会把可用工具稳定误报成缺凭据。
+        join(home(), '.config', 'opencode', 'opencode.json'),
       ],
       loginCommand: 'opencode auth login',
     },

@@ -119,7 +119,9 @@ Kimi Code          -                    未装
 
 凭据证据来自环境变量、已知凭据文件或适配器显式登记的 OS keyring 目标。agy 在 Windows 上探测
 `gemini:antigravity`，只上报 `credentialSource = "keyring:gemini:antigravity"`；不会读取或上传秘密。
-Qoder 探测 `~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`；Trae 使用 `TRAECLI_PERSONAL_ACCESS_TOKEN`
+Qoder 探测 `~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`；opencode 认官方登录态
+`~/.local/share/opencode/auth.json`，也认 `~/.config/opencode/opencode.json` 里自定义 provider 的
+apiKey 配置；Trae 使用 `TRAECLI_PERSONAL_ACCESS_TOKEN`
 或官方 `traecli login status` 的退出码，不再把安装目录当成登录凭据，状态命令输出不上报。
 
 agy 的外部请求可用 `AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定代理；未指定时，Windows 自动读取当前用户系统代理。
