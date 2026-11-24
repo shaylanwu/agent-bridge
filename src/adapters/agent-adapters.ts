@@ -345,7 +345,13 @@ export const AGENTS: AgentDef[] = [
     credential: {
       envKey: 'MOONSHOT_API_KEY',
       envs: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
-      files: [join(home(), '.kimi', 'config.json')],
+      // 2026-11-24 实测（kimi 2.3.1，`kimi doctor` / `kimi provider list`）：官方 oauth 凭据落
+      // ~/.kimi-code/credentials/kimi-code.json；自定义 provider（`kimi provider add` 导入）配置在
+      // ~/.kimi-code/config.toml。原探测的 ~/.kimi/config.json 从未存在 = 稳定误报缺凭据。
+      files: [
+        join(home(), '.kimi-code', 'credentials', 'kimi-code.json'),
+        join(home(), '.kimi-code', 'config.toml'),
+      ],
       loginCommand: 'kimi',
     },
   },

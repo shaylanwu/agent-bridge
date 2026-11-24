@@ -195,6 +195,19 @@ describe('凭据探测', () => {
     expect(files.some((p) => p.endsWith('.config/opencode/opencode.json'))).toBe(true);
   });
 
+  it('kimi 的凭据探测指向 kimi-code 真实使用的 ~/.kimi-code 路径', () => {
+    const def = agentDefOf('kimi-code');
+    if (!def) throw new Error('缺少 kimi 适配器');
+    const files = def.credential.files.map((p) => p.replace(/\\/g, '/'));
+    // 2026-11-24 实测（kimi 2.3.1）：`kimi doctor` 报告配置在 ~/.kimi-code/config.toml，
+    // oauth 凭据落 ~/.kimi-code/credentials/kimi-code.json；原探测的 ~/.kimi/config.json
+    // 在本机从未存在 —— 探测不存在的路径 = 稳定误报缺凭据。
+    expect(files.some((p) => p.endsWith('.kimi-code/credentials/kimi-code.json'))).toBe(true);
+    expect(files.some((p) => p.endsWith('.kimi-code/config.toml'))).toBe(true);
+    // ⛔ 未证实的遗留路径：kimi-code 从不创建它，探测等于误报
+    expect(files.some((p) => p.endsWith('.kimi/config.json'))).toBe(false);
+  });
+
   it('只有 env 判据且未设置 → missing；毫无判据 → unknown', () => {
     const base = agentDefOf('mimo-code');
     if (!base) throw new Error('缺少 mimo 适配器');
