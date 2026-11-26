@@ -240,7 +240,12 @@ rl.on('line', (line) => {
 `);
     const def = agentDefOf('codebuddy-cli')!;
     const originalBin = def.bin;
-    def.bin = process.execPath;
+    // 安装闸门用 resolveBin(def.bin) 判定：Windows 上是 `where <name>`，Linux/macOS 是
+    // `command -v`。给它一个绝对路径（process.execPath）在本机没事，但在 Windows CI 上
+    // 解析不出来 → 任务在握手前就以 tool_not_installed 结束（2026-11-27 CI 实测）。
+    // 用 PATH 上必然存在的 `node`：本用例真正跑的 ACP 进程由 acpSpec.command 指定，
+    // 与 def.bin 无关，这里只需要闸门放行。
+    def.bin = 'node';
     const supervisor = new TaskSupervisor(1);
     const store = new SessionStore(join(dir, 'waiting.db'));
     storeForCleanup = store;
