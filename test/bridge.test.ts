@@ -208,6 +208,18 @@ describe('凭据探测', () => {
     expect(files.some((p) => p.endsWith('.kimi/config.json'))).toBe(false);
   });
 
+  it('minimax 的凭据探测指向 mcode 真实使用的 ~/.minimax 路径', () => {
+    const def = agentDefOf('minimax-code');
+    if (!def) throw new Error('缺少 minimax 适配器');
+    const files = def.credential.files.map((p) => p.replace(/\\/g, '/'));
+    // 2026-11-26 实测（mcode 0.6.13）：官方 oauth 凭据落
+    // ~/.minimax/auth/prod/cn/mcode-public/auth.json（登录后活跃刷新）；自定义 provider
+    // （`mcode provider add`）配置在 ~/.minimax/config.yaml。此前只认 env，
+    // 已登录机器会被稳定误报成缺凭据（opencode/kimi 同类假阴性）。
+    expect(files.some((p) => p.endsWith('.minimax/auth/prod/cn/mcode-public/auth.json'))).toBe(true);
+    expect(files.some((p) => p.endsWith('.minimax/config.yaml'))).toBe(true);
+  });
+
   it('只有 env 判据且未设置 → missing；毫无判据 → unknown', () => {
     const base = agentDefOf('mimo-code');
     if (!base) throw new Error('缺少 mimo 适配器');

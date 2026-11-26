@@ -122,7 +122,8 @@ Kimi Code          -                    未装
 Qoder 探测 `~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`；opencode 认官方登录态
 `~/.local/share/opencode/auth.json`，也认 `~/.config/opencode/opencode.json` 里自定义 provider 的
 apiKey 配置；kimi 探测 oauth 登录态 `~/.kimi-code/credentials/kimi-code.json` 与自定义 provider
-配置 `~/.kimi-code/config.toml`；Trae 使用 `TRAECLI_PERSONAL_ACCESS_TOKEN`
+配置 `~/.kimi-code/config.toml`；minimax 探测 mcode 的 oauth 登录态
+`~/.minimax/auth/prod/cn/mcode-public/auth.json` 与 provider 配置 `~/.minimax/config.yaml`；Trae 使用 `TRAECLI_PERSONAL_ACCESS_TOKEN`
 或官方 `traecli login status` 的退出码，不再把安装目录当成登录凭据，状态命令输出不上报。
 
 agy 的外部请求可用 `AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定代理；未指定时，Windows 自动读取当前用户系统代理。

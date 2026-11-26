@@ -139,7 +139,8 @@ keyring targets. For agy on Windows, the bridge checks `gemini:antigravity` and 
 `~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`. opencode accepts either the official
 `~/.local/share/opencode/auth.json` login state or a custom provider apiKey configured in
 `~/.config/opencode/opencode.json`. kimi probes the oauth state `~/.kimi-code/credentials/kimi-code.json`
-and the custom-provider config `~/.kimi-code/config.toml`. Trae uses `TRAECLI_PERSONAL_ACCESS_TOKEN` or the exit
+and the custom-provider config `~/.kimi-code/config.toml`. minimax probes mcode's oauth state
+`~/.minimax/auth/prod/cn/mcode-public/auth.json` and the provider config `~/.minimax/config.yaml`. Trae uses `TRAECLI_PERSONAL_ACCESS_TOKEN` or the exit
 code of the official `traecli login status`; installation directories are not treated as credentials, and status
 output is never reported.
 

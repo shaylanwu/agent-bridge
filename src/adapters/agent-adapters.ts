@@ -368,7 +368,18 @@ export const AGENTS: AgentDef[] = [
     fullArgs: ['--permission', 'full'],
     steps: 'mcode-json',
     acp: { command: 'mcode', args: ['acp'] },
-    credential: { envs: ['MINIMAX_API_KEY'], files: [], loginCommand: 'mcode' },
+    credential: {
+      envs: ['MINIMAX_API_KEY'],
+      // 2026-11-26 实测（mcode 0.6.13）：官方 oauth 凭据落
+      // ~/.minimax/auth/prod/cn/mcode-public/auth.json（登录后活跃刷新）；自定义 provider
+      // （`mcode provider add`）配置在 ~/.minimax/config.yaml。此前 files 为空只认 env，
+      // 已登录/已配 provider 的机器会被稳定误报成缺凭据。
+      files: [
+        join(home(), '.minimax', 'auth', 'prod', 'cn', 'mcode-public', 'auth.json'),
+        join(home(), '.minimax', 'config.yaml'),
+      ],
+      loginCommand: 'mcode',
+    },
   },
   {
     kind: 'trae-cli',
