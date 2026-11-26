@@ -279,9 +279,19 @@ rl.on('line', (line) => {
           });
         },
       });
-      // 这里等的是**真实子进程**跑完 ACP 握手并发出交互请求；vi.waitFor 默认只有 1s，
-      // 在跑满 66 个测试文件的 Windows CI runner 上会假失败（2026-11-27 实测 30s 总时长里超时）。
-      await vi.waitFor(() => expect(interactionId).not.toBe(''), { timeout: 15_000, interval: 50 });
+      // 这里等的是**真实子进程**跑完 ACP 握手并发出交互请求。超时不要只报 "expected '' not to be ''"
+      // ——那看不出是「进程没起来」「握手失败」还是「交互没投递」，直接把最近状态带出来。
+      await vi.waitFor(
+        () => {
+          if (!interactionId) {
+            const last = statuses.at(-1);
+            throw new Error(
+              `15s 内没有收到 ACP 交互请求；最近状态=${JSON.stringify(last ?? null)}；时间线=${timeline.join(',') || '(空)'}`,
+            );
+          }
+        },
+        { timeout: 15_000, interval: 50 },
+      );
       expect(supervisor.runningCount).toBe(1);
       expect(statuses.at(-1)?.info).toMatchObject({ phase: 'waiting_interaction', interactionId });
       const replay: TaskFinishInfo[] = [];
