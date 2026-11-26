@@ -402,6 +402,10 @@ export const AGENTS: AgentDef[] = [
     credential: {
       envs: ['TRAECLI_PERSONAL_ACCESS_TOKEN'],
       files: [],
+      // 2026-11-27 实测（0.121.3）：本版本**没有 `login` 子命令**（`traecli login` 整体落回
+      // 顶层 help），认证来自 OS keyring（由 Trae IDE 的团队/企业登录写入）或本 env 的 PAT；
+      // 未登录时模型子系统整体不可用（启动即拉云端模型列表失败）。statusCommand 对缺该子命令
+      // 的版本自然返回非零 → 诚实报缺凭据，不会误报 ready；未来版本补回 login 即自动生效。
       statusCommand: { args: ['login', 'status'], timeoutMs: 3_000 },
       loginCommand: 'traecli',
     },

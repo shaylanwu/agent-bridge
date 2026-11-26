@@ -124,7 +124,9 @@ Qoder 探测 `~/.qoder/.auth/user` / `QODER_PERSONAL_ACCESS_TOKEN`；opencode �
 apiKey 配置；kimi 探测 oauth 登录态 `~/.kimi-code/credentials/kimi-code.json` 与自定义 provider
 配置 `~/.kimi-code/config.toml`；minimax 探测 mcode 的 oauth 登录态
 `~/.minimax/auth/prod/cn/mcode-public/auth.json` 与 provider 配置 `~/.minimax/config.yaml`；Trae 使用 `TRAECLI_PERSONAL_ACCESS_TOKEN`
-或官方 `traecli login status` 的退出码，不再把安装目录当成登录凭据，状态命令输出不上报。
+或官方 `traecli login status` 的退出码，不再把安装目录当成登录凭据，状态命令输出不上报。注意：trae-cli 0.121.3
+不含 `login` 子命令——认证走 Trae IDE 团队/企业登录写入的 OS keyring，或上面的 PAT 环境变量；两者都没有时任何
+模型任务都无法运行。
 
 agy 的外部请求可用 `AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定代理；未指定时，Windows 自动读取当前用户系统代理。
 这避免 WorkBuddy 进程代理与系统代理不一致导致 Google API 502；不会把本机端口写死进代码。agy 1.5.9 起

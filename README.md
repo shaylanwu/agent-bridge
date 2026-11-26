@@ -142,7 +142,8 @@ keyring targets. For agy on Windows, the bridge checks `gemini:antigravity` and 
 and the custom-provider config `~/.kimi-code/config.toml`. minimax probes mcode's oauth state
 `~/.minimax/auth/prod/cn/mcode-public/auth.json` and the provider config `~/.minimax/config.yaml`. Trae uses `TRAECLI_PERSONAL_ACCESS_TOKEN` or the exit
 code of the official `traecli login status`; installation directories are not treated as credentials, and status
-output is never reported.
+output is never reported. Note: trae-cli 0.121.3 ships no `login` subcommand — it authenticates through the OS
+keyring written by the Trae IDE team/enterprise sign-in, or the PAT env above; without either, no model task can run.
 
 For agy's external requests, set `AGENT_BRIDGE_EXTERNAL_PROXY` explicitly or let Windows read the current user's
 system proxy. This avoids Google API 502s when the WorkBuddy process proxy differs from the system proxy, without
