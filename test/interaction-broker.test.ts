@@ -279,7 +279,9 @@ rl.on('line', (line) => {
           });
         },
       });
-      await vi.waitFor(() => expect(interactionId).not.toBe(''));
+      // 这里等的是**真实子进程**跑完 ACP 握手并发出交互请求；vi.waitFor 默认只有 1s，
+      // 在跑满 66 个测试文件的 Windows CI runner 上会假失败（2026-11-27 实测 30s 总时长里超时）。
+      await vi.waitFor(() => expect(interactionId).not.toBe(''), { timeout: 15_000, interval: 50 });
       expect(supervisor.runningCount).toBe(1);
       expect(statuses.at(-1)?.info).toMatchObject({ phase: 'waiting_interaction', interactionId });
       const replay: TaskFinishInfo[] = [];
