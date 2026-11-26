@@ -101,7 +101,11 @@
 - [x] 8.1 `npm pack --dry-run` 产物不含 `site/` 与 `contracts/`（实测 52 文件，两者均为 0）
 - [x] 8.2 主包 `dependencies` 仍只有 `ws` + `smol-toml`
 - [x] 8.3 站点构建失败不影响 `npm run gate`（实测 gate 全绿）
-- [ ] 8.4 打一个 `feat:` 验证全链路：版本号 / CHANGELOG / tag / Release / 站点历史页自动更新
+- [x] 8.4 打一个 `feat:` 验证全链路：版本号 / CHANGELOG / tag / Release / 站点历史页自动更新
+      —— 2026-11-27 实发 **1.0.0**（`feat(ci)!` 触发 major）：npm `latest=1.0.0`（engines `>=24 <25`）、
+      tag `v1.0.0`、GitHub Release、CHANGELOG 首段 `## [1.0.0]`、线上 `/zh-cn/changelog/` 与
+      `/en/changelog/` 均出现 1.0.0；ci ×3 平台 + release + site 全绿。
+      顺带修掉三处**长期存在**的 CI 假红（dist 未构建、EISDIR 平台差异、`where` 不吃绝对路径）。
       （2026-10-27 核实：本机无 `GITHUB_TOKEN` / `GH_TOKEN`，且该验证必须 push 到 `main` 触发 `release.yml`，
       会真实发布 npm 与 GitHub Release。**移交 1.0 正式发布时执行**，不在本地代跑。）
 
