@@ -301,7 +301,9 @@ describe('startBridge 失败恢复与并发', { timeout: 30_000 }, () => {
       await mkdir(configFile);
       return authResult(context);
     });
-    await expect(start(PLATFORM)).rejects.toThrow(/配置|写入|发布|rename|EEXIST|EPERM/i);
+    // 用「把 config 路径建成目录」来制造保存失败：Windows 上原子替换报 EPERM/EEXIST，
+    // Linux 上报 EISDIR —— 三种都是同一条失败路径，断言放宽到平台差异而不是只认 Windows。
+    await expect(start(PLATFORM)).rejects.toThrow(/配置|写入|发布|rename|EEXIST|EPERM|EISDIR/i);
     const identity = await readFile(identityFile, 'utf8');
     expect(createSessionMock).not.toHaveBeenCalled();
     await rm(configFile, { recursive: true });

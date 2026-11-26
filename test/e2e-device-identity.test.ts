@@ -1,14 +1,17 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from 'smol-toml';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+const TSC = fileURLToPath(new URL('../node_modules/typescript/bin/tsc', import.meta.url));
+const TSCONFIG = fileURLToPath(new URL('../tsconfig.json', import.meta.url));
 const BROWSER_PRELOAD = fileURLToPath(new URL('./fixtures/device-identity-browser-preload.cjs', import.meta.url));
 const TEST_TIMEOUT = 45_000;
 const WAIT_TIMEOUT = 15_000;
@@ -281,6 +284,17 @@ function expectCommonAuthFields(body: JsonObject, deviceId: string): void {
 function expectNoPseudoSecretsInErrors(child: CliProcess): void {
   expect(child.stderr).not.toMatch(/fake-(?:pkce|device)-(?:token|refresh)-\d+/);
 }
+
+/**
+ * 本文件跑的是**真实 CLI 进程**（`dist/cli.js`），但 `npm test` 在 CI 与本地门禁里都排在
+ * `npm run build` 之前 —— 干净检出时 dist 不存在，4 个用例会齐齐挂在
+ * `Cannot find module …/dist/cli.js` 上，看起来像是身份逻辑坏了（2026-11-27 CI 实测）。
+ * 缺产物就在这里补一次构建，让用例与调用顺序无关。
+ */
+beforeAll(() => {
+  if (existsSync(CLI)) return;
+  execFileSync(process.execPath, [TSC, '-p', TSCONFIG], { stdio: 'inherit' });
+}, 240_000);
 
 describe('真实 CLI 稳定设备身份端到端', () => {
   it('首次 PKCE、重启复用、logout 后设备码 pending 重绑始终同 ID', async () => {
