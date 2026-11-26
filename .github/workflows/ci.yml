@@ -14,7 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: ['20', '22']
+        # 与 package.json engines（>=24 <25）对齐：更低的版本不被支持，
+        # 跑它们只会得到「本地绿、CI 红」的假信号。
+        node: ['24']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
