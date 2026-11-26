@@ -818,9 +818,10 @@ calls are never auto-approved by model text.
 
 #### ACP surface (ACP v1 over HTTP, vendor carrying)
 
-ACP v1 has no finalized HTTP transport yet (the Transports RFD is in progress), so this gateway's
-convention is: **requests go over `POST /acp`**, **prompt downstream + interaction requests flow over
-SSE**, and **client answers arrive as response envelopes on another `POST /acp`**.
+ACP v1 still has no finalized HTTP transport upstream, but **this gateway's side is frozen and treated as
+an external contract** (decided 2026-11-22: frame formats will not follow upstream RFD changes):
+**requests go over `POST /acp`**, **prompt downstream + interaction requests flow over SSE**, and
+**client answers arrive as response envelopes on another `POST /acp`**.
 
 - **`initialize`**: declares only real capabilities — `loadSession: false` (sessions are not persisted
   for resumption), text-only prompts, no fs/terminal client capabilities.

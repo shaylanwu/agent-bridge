@@ -1,5 +1,5 @@
 /**
- * 本地配置：`~/.agent-bridge/config.toml`（Windows 为 `%APPDATA%\agent-bridge\config.toml`）
+ * 本地配置：`~/.agent-bridge/config.toml`（Windows 为 `%APPDATA%\.agent-bridge\config.toml`）
  *
  * 安全：文件权限 0600（仅当前用户可读写）；终端输出**永不打印** device_token 明文，
  * 只显示尾号与设备 id。

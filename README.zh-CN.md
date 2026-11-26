@@ -661,11 +661,6 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | GET | `/v1/tasks/{id}/steps` | `task:read`（步骤时间线 + 最终回答） |
 | GET | `/v1/tasks/{id}/file?path=` | `task:read`（产物文件预览：锁任务 cwd + allowed_cwd，≤512KB） |
 | GET | `/v1/tasks/{id}/diff` | `task:read`（只取产物，不重跑任务） |
-| GET | `/v1/tasks` | `task:read`（游标分页） |
-| GET | `/v1/tasks/{id}` | `task:read` |
-| POST | `/v1/tasks/{id}:cancel` | `task:cancel`（幂等） |
-| GET | `/v1/tasks/{id}/events` | `task:read`（SSE：日志 + 状态） |
-| GET | `/v1/tasks/{id}/diff` | `task:read`（只取产物，不重跑任务） |
 
 ```bash
 agent-bridge services issue --label=vscode --scopes=task:create,task:read
@@ -747,7 +742,8 @@ elicitation 的 handler 由调用方注入；MCP 问题接入平台 `task_intera
 
 #### ACP 表面（ACP v1 over HTTP，vendor 承载）
 
-ACP v1 的 HTTP 承载尚未定稿（Transports RFD 进行中），本网关的约定：**请求走 `POST /acp`**、
+ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口径已经定死、按对外契约对待**
+（2026-11-22 决定：不随上游 RFD 变动调整帧格式）：**请求走 `POST /acp`**、
 **prompt 下行与交互请求走 SSE**、**客户端应答走另一条 `POST /acp` 的响应报文**。
 
 - **`initialize`**：只声明真实能力——`loadSession: false`（会话不持久续接）、prompt 只收
