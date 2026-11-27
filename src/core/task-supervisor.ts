@@ -25,7 +25,7 @@ import {
   type AcpAgentSpec,
   type AcpFormResponse,
 } from '../adapters/acp-codebuddy.js';
-import { runCodexPrompt } from '../adapters/codex-app-server.js';
+import { codexNoticeText, runCodexPrompt } from '../adapters/codex-app-server.js';
 import { runClaudeStreamPrompt } from '../adapters/claude-stream.js';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
@@ -200,6 +200,8 @@ export const KILL_GRACE_MS = 2000;
 export const DEFAULT_MAX_TASKS = 30;
 /** 默认队列上限：再长的排队对调用方也没意义（2026-10-24 由 32 调整为 60） */
 export const DEFAULT_MAX_QUEUED = 60;
+/** 单个任务最多上行多少条 codex 非内容通知（去重后）；重连风暴时防刷屏 */
+const CODEX_NOTICE_LIMIT = 40;
 
 interface Entry {
   req: RunTaskRequest;
@@ -234,6 +236,8 @@ interface Entry {
   /** waiting 时当前交互；只保存 requestId，不保存响应内容。 */
   interactionId?: string;
   codexSteer?: (text: string) => Promise<void>;
+  /** codex 非内容型通知（error/warning）已上行的去重键；有界，防重连风暴刷屏 */
+  codexNotices?: Set<string>;
   timer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
   resolve: (s: TaskStatus) => void;
@@ -1043,6 +1047,16 @@ export class TaskSupervisor {
     if (entry.state === 'settled') return;
     const method = String(notification['method'] ?? '');
     const params = (notification['params'] ?? {}) as Record<string, unknown>;
+    // 非内容型通知（重连/回退/配置告警）必须上行：静默是「挂死」误判的温床
+    const notice = codexNoticeText(notification);
+    if (notice !== undefined) {
+      const key = notice.slice(0, 160);
+      const seen = (entry.codexNotices ??= new Set<string>());
+      if (seen.has(key) || seen.size >= CODEX_NOTICE_LIMIT) return;
+      seen.add(key);
+      entry.hooks.onLog('stderr', `[codex] ${notice}${notice.endsWith('\n') ? '' : '\n'}`);
+      return;
+    }
     if (method === 'item/agentMessage/delta') {
       const delta = codexDeltaText(notification);
       if (delta !== undefined) {

@@ -11,11 +11,11 @@
 - [x] 1.5 `turnDone` 创建即挂空 catch：握手期失败不再产生未处理拒绝（Node 默认会终止进程）
 - [x] 1.6 单测：`test/proxy-env.test.ts` 4 例 / `test/codex-app-server.test.ts` 5 例 全绿（含 stderr 旁路与无订阅方不崩）
 
-## 2. 可观测性（高风险文件，需人工审批；本轮未实施）
+## 2. 可观测性（高风险文件，已获人工批准后实施）
 
-- [ ] 2.1 ~~`launchAppServer` 传 env~~ 不需要：适配器缺省 `codexChildEnv()` 已覆盖 app-server 通道，supervisor 无需改动
-- [ ] 2.2 `src/core/task-supervisor.ts` `onCodexUpdate`：`error`（含 `willRetry`）/`warning` → `hooks.onLog('stderr', …)`，同 `code` 去重（**待审批**）
-- [ ] 2.3 单测：mock `runCodexPrompt` 注入 error 通知，断言产生了 stderr 日志且只出现一次
+- [x] 2.1 ~~`launchAppServer` 传 env~~ 不需要：适配器缺省 `codexChildEnv()` 已覆盖 app-server 通道，supervisor 无需改动
+- [x] 2.2 `onCodexUpdate`：`codexNoticeText`（适配器侧纯函数）识别的 `error`(含 `willRetry`)/`warning`/`configWarning` → `hooks.onLog('stderr', '[codex] …')`；按前 160 字符去重，每任务上限 40 条
+- [x] 2.3 单测：`test/supervisor-codex-notices.test.ts` 2 例——同一重连通知只上行一次、warning 原文上行、delta 不受影响（走真实 supervisor 接线，只 mock `runCodexPrompt`）
 
 ## 3. 验证与取证
 

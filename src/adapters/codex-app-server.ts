@@ -74,6 +74,30 @@ export function codexChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pro
   return externalProxyEnv(withoutHostEnv(base));
 }
 
+/**
+ * 把 codex 的「非内容型」通知压成一行给人看的文本（`error` / `warning` / `configWarning`）。
+ *
+ * 这些通知不承载对话内容，却常常是**唯一能解释「回合为什么不动」**的信息：
+ * 2026-11-27 复盘到的 113s 静默就是 `error` 里的一串 `Reconnecting... n/5`。返回 undefined
+ * 表示这条通知不该上行。
+ */
+export function codexNoticeText(notification: Record<string, unknown>): string | undefined {
+  const method = String(notification['method'] ?? '');
+  const params = asObject(notification['params']);
+  if (method === 'warning' || method === 'configWarning') {
+    const text = params['message'] ?? params['summary'];
+    return typeof text === 'string' && text.trim() ? text.trim() : undefined;
+  }
+  if (method !== 'error') return undefined;
+  const error = asObject(params['error']);
+  const message =
+    typeof error['message'] === 'string' ? error['message'] : Object.keys(error).length ? JSON.stringify(error) : '';
+  const detail = typeof params['additionalDetails'] === 'string' ? params['additionalDetails'] : '';
+  const suffix = params['willRetry'] === true ? '［将自动重试］' : '';
+  const body = `${message}${detail ? `（${detail}）` : ''}`.trim();
+  return body || suffix ? `${body}${suffix}`.trim() : undefined;
+}
+
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;

@@ -68,9 +68,11 @@
    挂一个空 `catch` 标记已处理，后续 `await turnDone` 仍正常抛错。
 2. **codex 适配器声明代理偏好**（`src/adapters/agent-adapters.ts`）
    `preferSystemProxy: true`：headless（含 `full`）通道同步生效，`AGENT_BRIDGE_EXTERNAL_PROXY` 优先。
-3. **`error` / `warning` 通知不再被吞**（`src/core/task-supervisor.ts`，**高风险文件，需人工审批**）
-   `onCodexUpdate` 增一条分支：`error`（含 `willRetry`）与 `warning` 转 `hooks.onLog('stderr', …)`，
-   内容带 `message` 与重试序号；同类通知按 `code` 去重，重连期间最多每条一次，避免刷屏。
+3. **`error` / `warning` 通知不再被吞**（`src/core/task-supervisor.ts`，**高风险文件，已获人工批准**）
+   `onCodexUpdate` 增一条分支：`error`（含 `willRetry`）、`warning`、`configWarning` 转
+   `hooks.onLog('stderr', '[codex] …')`，内容带 `message` 与 `additionalDetails`；
+   格式压成一行由适配器侧的纯函数 `codexNoticeText` 负责（便于单测），supervisor 只做去重
+   （前 160 字符为键，单任务上限 40 条），避免重连风暴刷屏。
 4. **代理关闭逃生口**（`src/infra/proxy-env.ts`）
    `AGENT_BRIDGE_EXTERNAL_PROXY` 显式设为 `off` / `none` 时**不注入任何代理**。没有这个开关，
    系统代理配错或代理不可用的用户就只能改注册表才能让 codex 直连。
