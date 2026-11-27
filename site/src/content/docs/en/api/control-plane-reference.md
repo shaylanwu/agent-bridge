@@ -910,6 +910,7 @@ permission 交互需要 `task:approve`；form / auth-url 需要 `task:respond`�
 | `permissionMode` | `default` \| `full` |  | 请求的权限模式。本机 `permission_policy` 同样适用（受管参数模式不会被本地通道绕过）： 不满足时返回 `permission_policy_denied` / `permission_mode_unsupported`，不会降级执行。 |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
+| `allowInteractive` | `boolean` |  | 本任务是否申请交互（权限/表单），等价 WS `run_task.allowInteractive`。 只接受布尔（字符串/数字 400）。生效还须本机以 `--interaction-enabled` 启动； 不满足时按非交互执行，CLI 的权限申请会被本机直接拒绝（不伪造选项、不阻塞等待）。 交互请求可经 `GET /v1/interactions` 查看、`POST /v1/interactions/{id}:respond` 应答。 |
 
 
 **Example**

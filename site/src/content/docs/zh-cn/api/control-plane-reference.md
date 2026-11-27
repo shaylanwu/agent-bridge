@@ -902,6 +902,7 @@ description: 可选的本地回环控制面全部端点 —— 由 OpenAPI 契�
 | `permissionMode` | `default` \| `full` |  |  |
 | `requestedBy` | `string` |  |  |
 | `purpose` | `string` |  |  |
+| `allowInteractive` | `boolean` |  |  |
 
 
 **示例**
