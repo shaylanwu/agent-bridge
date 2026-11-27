@@ -401,10 +401,17 @@ async function main() {
       await sleep(3000);
     }
   const history = Array.isArray(final?.history) ? final.history : [];
+  // 失败时把任务自带的错误正文带出来：只看 state=FAILED 无法区分「适配器缺陷」与
+  // 「上游订阅/登录态问题」，而后者不该被当成网关回归。
+  const finalText = (final?.status?.message?.parts ?? [])
+    .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 160);
   record(
     'A2A GetTask：任务到达终态（COMPLETED + history 含 agent 消息）',
     final?.status?.state === 'TASK_STATE_COMPLETED' && history.length > 0,
-    `state=${final?.status?.state ?? '-'}, history=${history.length}`,
+    `state=${final?.status?.state ?? '-'}, history=${history.length}${finalText ? `, 任务消息=${JSON.stringify(finalText)}` : ''}`,
   );
 
   // 7. A2A CancelTask：再发一个任务立即取消（真 SIGTERM）
@@ -488,10 +495,13 @@ async function main() {
   const acpEvents1 = await promptTurn('Remember the codeword BANANA42. Reply with exactly: OK', 12);
   const result1 = acpEvents1.find((e) => e.event === 'result');
   const firstTaskId = acpEvents1.find((e) => e.event === 'prompt')?.data?.taskId;
+  // 失败轮次以 `result` 帧的 error（网关会话终态）出现，不给出这段就只能看到 content=""
+  const acpErr = (frame) =>
+    frame?.data?.error?.message ? `, error=${JSON.stringify(String(frame.data.error.message).slice(0, 180))}` : '';
   record(
     'ACP prompt 第一轮：SSE 流到终帧（end_turn）',
     result1?.data?.result?.stopReason === 'end_turn',
-    `content=${JSON.stringify(String(result1?.data?.result?.content ?? '').slice(0, 24))}`,
+    `content=${JSON.stringify(String(result1?.data?.result?.content ?? '').slice(0, 24))}${acpErr(result1)}`,
   );
   // 第二轮：问暗号（同一 bridge 会话续接，token 只传增量——conversation 原生续接）
   const acpEvents2 = await promptTurn('What was the codeword I told you? Reply with exactly the codeword.', 13);
@@ -506,7 +516,7 @@ async function main() {
   record(
     'ACP 多轮记忆：第二轮回答引用第一轮内容（含 BANANA42）',
     result2?.data?.result?.stopReason === 'end_turn' && /BANANA42/i.test(content2),
-    `content=${JSON.stringify(content2.slice(0, 40))}`,
+    `content=${JSON.stringify(content2.slice(0, 40))}${acpErr(result2)}`,
   );
   const updateFrames = acpEvents2.filter((e) => e.event === 'update');
   record('ACP update 帧（agent_message_chunk）', updateFrames.length > 0, `n=${updateFrames.length}`);
