@@ -75,6 +75,8 @@ const record = (name, ok, detail = '') => {
 const PREFERRED_AGENTS = ['codex', 'kimi-code', 'minimax-code', 'agy', 'opencode', 'claude-code'];
 /** 环境未就绪时的跳过原因（非空表示本轮没验证任何网关行为） */
 let skipReason = '';
+/** 交互段没被触发的原因（非空表示整体通过但交互闭环未被验证） */
+let interactionSkipped = '';
 
 function agentPreference() {
   const kinds = AGENTS.map((d) => d.kind);
@@ -183,8 +185,12 @@ function call(path, { method = 'GET', body, headers = {} } = {}) {
   });
 }
 
-/** SSE 收集：until 满足或流结束时 resolve（POST + text/event-stream；可带鉴权头） */
-function collectSse(path, body, until, { headers = {}, timeoutMs = 60_000 } = {}) {
+/** SSE 收集：until 满足或流结束时 resolve（POST + text/event-stream；可带鉴权头）
+ *
+ * `onEvent` 让调用方**边读边答**：ACP 的交互请求必须由另一条 `POST /acp` 的响应报文应答，
+ * 若是等流结束再处理，就永远等不到（请求帧不会自己消失）。
+ */
+function collectSse(path, body, until, { headers = {}, timeoutMs = 60_000, onEvent } = {}) {
   return new Promise((resolve, reject) => {
     const events = [];
     const payload = JSON.stringify(body);
@@ -218,10 +224,20 @@ function collectSse(path, body, until, { headers = {}, timeoutMs = 60_000 } = {}
             const ev = /^event: (.+)$/m.exec(frame)?.[1] ?? '';
             const raw = /^data: (.+)$/m.exec(frame)?.[1];
             if (raw !== undefined) {
+              let data;
               try {
-                events.push({ event: ev, data: JSON.parse(raw) });
+                data = JSON.parse(raw);
               } catch {
-                events.push({ event: ev, data: raw });
+                data = raw;
+              }
+              const evt = { event: ev, data };
+              events.push(evt);
+              if (onEvent) {
+                try {
+                  onEvent(evt, events);
+                } catch (error) {
+                  console.log(`  ⚠️  onEvent 处理失败：${error.message}`);
+                }
               }
             }
           }
@@ -238,7 +254,7 @@ function collectSse(path, body, until, { headers = {}, timeoutMs = 60_000 } = {}
     req.end();
     const timer = setTimeout(() => {
       req.destroy();
-      reject(new Error(`SSE 超时（已收 ${events.length} 帧）`));
+      reject(new Error(`SSE 超时（已收 ${events.length} 帧：${events.map((e) => e.event).join(',') || '无'}）`));
     }, timeoutMs);
     timer.unref?.();
   });
@@ -257,6 +273,7 @@ function finish(code) {
   } else {
     console.log(`\n${failed.length === 0 ? '✅ 全部通过' : `⛔ ${failed.length} 项失败`}`);
   }
+  if (interactionSkipped) console.log(`ℹ️  交互闭环本轮未验证：${interactionSkipped}`);
   try {
     bridge?.kill();
   } catch {
@@ -295,6 +312,108 @@ const bridgeEnv = (extra = {}) => {
   }
   return env;
 };
+
+/**
+ * 交互闭环段（add-interaction-optin）：会话级 `_meta.allowInteractive` 才可能出现请求帧。
+ *
+ * 只在 `E2E_INTERACTION=1` 时跑：要让 CLI **真的申请权限**，各工具差异很大
+ * （kimi-code 会问、opencode/minimax 自动放行工具调用），默认跑会把默认套件拖红。
+ */
+async function runInteractionPhase(auth) {
+  const sn2 = await call('/acp', {
+    method: 'POST',
+    headers: auth,
+    body: {
+      jsonrpc: '2.0',
+      id: 20,
+      method: 'session/new',
+      params: { cwd: ROOT, _meta: { agentType: AGENT, allowInteractive: true } },
+    },
+  });
+  const ixSessionId = sn2.json?.result?.sessionId;
+  record(
+    'ACP session/new：申请会话级交互（_meta.allowInteractive）',
+    sn2.status === 200 && typeof ixSessionId === 'string',
+    ixSessionId,
+  );
+  if (typeof ixSessionId !== 'string') return;
+
+  let requestFrames = 0;
+  let answered = 0;
+  const answers = [];
+  const ixEvents = await collectSse(
+    '/acp',
+    {
+      jsonrpc: '2.0',
+      id: 21,
+      method: 'session/prompt',
+      // 要一个真工具调用：只有 CLI 真的申请权限，闭环才被验证
+      params: {
+        sessionId: ixSessionId,
+        prompt: [
+          {
+            type: 'text',
+            text: 'Use your shell/bash tool to run exactly: echo INTERACTION_OK . Then reply with the single word DONE.',
+          },
+        ],
+      },
+    },
+    (events) => events.some((e) => e.event === 'result'),
+    {
+      headers: auth,
+      timeoutMs: 150_000,
+      onEvent: (evt) => {
+        if (evt.event !== 'request') return;
+        requestFrames += 1;
+        const options = Array.isArray(evt.data?.params?.options) ? evt.data.params.options : [];
+        const pick = options.find((o) => o.kind === 'allow_once') ?? options[0];
+        const optionId = typeof pick?.optionId === 'string' ? pick.optionId : undefined;
+        answers.push({ method: evt.data?.method, options: options.length, optionId: optionId ?? '-' });
+        // 应答必须走另一条 POST /acp（响应报文：无 method、带网关下发 id + result）
+        void (async () => {
+          const r = await call('/acp', {
+            method: 'POST',
+            headers: auth,
+            body: {
+              jsonrpc: '2.0',
+              id: evt.data?.id,
+              result: optionId
+                ? { outcome: { outcome: 'selected', optionId } }
+                : { outcome: { outcome: 'cancelled' } },
+            },
+          });
+          if (r.status === 200) answered += 1;
+          else record('ACP 交互应答被接受', false, `status=${r.status} ${String(r.text ?? '').slice(0, 140)}`);
+        })();
+      },
+    },
+  ).catch((error) => {
+    record('ACP 交互轮次 SSE', false, error.message);
+    return [];
+  });
+
+  const ixResult = ixEvents.find((e) => e.event === 'result');
+  if (requestFrames === 0) {
+    // 诊断：区分「交互已建但网关没下发」与「CLI 压根没申请」——两者的修法完全不同
+    const pend = await call('/v1/interactions?state=pending&limit=5', { headers: auth }).catch(() => undefined);
+    const rows = Array.isArray(pend?.json?.interactions) ? pend.json.interactions : [];
+    const kinds = rows.map((r) => `${r.kind}/${r.requestId}`).join(',');
+    // 不算通过：本轮根本没验证到交互闭环（有些 CLI 在本机配置下自动放行工具调用）
+    interactionSkipped = `${AGENT} 本轮未发起权限请求（工具调用被自动放行或未触发工具）${kinds ? `；但存在待应答交互：${kinds}` : '；store 也无 pending 交互'}`;
+    console.log(`  ℹ️  ${interactionSkipped}`);
+  } else {
+    record(
+      'ACP 交互闭环：请求帧 → 响应报文 → 本轮继续到 end_turn',
+      answered === requestFrames && ixResult?.data?.result?.stopReason === 'end_turn',
+      `请求帧=${requestFrames} 已应答=${answered} 终态=${ixResult?.data?.result?.stopReason ?? ixResult?.data?.error?.message ?? '-'} 选项=${JSON.stringify(answers)}`,
+    );
+  }
+  await call('/acp', {
+    method: 'POST',
+    headers: auth,
+    body: { jsonrpc: '2.0', id: 22, method: 'session/cancel', params: { sessionId: ixSessionId } },
+  });
+}
 
 // ---------- 主流程 ----------
 async function main() {
@@ -529,6 +648,10 @@ async function main() {
   });
   record('ACP session/cancel：无活动轮次静默成功', ac.status === 200 && ac.json?.result?.cancelled === false);
 
+  // 10. ACP 交互闭环（add-interaction-optin）：默认不跑，理由见 runInteractionPhase
+  if (process.env.E2E_INTERACTION === '1') await runInteractionPhase(auth);
+  else console.log('  ℹ️  交互闭环段未启用（需要 E2E_INTERACTION=1，且所选 CLI 会发起权限请求）');
+
   finish(0);
 }
 
@@ -558,7 +681,7 @@ http.listen(PORT, '127.0.0.1', async () => {
   });
   issuedToken = /abs_[A-Za-z0-9_-]+/.exec(issue)?.[0];
 
-  bridge = spawn(process.execPath, ['dist/cli.js', 'connect', `http://127.0.0.1:${PORT}`, `--token=${TOKEN}`, `--device-id=${DEVICE_ID}`], {
+  bridge = spawn(process.execPath, ['dist/cli.js', 'connect', `http://127.0.0.1:${PORT}`, `--token=${TOKEN}`, `--device-id=${DEVICE_ID}`, '--interaction-enabled'], {
     cwd: ROOT,
     env: bridgeEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],

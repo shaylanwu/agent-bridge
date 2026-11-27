@@ -653,7 +653,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | GET | `/v1/interactions?taskId=&state=&limit=` | `session:read` 或 `task:read`（有界交互列表，常用 `state=pending`） |
 | GET | `/v1/interactions/{requestId}` | `session:read` 或 `task:read`（单条交互：待答请求或已结算结果） |
 | POST | `/v1/interactions/{requestId}:respond` | permission 要 `task:approve`，form/auth-url 要 `task:respond`（规则与代码路径同 WS 的 `task_interaction_response`） |
-| POST | `/v1/tasks` | `task:create` |
+| POST | `/v1/tasks` | `task:create`（请求体可带 `allowInteractive: true` 申请本任务交互；生效还须 `--interaction-enabled`） |
 | GET | `/v1/tasks` | `task:read`（游标分页） |
 | GET | `/v1/tasks/{id}` | `task:read` |
 | POST | `/v1/tasks/{id}:cancel` | `task:cancel`（幂等） |
@@ -720,6 +720,9 @@ curl --noproxy '*' -H "Authorization: Bearer abs_…" -H "Idempotency-Key: 3f9a�
 - **权限不是 A2A 原生能力**：等待中的任务表现为 `INPUT_REQUIRED`，但批准/应答闭环只存在于
   bridge wire（`task_interaction_request/response`）与 ACP 表面（`session/request_permission` /
   `elicitation/create`）。A2A 客户端要回答交互必须走这两条通道之一；bridge 不为它发明 A2A 扩展。
+  相应地，`message.metadata.allowInteractive: true` 会被**明确拒绝**（`-32000`，
+  `data.code = "interaction_not_supported"`）且不创建任务 —— 静默跑成非交互会让调用方误以为
+  「权限已被自动批准」。要交互请用 ACP `session/new` 的 `_meta.allowInteractive`。
 - **bridge 扩展 URI** 位于 `message.metadata` / `Task.metadata.bridge.*`，全部是增量可选字段：
 
 | 扩展 | 位置 | 含义 |
@@ -727,6 +730,7 @@ curl --noproxy '*' -H "Authorization: Bearer abs_…" -H "Idempotency-Key: 3f9a�
 | `agentType` | `message.metadata` | 受管 CLI 白名单项（必填） |
 | `cwd` | `message.metadata` | 任务工作目录（必填） |
 | `timeoutMs` / `captureDiff` / `permissionMode` | `message.metadata` | 可选的任务级覆盖 |
+| `allowInteractive` | `message.metadata` | **不支持**：A2A 无请求帧通道，传 `true` 会被拒绝（`interaction_not_supported`） |
 | `bridge.taskLogEndpoint` | `Task.metadata` | 调试日志位置（不是消息来源） |
 | `bridge.statusDetail` | `Task.metadata` | 多个 bridge 状态坍缩到一个 A2A 状态时的真实归因 |
 | `afterEventSeq` | resubscribe `params.metadata` | 补洞游标（eventSeq；缺省 0 = 全量回放） |
@@ -748,7 +752,9 @@ ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口
 
 - **`initialize`**：只声明真实能力——`loadSession: false`（会话不持久续接）、prompt 只收
   text block、fs/terminal 客户端能力不开放。
-- **`session/new`**：固化 `params.cwd` 与 `params._meta.agentType`（12 个受管 CLI 必须显式选择）。
+- **`session/new`**：固化 `params.cwd` 与 `params._meta.agentType`（12 个受管 CLI 必须显式选择）；
+  可选 `params._meta.allowInteractive: true` 申请本会话的交互（只认布尔）。申请只是**请求**：
+  进程没以 `--interaction-enabled` 启动时仍按非交互跑，CLI 的权限申请会被本机直接拒绝。
 - **`session/prompt`（conversation 多轮，add-acp-session-memory）**：首轮创建 bridge conversation
   会话（`run_task` 语义）；后续轮 `send_message` 续接**同一会话**——CLI 原生续接（resume /
   ACP session / 重放兜底，12 适配器续接矩阵），**上下文由 CLI 持有、token 只传增量**。
@@ -759,8 +765,9 @@ ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口
   会话空闲回收复用 conversation 的 `idleTimeoutMs`。bridge 重启后 acp 会话绑定丢失（内存态），
   旧会话不假装可续。
 - **`session/cancel`**：取消当前轮次（`cancel_turn` 编排，operationId 幂等）；无活动轮次静默成功。
-- **交互闭环**：任务进入 `waiting_interaction` 时，prompt 流中注入 `event: request` 帧
-  （`session/request_permission` 或 `elicitation/create`——permission 走标准选项，
+- **交互闭环**：**前提是该 ACP 会话在 `session/new` 声明了 `_meta.allowInteractive: true`**
+  （不声明就不会弹请求——默认按非交互执行）。任务进入 `waiting_interaction` 时，prompt 流中注入
+  `event: request` 帧（`session/request_permission` 或 `elicitation/create`——permission 走标准选项，
   form/auth-url 走 elicitation（form/url 两种 mode））。客户端用 `POST /acp` 发响应报文
   （无 method、带网关下发的 id + result）应答；网关转成 `task_interaction_response` 走与
   `POST /v1/interactions/{id}:respond` **同一条** dispatch 路径（权限判定双保险）。
@@ -770,6 +777,8 @@ ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口
   不指定 `E2E_AGENT` 时脚本会**自动挑一个本机就绪的 CLI**（避免把某个工具的订阅/登录态
   问题当成桥接回归）；指定时按指定跑。一个就绪的都没有时退出码 `2`，
   设 `E2E_ALLOW_SKIP=1` 才会以「跳过」结束（并明确打印本轮未验证任何行为）。
+  交互闭环（权限请求帧 → 响应报文 → 回合继续）需要 CLI 真的申请权限，各工具差异大
+  （kimi-code 会问，opencode/minimax 自动放行），因此默认不跑：`E2E_INTERACTION=1` 才启用。
 - 详见 `contracts/openapi.control-plane.yaml` 的 `a2a-gateway` tag。
 
 ### 扫描结果实时回传与品牌图标

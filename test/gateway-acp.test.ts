@@ -619,3 +619,54 @@ describe('ACP 网关：session/cancel', () => {
     expect(res.json<{ error: { code: number } }>().error.code).toBe(-32001);
   });
 });
+
+/**
+ * 交互申请（add-interaction-optin）：会话级 `_meta.allowInteractive` 是**唯一**入口。
+ * 不声明就不该出现请求帧（否则每次任务都可能卡在等人）。
+ */
+describe('ACP 网关：会话级交互申请', () => {
+  it('session/new 带 _meta.allowInteractive → 首轮 run_task 带上 allowInteractive', async () => {
+    const f = await startAcp();
+    const created = await call(f.port, 'POST', '/acp', {
+      headers: { authorization: 'Bearer abs_x' },
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'session/new',
+        params: { cwd: 'C:/work', _meta: { agentType: 'claude-code', allowInteractive: true } },
+      },
+    });
+    const sessionId = created.json<{ result: { sessionId: string } }>().result.sessionId;
+    const sse = promptSse(f.port, sessionId, 'run the tests');
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(f.conv.runs[0]?.allowInteractive).toBe(true);
+    const bridgeSessionId = f.conv.runs[0]?.taskId as string;
+    f.conv.settle(bridgeSessionId, f.store.listTurns(bridgeSessionId, 'default').at(-1)?.turnId as string, 'success');
+    await sse;
+  });
+
+  it('未声明 → run_task 不带 allowInteractive（按非交互执行）', async () => {
+    const f = await startAcp();
+    const sessionId = await newSession(f.port);
+    const sse = promptSse(f.port, sessionId, 'run the tests');
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(f.conv.runs[0]?.allowInteractive).toBeUndefined();
+    const bridgeSessionId = f.conv.runs[0]?.taskId as string;
+    f.conv.settle(bridgeSessionId, f.store.listTurns(bridgeSessionId, 'default').at(-1)?.turnId as string, 'success');
+    await sse;
+  });
+
+  it('_meta.allowInteractive 非布尔 → invalidParams（不猜 "true"/1）', async () => {
+    const f = await startAcp();
+    const res = await call(f.port, 'POST', '/acp', {
+      headers: { authorization: 'Bearer abs_x' },
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'session/new',
+        params: { cwd: 'C:/work', _meta: { agentType: 'claude-code', allowInteractive: 'yes' } },
+      },
+    });
+    expect(res.json<{ error: { code: number } }>().error.code).toBe(-32602);
+  });
+});

@@ -103,6 +103,13 @@ export interface BridgeSession {
   readonly urls: InteractionUrlVault;
   /** 在跑/排队的任务数（状态展示与控制面用） */
   activeTasks: () => number;
+  /**
+   * 本机是否开放交互（`--interaction-enabled`）。
+   *
+   * 只做**暴露**，判定仍在 dispatch 层：控制面/网关拼 `interactive` 时必须用这同一个值，
+   * 否则会变成「通道自己判一次、dispatch 再判一次」的两套真源。
+   */
+  readonly interactionEnabled: boolean;
   /** 启动后按持久顺序恢复 queued Turn；返回本次实际提交数。 */
   recoverQueuedTasks?: () => number;
   /** 取消指定任务（无此任务返回 false） */
@@ -612,6 +619,7 @@ export function createSession(opts: SessionOptions): BridgeSession {
     emitter,
     registry: opts.registry,
     store: opts.store,
+    interactionEnabled: opts.interactionEnabled === true,
     artifacts,
     artifactsForTenant,
     urls,

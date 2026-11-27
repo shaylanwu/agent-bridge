@@ -126,6 +126,8 @@ export interface GatewayTaskOps {
     cwd: string;
     prompt?: string;
     timeoutMs?: number;
+    /** 本任务是否申请交互（生效还须本机 `--interaction-enabled`） */
+    allowInteractive?: boolean;
     requestedBy?: string;
     idempotencyKey: string;
     idempotencyFingerprint: unknown;
@@ -347,6 +349,14 @@ export function createGatewayHandlers(deps: GatewayDeps): GatewayHandlers {
     }
     if (!deps.agents.some((a) => a.id === agentType)) {
       rpcErr(ctx.res, rpcId, A2A_JSONRPC_ERRORS.invalidParams, `未知 agentType：${agentType}（不在受管适配器白名单内）`);
+      return;
+    }
+    // A2A 没有 agent→client 请求帧通道（也没有 task_interaction_response 的投递口）：
+    // 申请交互就明确拒绝，不静默跑成非交互任务——否则调用方会以为「权限已被自动批准」。
+    if (metadata?.['allowInteractive'] === true) {
+      rpcErr(ctx.res, rpcId, -32000, 'A2A 表面不支持交互（无请求帧通道）；需要权限/表单请改用 ACP session/prompt', {
+        code: 'interaction_not_supported',
+      });
       return;
     }
     const timeoutMs = typeof metadata?.['timeoutMs'] === 'number' ? metadata['timeoutMs'] : undefined;
@@ -707,6 +717,8 @@ export function createGatewayHandlers(deps: GatewayDeps): GatewayHandlers {
       bridgeSessionId?: string;
       /** 当前进行中的 turn（prompt SSE 流的生命周期内；waiting_user/终态后清空） */
       currentTurnId?: string;
+      /** session/new 申请了交互（还需本机 interactionEnabled 才真正生效） */
+      allowInteractive?: boolean;
     }
   >();
   /** 出站交互请求：JSON-RPC id → pending 交互定位（客户端应答时反向解析） */
@@ -780,11 +792,19 @@ export function createGatewayHandlers(deps: GatewayDeps): GatewayHandlers {
       rpcErr(ctx.res, rpcId, ACP_JSONRPC_ERRORS.invalidParams, `未知 agentType：${agentType}（不在受管适配器白名单内）`);
       return;
     }
+    // 交互申请（add-interaction-optin）：只认严格布尔。字符串 "true"/1 会让
+    // 「这个会话到底会不会弹权限」不可推理，宁可报错。
+    const allowInteractiveRaw = meta?.['allowInteractive'];
+    if (allowInteractiveRaw !== undefined && typeof allowInteractiveRaw !== 'boolean') {
+      rpcErr(ctx.res, rpcId, ACP_JSONRPC_ERRORS.invalidParams, 'params._meta.allowInteractive 必须是布尔');
+      return;
+    }
     const acpSessionId = `acp_${randomBytes(8).toString('hex')}`;
     acpSessions.set(acpSessionId, {
       agentType,
       cwd,
       tenantId: ctx.tenantId ?? DEFAULT_TENANT,
+      ...(allowInteractiveRaw === true ? { allowInteractive: true } : {}),
     });
     rpcOk(ctx.res, rpcId, { sessionId: acpSessionId });
   };
@@ -1001,6 +1021,8 @@ export function createGatewayHandlers(deps: GatewayDeps): GatewayHandlers {
             args: [],
             prompt: text.text,
             sessionMode: 'conversation',
+            // 会话级交互申请（add-interaction-optin）：续轮由 turn.execution 继承，不必重复声明
+            ...(session.allowInteractive === true ? { allowInteractive: true } : {}),
             requestedBy: 'acp-gateway',
             ...(token ? { serviceToken: token } : {}),
           });

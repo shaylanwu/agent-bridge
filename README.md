@@ -714,7 +714,7 @@ Remote platforms keep using the outbound WebSocket; this is a separate channel, 
 | GET | `/v1/interactions?taskId=&state=&limit=` | `session:read` or `task:read` (bounded interaction list; `state=pending` is the common one) |
 | GET | `/v1/interactions/{requestId}` | `session:read` or `task:read` (one interaction: pending request or settled result) |
 | POST | `/v1/interactions/{requestId}:respond` | `task:approve` for permission, `task:respond` for form/auth-url (same rule and same code path as the WS `task_interaction_response`) |
-| POST | `/v1/tasks` | `task:create` |
+| POST | `/v1/tasks` | `task:create` (body may carry `allowInteractive: true` to request interactions for that task; still requires `--interaction-enabled`) |
 | GET | `/v1/tasks` | `task:read` (cursor-paginated) |
 | GET | `/v1/tasks/{id}` | `task:read` |
 | POST | `/v1/tasks/{id}:cancel` | `task:cancel` (idempotent) |
@@ -794,6 +794,10 @@ gateway route returns 404. The `a2a` / `acp` sub-flags turn individual surfaces 
   approve/respond loop itself only exists on the bridge wire (`task_interaction_request/response`) and on
   the ACP surface (`session/request_permission` / `elicitation/create`). An A2A client that wants to
   answer an interaction must use one of those channels; the bridge will not invent A2A extensions for it.
+  Accordingly `message.metadata.allowInteractive: true` is **rejected outright** (`-32000` with
+  `data.code = "interaction_not_supported"`) and no task is created — silently running non-interactively
+  would let callers believe their permissions were auto-approved. Use ACP `session/new`
+  `_meta.allowInteractive` instead.
 - **Bridge extension URIs** live under `message.metadata` / `Task.metadata.bridge.*` and are additive:
 
 | Extension | Where | Meaning |
@@ -801,6 +805,7 @@ gateway route returns 404. The `a2a` / `acp` sub-flags turn individual surfaces 
 | `agentType` | `message.metadata` | managed CLI whitelist entry (required) |
 | `cwd` | `message.metadata` | task working directory (required) |
 | `timeoutMs` / `captureDiff` / `permissionMode` | `message.metadata` | optional per-task overrides |
+| `allowInteractive` | `message.metadata` | **unsupported**: A2A has no request-frame channel, `true` is rejected (`interaction_not_supported`) |
 | `bridge.taskLogEndpoint` | `Task.metadata` | where debug logs live (not a message source) |
 | `bridge.statusDetail` | `Task.metadata` | true cause when a state collapses several bridge statuses |
 | `afterEventSeq` | resubscribe `params.metadata` | hole-filling cursor (eventSeq; absent = full replay) |
@@ -826,7 +831,9 @@ an external contract** (decided 2026-11-22: frame formats will not follow upstre
 - **`initialize`**: declares only real capabilities — `loadSession: false` (sessions are not persisted
   for resumption), text-only prompts, no fs/terminal client capabilities.
 - **`session/new`**: pins `params.cwd` and `params._meta.agentType` (one of the 12 managed CLIs must be
-  chosen explicitly).
+  chosen explicitly). Optional `params._meta.allowInteractive: true` requests interactions for that
+  session (booleans only). It is a **request**: unless the process runs with `--interaction-enabled`,
+  the session still runs non-interactively and the CLI's permission asks are declined locally.
 - **`session/prompt` (conversation multi-turn, add-acp-session-memory)**: the first turn creates a
   bridge conversation session (`run_task` semantics); subsequent turns use `send_message` on the
   **same session** — CLI-native continuation (resume / ACP session / replay fallback across the
@@ -840,7 +847,9 @@ an external contract** (decided 2026-11-22: frame formats will not follow upstre
   continuable.
 - **`session/cancel`**: cancels the active turn (`cancel_turn` orchestration, idempotent
   operationId); with no active turn it succeeds silently.
-- **Interaction loop**: when a task enters `waiting_interaction`, the prompt stream injects an
+- **Interaction loop**: **requires the session to declare `_meta.allowInteractive: true` at
+  `session/new`** (without it no request frame is ever produced — the default is non-interactive).
+  When a task enters `waiting_interaction`, the prompt stream injects an
   `event: request` frame (`session/request_permission` or `elicitation/create` — permission uses the
   standard options; form/auth-url use elicitation with form/url modes). The client answers via
   `POST /acp` with a response envelope (no method, carrying the gateway-issued id + result); the
@@ -853,7 +862,9 @@ an external contract** (decided 2026-11-22: frame formats will not follow upstre
   Without `E2E_AGENT` the script **auto-selects any ready CLI** on this machine, so a single tool's
   subscription/login state can't be mistaken for a bridge regression; set `E2E_AGENT` to pin one.
   When none is ready it exits `2`, and only `E2E_ALLOW_SKIP=1` turns that into a skip (clearly
-  reported as "nothing was verified").
+  reported as "nothing was verified"). The interaction loop (request frame → response envelope →
+  turn continues) needs a CLI that actually asks for permission — tools differ a lot (kimi-code asks,
+  opencode/minimax auto-allow), so it is off by default and enabled with `E2E_INTERACTION=1`.
 - Full contract: the `a2a-gateway` tag in `contracts/openapi.control-plane.yaml`.
 
 ### Live scan progress and brand icons

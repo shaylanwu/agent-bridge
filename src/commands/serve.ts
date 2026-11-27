@@ -142,6 +142,8 @@ async function runServe(flags: Flags): Promise<void> {
         // 控制面与 WS 共用同一套权限策略，不能被本地通道绕过
         permissionPolicy: resolvePermissionPolicy(config?.permissionPolicy, strFlag(flags, 'permission-policy')),
         externalSandbox: resolveExternalSandbox(config?.externalSandbox, boolFlag(flags, 'external-sandbox')),
+        // 交互开关取会话里的同一个值（dispatch 判定也用它），通道只能申请、不能自开
+        interactionEnabled: session.interactionEnabled,
       },
     },
   );

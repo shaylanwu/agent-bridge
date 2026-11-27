@@ -98,6 +98,13 @@ export interface ControlPlaneDeps {
     permissionPolicy?: PermissionPolicyName;
     /** 本机是否声明 CodeBuddy full 运行在外部沙箱内 */
     externalSandbox?: boolean;
+    /**
+     * 本机是否开放交互（`--interaction-enabled`）。缺省 false。
+     *
+     * 通道只能**申请**交互（`allowInteractive`），最终是否开放由这里二重决定 ——
+     * 与 `BridgeSession.interactionEnabled` 同一个值，不能各读一遍配置。
+     */
+    interactionEnabled?: boolean;
   };
   /**
    * conversation 编排（add-acp-session-memory）：由 `startSession` 注入
@@ -331,6 +338,7 @@ export async function startControlPlane(
               args: [],
               prompt: input.prompt,
               timeoutMs: input.timeoutMs,
+              allowInteractive: input.allowInteractive,
               requestedBy: input.requestedBy,
               idempotencyKey: input.idempotencyKey,
               idempotencyFingerprint: input.idempotencyFingerprint,
@@ -503,6 +511,11 @@ export async function startControlPlane(
     timeoutMs?: number;
     captureDiff?: boolean;
     permissionMode?: 'default' | 'full';
+    /**
+     * 本任务是否申请交互（等价 WS `run_task.allowInteractive`）。
+     * 生效还须本机 `defaults.interactionEnabled`；只申请不满足时按非交互执行。
+     */
+    allowInteractive?: boolean;
     requestedBy?: string;
     purpose?: string;
     /** 幂等键（HTTP 用 Idempotency-Key；A2A 网关用 messageId） */
@@ -550,6 +563,7 @@ export async function startControlPlane(
           timeoutMs: input.timeoutMs,
           captureDiff: input.captureDiff ?? deps.defaults.captureDiffByDefault,
           permissionMode: input.permissionMode,
+          allowInteractive: input.allowInteractive,
           requestedBy: input.requestedBy,
           purpose: input.purpose,
         },
@@ -594,6 +608,8 @@ export async function startControlPlane(
         maxQueued: deps.defaults.maxQueued,
         captureDiff: input.captureDiff ?? deps.defaults.captureDiffByDefault,
         diffMaxBytes: deps.defaults.diffMaxBytes,
+        // 交互：调用方只能申请；本机未开放时按非交互跑（supervisor 会直接拒绝 ACP 权限请求）
+        interactive: input.allowInteractive === true && deps.defaults.interactionEnabled === true,
         // 权限：平台/本地调用方可以请求，但本机策略同样适用（受管参数模式不会被本地通道绕过）
         permissionMode: input.permissionMode,
         permissionPolicy: deps.defaults.permissionPolicy,
@@ -721,6 +737,13 @@ export async function startControlPlane(
       problem(ctx.res, 400, 'protocol_incompatible', '缺 agentType 或 cwd');
       return;
     }
+    // 交互申请必须是**布尔**：字符串 "true"/1 这类猜测会让「本机到底开没开交互」变得不可推理
+    const allowInteractiveRaw = body['allowInteractive'];
+    if (allowInteractiveRaw !== undefined && typeof allowInteractiveRaw !== 'boolean') {
+      problem(ctx.res, 400, 'protocol_incompatible', 'allowInteractive 必须是布尔');
+      return;
+    }
+    const allowInteractive = allowInteractiveRaw === true;
 
     // SQLite 是唯一权威：同 key 同 body 重放原 taskId，异参冲突；进程重启/记录数量均不失效。
     const idemRaw = ctx.req.headers['idempotency-key'];
@@ -735,6 +758,7 @@ export async function startControlPlane(
         timeoutMs: typeof body['timeoutMs'] === 'number' ? body['timeoutMs'] : undefined,
         captureDiff: body['captureDiff'] === true || deps.defaults.captureDiffByDefault,
         permissionMode: body['permissionMode'] === 'full' ? 'full' : body['permissionMode'] === 'default' ? 'default' : undefined,
+        allowInteractive,
         requestedBy: str(body['requestedBy']),
         purpose: str(body['purpose']),
         idempotencyKey: idemHeader ?? undefined,

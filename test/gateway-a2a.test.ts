@@ -651,3 +651,36 @@ describe('A2A 网关：SubscribeToTask 订阅（task 2.5）', () => {
     expect(messageFrames[0]?.data.eventSeq).toBe(e2.eventSeq);
   });
 });
+
+/**
+ * A2A 没有 agent→client 请求帧通道，也没有 task_interaction_response 的投递口。
+ * 申请交互必须**明确拒绝**：静默跑成非交互会让调用方以为「权限已被自动批准」。
+ */
+describe('A2A 网关：交互边界（add-interaction-optin）', () => {
+  it('metadata.allowInteractive=true → -32000 interaction_not_supported，且不创建任务', async () => {
+    const store = new SessionStore(':memory:');
+    const mock = mockStartTask();
+    const plane = await startGatewayDeps(makeDeps(store, OK_VERIFY, mock.startTask));
+    const res = await call(plane.port, 'POST', '/a2a', {
+      headers: { 'A2A-Version': '1.0' },
+      body: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'SendMessage',
+        params: {
+          message: {
+            messageId: 'want-interaction',
+            role: 'ROLE_USER',
+            parts: [{ kind: 'text', text: 'run the tests' }],
+            metadata: { agentType: 'claude-code', cwd: 'C:/work', allowInteractive: true },
+          },
+        },
+      },
+    });
+    const err = res.json<{ error: { code: number; data?: { code?: string } } }>().error;
+    expect(err.code).toBe(-32000);
+    expect(err.data?.['code']).toBe('interaction_not_supported');
+    // 幂等键不落账：同 messageId 之后不带该字段仍能正常创建（不是「先占位再失败」）
+    expect(mock.requests).toHaveLength(0);
+  });
+});

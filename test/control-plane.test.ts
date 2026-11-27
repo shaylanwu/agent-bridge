@@ -913,6 +913,79 @@ describe('控制面 /v1/interactions', () => {
   });
 });
 
+/**
+ * 交互申请（add-interaction-optin）：通道只能申请，最终由本机 `--interaction-enabled` 二重决定。
+ * 这三态必须分别成立，否则「能不能弹权限」就变成看实现心情。
+ */
+describe('控制面任务的交互申请', () => {
+  const capturingDeps = () => {
+    const seen: RunTaskRequest[] = [];
+    return {
+      seen,
+      startTask: (req: RunTaskRequest, hooks: TaskHooks): TaskHandle => {
+        seen.push(req);
+        hooks.onStatus('success', { exitCode: 0 } satisfies TaskFinishInfo);
+        return { taskId: req.taskId, cancel: () => undefined, done: Promise.resolve('success' as const) };
+      },
+    };
+  };
+
+  const createWith = async (
+    plane: Awaited<ReturnType<typeof start>>,
+    body: Record<string, unknown>,
+    sign: (claims: Record<string, unknown>) => string,
+  ) =>
+    call(plane.port, 'POST', '/v1/tasks', {
+      headers: { authorization: `Bearer ${sign({ sub: 'u', scope: 'task:create task:read' })}` },
+      body: { agentType: 'codex', cwd: '/tmp', ...body },
+    });
+
+  it('未申请：interactive=false（本机已开交互也一样）', async () => {
+    const { seen, startTask } = capturingDeps();
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ startTask, jwt: verifier, defaults: { maxConcurrent: 1, maxQueued: 1, diffMaxBytes: 1024, captureDiffByDefault: false, interactionEnabled: true } });
+    const res = await createWith(plane, {}, sign);
+    expect(res.status).toBe(201);
+    expect(seen[0]?.interactive).toBe(false);
+    plane.close();
+  });
+
+  it('申请但本机未开交互：仍按非交互执行（申请不绕过本地策略）', async () => {
+    const { seen, startTask } = capturingDeps();
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ startTask, jwt: verifier, defaults: { maxConcurrent: 1, maxQueued: 1, diffMaxBytes: 1024, captureDiffByDefault: false, interactionEnabled: false } });
+    const res = await createWith(plane, { allowInteractive: true }, sign);
+    expect(res.status).toBe(201);
+    expect(seen[0]?.interactive).toBe(false);
+    plane.close();
+  });
+
+  it('申请且本机已开：interactive=true，并写进 turn.execution（续轮继承）', async () => {
+    const { seen, startTask } = capturingDeps();
+    const { sign, verifier } = jwtFixture();
+    const store = new SessionStore(':memory:');
+    const plane = await start({ startTask, store, jwt: verifier, defaults: { maxConcurrent: 1, maxQueued: 1, diffMaxBytes: 1024, captureDiffByDefault: false, interactionEnabled: true } });
+    const res = await createWith(plane, { allowInteractive: true }, sign);
+    expect(res.status).toBe(201);
+    expect(seen[0]?.interactive).toBe(true);
+    const taskId = res.json<{ taskId: string }>().taskId;
+    // 终态已由桩 onStatus 立即置为 success，按会话查 turn（getActiveTurn 会查不到）
+    const turn = store.listTurns(taskId, 'default').at(-1);
+    expect(turn?.execution?.allowInteractive).toBe(true);
+    plane.close();
+  });
+
+  it('allowInteractive 非布尔：400（不猜 "true"/1）', async () => {
+    const { seen, startTask } = capturingDeps();
+    const { sign, verifier } = jwtFixture();
+    const plane = await start({ startTask, jwt: verifier, defaults: { maxConcurrent: 1, maxQueued: 1, diffMaxBytes: 1024, captureDiffByDefault: false, interactionEnabled: true } });
+    const res = await createWith(plane, { allowInteractive: 'true' }, sign);
+    expect(res.status).toBe(400);
+    expect(seen).toHaveLength(0);
+    plane.close();
+  });
+});
+
 // 收尾：防止有测试漏关导致端口悬挂
 process.on('exit', () => {
   for (const p of started) {
