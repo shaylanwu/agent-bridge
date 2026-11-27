@@ -850,6 +850,10 @@ an external contract** (decided 2026-11-22: frame formats will not follow upstre
   CLI run, covering A2A send/get/cancel, messageId idempotency, and the ACP prompt/cancel loop;
   **multi-turn memory is asserted with a real two-round CLI dialogue**. If the CLIs' outbound proxy
   differs from the system proxy, pass `E2E_PROXY=http://127.0.0.1:<port>`).
+  Without `E2E_AGENT` the script **auto-selects any ready CLI** on this machine, so a single tool's
+  subscription/login state can't be mistaken for a bridge regression; set `E2E_AGENT` to pin one.
+  When none is ready it exits `2`, and only `E2E_ALLOW_SKIP=1` turns that into a skip (clearly
+  reported as "nothing was verified").
 - Full contract: the `a2a-gateway` tag in `contracts/openapi.control-plane.yaml`.
 
 ### Live scan progress and brand icons

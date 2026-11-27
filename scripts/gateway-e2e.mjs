@@ -15,8 +15,14 @@
  * 注入方式覆盖；真 CLI 的 permission 冒烟依赖 ACP 通道工具调用（CodeBuddy），
  * 属后续实测项，不在本脚本硬凑。
  *
- * 用法：node scripts/gateway-e2e.mjs [--agent claude-code] [--port 8890] [--cp-port 8891]
- * 退出码：0 = 全部通过；1 = 有失败项。
+ * CLI 选择：不指定 --agent 时**自动挑本机就绪的一个**（首选 codex 等已有模型级实测的工具），
+ * 而不是绑死某一个工具的账号状态——绑死的后果是一旦那个工具的订阅/登录态变化，整条链路
+ * 会以「断言失败」的形态红掉，掩盖真实回归（2026-11-27 实测：默认 claude-code 因上游订阅 403
+ * 出现 5 项失败，换 codex 15/15）。显式 --agent / E2E_AGENT 时不覆盖，只提示探测结果。
+ *
+ * 用法：node scripts/gateway-e2e.mjs [--agent <kind>] [--port 8890] [--cp-port 8891]
+ * 退出码：0 = 全部通过（或 E2E_ALLOW_SKIP=1 时无人就绪而跳过）；1 = 有失败项；
+ *         2 = 环境/用法未就绪（无人就绪，或 --agent 写了不存在的 kind）。
  */
 import { createServer, request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -30,7 +36,12 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const require = createRequire(join(ROOT, 'package.json'));
 const { WebSocketServer } = require('ws');
 
-const { AGENTS } = await import(new URL('../dist/adapters/agent-adapters.js', import.meta.url).href);
+const { AGENTS, agentDefOf, probeAgent } = await import(
+  new URL('../dist/adapters/agent-adapters.js', import.meta.url).href
+).catch(() => {
+  console.error('[gw-e2e] 找不到 dist/adapters/agent-adapters.js —— 先跑 `npm run build`');
+  process.exit(2);
+});
 const EXPECTED_AGENTS = AGENTS.length;
 
 const argv = process.argv.slice(2);
@@ -38,9 +49,16 @@ const argOf = (name, def) => {
   const i = argv.indexOf(name);
   return i >= 0 && argv[i + 1] ? argv[i + 1] : def;
 };
-const AGENT = argOf('--agent', process.env.E2E_AGENT || 'claude-code');
+/** 显式指定（--agent 或 E2E_AGENT）为空表示「让脚本自己挑」 */
+const EXPLICIT_AGENT = (() => {
+  const i = argv.indexOf('--agent');
+  if (i >= 0 && argv[i + 1]) return argv[i + 1];
+  return (process.env.E2E_AGENT ?? '').trim();
+})();
+let AGENT = EXPLICIT_AGENT || 'codex';
 const PORT = Number(argOf('--port', '8890'));
 const CP_PORT = Number(argOf('--cp-port', '8891'));
+const ALLOW_SKIP = process.env.E2E_ALLOW_SKIP === '1';
 const TOKEN = 'tok_gw_smoke';
 const DEVICE_ID = 'bd_0123456789abcdef0123456789abcdef';
 // codex 等较慢 CLI 的对话任务单轮可达 60s+，三段任务（A2A 一轮 + cancel + ACP 两轮）需整体放宽
@@ -51,6 +69,64 @@ const record = (name, ok, detail = '') => {
   results.push({ name, ok, detail });
   console.log(`  ${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`);
 };
+
+// ---------- CLI 选择（默认不绑定某一个工具的账号状态） ----------
+// 首选顺序：已有「模型推理级」实测记录的工具在前，其余按适配器表顺序补齐。
+const PREFERRED_AGENTS = ['codex', 'kimi-code', 'minimax-code', 'agy', 'opencode', 'claude-code'];
+/** 环境未就绪时的跳过原因（非空表示本轮没验证任何网关行为） */
+let skipReason = '';
+
+function agentPreference() {
+  const kinds = AGENTS.map((d) => d.kind);
+  return [...PREFERRED_AGENTS.filter((k) => kinds.includes(k)), ...kinds.filter((k) => !PREFERRED_AGENTS.includes(k))];
+}
+
+const describeProbe = (item) =>
+  [item.status, item.version ? `v${item.version}` : '', item.installedButBroken ? 'installedButBroken' : '', item.credentialSource ?? '']
+    .filter(Boolean)
+    .join(' ');
+
+/**
+ * 选定本轮要真跑的 CLI。
+ * - 显式指定：不覆盖（探测只用于提前提示，避免把「换了个工具」误当修复）；
+ * - 未指定：按首选顺序探测，用第一个 ready 的；
+ * - 无人就绪：E2E_ALLOW_SKIP=1 跳过（exit 0），否则如实失败（exit 2），不假装通过。
+ */
+async function selectAgent() {
+  if (EXPLICIT_AGENT) {
+    const def = agentDefOf(EXPLICIT_AGENT);
+    if (!def) {
+      record(`preflight：显式指定的 ${EXPLICIT_AGENT} 不在适配器表里`, false, `可选：${AGENTS.map((d) => d.kind).join(', ')}`);
+      return false;
+    }
+    const item = await probeAgent(def).catch(() => undefined);
+    record(`preflight：按显式指定使用 ${EXPLICIT_AGENT}`, true, item ? describeProbe(item) : '探测失败（仍按指定跑）');
+    if (item && item.status !== 'ready') {
+      console.log(`  ⚠️  探测为 ${item.status}——继续按指定跑；若是上游订阅/登录问题，失败会以任务错误而非断言形式出现`);
+    }
+    return true;
+  }
+  const seen = [];
+  for (const kind of agentPreference()) {
+    const def = agentDefOf(kind);
+    if (!def) continue;
+    const item = await probeAgent(def).catch(() => undefined);
+    if (!item) continue;
+    if (item.status === 'ready' && item.installedButBroken !== true) {
+      AGENT = kind;
+      record('preflight：自动选用本机就绪的 CLI', true, `${kind} — ${describeProbe(item)}`);
+      return true;
+    }
+    seen.push(`${kind}=${item.status}${item.installedButBroken ? '/broken' : ''}`);
+  }
+  const detail = `12 个适配器无一 ready：${seen.join(', ')}`;
+  if (ALLOW_SKIP) {
+    skipReason = detail;
+    return false;
+  }
+  record('preflight：没有就绪的 CLI（设 E2E_ALLOW_SKIP=1 可跳过）', false, detail);
+  return false;
+}
 
 // ---------- mock 平台（只需要把 bridge 连上：hello → ping；任务全部由网关驱动） ----------
 const http = createServer((req, res) => res.writeHead(404).end('not found'));
@@ -175,7 +251,12 @@ function finish(code) {
   console.log('\n===== 网关端到端冒烟结果 =====');
   const failed = results.filter((r) => !r.ok);
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? ` (${r.detail})` : ''}`);
-  console.log(`\n${failed.length === 0 ? '✅ 全部通过' : `⛔ ${failed.length} 项失败`}`);
+  if (skipReason) {
+    console.log(`\n⚠️  跳过：${skipReason}`);
+    console.log('   本轮没有验证任何网关行为（E2E_ALLOW_SKIP=1），不要当成通过证据。');
+  } else {
+    console.log(`\n${failed.length === 0 ? '✅ 全部通过' : `⛔ ${failed.length} 项失败`}`);
+  }
   try {
     bridge?.kill();
   } catch {
@@ -191,6 +272,9 @@ function finish(code) {
   } catch {
     /* 清理失败不影响结果 */
   }
+  if (skipReason) process.exit(0);
+  // 退出码语义：2 = 环境/用法未就绪（不掩盖成断言失败），1 = 断言失败，0 = 全过
+  if (code === 2) process.exit(2);
   process.exit(failed.length === 0 ? code : 1);
 }
 
@@ -440,6 +524,10 @@ async function main() {
 
 http.listen(PORT, '127.0.0.1', async () => {
   console.log(`[gw-e2e] mock 平台监听 127.0.0.1:${PORT}，先签发令牌再拉起 bridge（网关 @ ${CP_PORT}）…`);
+  // 0. 先定 CLI：无人就绪就不必花 2-3 分钟等超时（退出码 2 与断言失败区分）
+  const selected = await selectAgent();
+  if (!selected) return finish(skipReason ? 0 : 2);
+  console.log(`[gw-e2e] 本轮真跑 CLI：${AGENT}`);
   // 令牌先签发（独立 CLI 写 <cfg>/services.toml；bridge 起来后每请求读同一落盘账本）
   const issue = await new Promise((resolve) => {
     const p = spawn(
@@ -474,7 +562,7 @@ http.listen(PORT, '127.0.0.1', async () => {
     if (!results.length) record('bridge 启动', false, `进程提前退出 code=${code}`);
   });
   setTimeout(() => {
-    record('整体超时（90s）', false);
+    record(`整体超时（${Math.round(TIMEOUT_MS / 1000)}s）`, false);
     finish(1);
   }, TIMEOUT_MS);
   void main();

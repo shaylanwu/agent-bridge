@@ -767,6 +767,9 @@ ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口
 - 端到端取证：`npm run e2e:gateway`（真 bridge 进程 + 真服务令牌 + 真跑一次本机 CLI，
   覆盖 A2A send/get/cancel、messageId 幂等与 ACP prompt/cancel 全链路；**多轮记忆含真 CLI
   两轮对话断言**。CLI 出网代理与系统不一致时用 `E2E_PROXY=http://127.0.0.1:<port>` 指定）。
+  不指定 `E2E_AGENT` 时脚本会**自动挑一个本机就绪的 CLI**（避免把某个工具的订阅/登录态
+  问题当成桥接回归）；指定时按指定跑。一个就绪的都没有时退出码 `2`，
+  设 `E2E_ALLOW_SKIP=1` 才会以「跳过」结束（并明确打印本轮未验证任何行为）。
 - 详见 `contracts/openapi.control-plane.yaml` 的 `a2a-gateway` tag。
 
 ### 扫描结果实时回传与品牌图标
