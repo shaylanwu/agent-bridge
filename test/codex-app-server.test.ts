@@ -80,7 +80,8 @@ describe('Codex App Server adapter', () => {
   it('没订阅 onStderr 时也不影响回合（stderr 只进诊断尾部）', async () => {
     const child = fakeChild();
     spawnCliProcess.mockReturnValue(child);
-    const running = runCodexPrompt({ cwd: process.cwd(), prompt: 'hi', command: 'codex' });
+    // 显式 env：不让本用例触发系统代理探测（沙箱里可能拉黑 reg.exe，噪音与被测行为无关）
+    const running = runCodexPrompt({ cwd: process.cwd(), prompt: 'hi', command: 'codex', env: {} });
     await tick();
     child.stderr.write('sandbox: warning\n');
     await tick();
