@@ -112,6 +112,9 @@ export class Emitter {
   emit(msg: ClientMessage): void {
     // —— 1. 幂等 ——
     // task_snapshot/session_ack 是补取/控制回执，终态后仍必须可发。
+    // **artifact_content 同理**：协议里明写「终态后仍可取（走持久元数据 + CAS）」，
+    // 而「任务跑完再去取产物」恰恰是最常见的读法——按 taskId 一刀切会把这条读回包也丢掉，
+    // 平台只能干等超时（2026-11-28 WS e2e 实测：settle 之后 get_artifact 零响应）。
     // 相同终态也必须能回放（断线重发/同步拒绝重试）；不同终态及后续日志仍然拒绝。
     const identicalTerminalReplay =
       msg.type === 'task_status' &&
@@ -125,7 +128,8 @@ export class Emitter {
       msg.type !== 'session_ack' &&
       msg.type !== 'message_ack' &&
       msg.type !== 'task_interaction_result' &&
-      msg.type !== 'interaction_url'
+      msg.type !== 'interaction_url' &&
+      msg.type !== 'artifact_content'
     ) {
       return;
     }
