@@ -1,5 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { externalProxyEnv, parseWindowsProxyRegistry } from '../src/infra/proxy-env.js';
+import {
+  detectWindowsSystemProxy,
+  externalProxyEnv,
+  parseWindowsProxyRegistry,
+  resetSystemProxyCache,
+} from '../src/infra/proxy-env.js';
+
+const cp = vi.hoisted(() => ({ execFileSync: vi.fn() }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: cp.execFileSync as unknown as typeof actual.execFileSync };
+});
 
 describe('外部代理环境', () => {
   it('解析 Windows 单一代理与分协议代理，未启用时不返回', () => {
@@ -53,5 +64,19 @@ describe('外部代理环境', () => {
     );
     expect(kept.HTTPS_PROXY).toBe('http://user-proxy:8080');
     expect(detect).not.toHaveBeenCalled();
+  });
+
+  it('系统代理探测按进程缓存：每个进程只查一次注册表', () => {
+    resetSystemProxyCache();
+    cp.execFileSync.mockReset();
+    cp.execFileSync
+      .mockReturnValueOnce('ProxyEnable    REG_DWORD    0x1')
+      .mockReturnValueOnce('ProxyServer    REG_SZ    127.0.0.1:7897');
+    expect(detectWindowsSystemProxy()).toBe('http://127.0.0.1:7897');
+    expect(cp.execFileSync).toHaveBeenCalledTimes(2);
+    // 第二次走缓存：不再 spawn reg.exe（安全策略拉黑该程序的机器上尤其重要）
+    expect(detectWindowsSystemProxy()).toBe('http://127.0.0.1:7897');
+    expect(cp.execFileSync).toHaveBeenCalledTimes(2);
+    resetSystemProxyCache();
   });
 });

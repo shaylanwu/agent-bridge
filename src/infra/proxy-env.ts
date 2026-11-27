@@ -37,12 +37,28 @@ function queryRegistry(value: string): string {
   });
 }
 
+let cachedSystemProxy: { value: string | undefined } | undefined;
+
+/**
+ * 进程内缓存：每次 spawn 都 `reg.exe query` 一次没必要（Windows 上约 10–30ms，
+ * 且在安全策略拉黑 reg.exe 的机器上每次都会留下一条拦截噪音）。
+ * 代价是改了系统代理要重启 bridge 才生效 —— 与 agy 的既有语义一致。
+ */
 export function detectWindowsSystemProxy(): string | undefined {
+  if (cachedSystemProxy) return cachedSystemProxy.value;
+  let value: string | undefined;
   try {
-    return parseWindowsProxyRegistry(queryRegistry('ProxyEnable'), queryRegistry('ProxyServer'));
+    value = parseWindowsProxyRegistry(queryRegistry('ProxyEnable'), queryRegistry('ProxyServer'));
   } catch {
-    return undefined;
+    value = undefined;
   }
+  cachedSystemProxy = { value };
+  return value;
+}
+
+/** 测试用：清掉探测缓存（生产路径不需要调用） */
+export function resetSystemProxyCache(): void {
+  cachedSystemProxy = undefined;
 }
 
 /** `AGENT_BRIDGE_EXTERNAL_PROXY=off|none`：显式关闭代理注入（系统代理配错时的逃生口） */
