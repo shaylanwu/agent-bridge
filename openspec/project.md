@@ -51,19 +51,26 @@ Trae 等 12 个）通过一条**出站 WebSocket** 暴露给远程编排平台�
 
 ## 已知未落地项（提案时不要假设它们存在）
 
-> 2026-11-27 核对：以下每条都在源码里确认过仍是缺口。已实现的不再列在这里——
+> 2026-11-28 核对：以下每条都在源码里确认过仍是缺口。已实现的不再列在这里——
 > `refresh_token` 续期、`allowed_cwd` 白名单、`max_tasks`/`max_queue` 并发上限、
-> `isAnsi`（按 `hasAnsi()` 实测）都已落地，别再按旧台账当成不存在。
+> `isAnsi`（按 `hasAnsi()` 实测）、**`daemon install`/`uninstall`**（Windows `schtasks` /
+> macOS LaunchAgent / Linux systemd user unit，含 `--dry-run`，见 `src/commands/daemon.ts`
+> 与 `test/daemon*.test.ts`；真机注册未验证）都已落地，别再按旧台账当成不存在。
 
-- **daemon**：`install` / `uninstall` 仍是 stub（只打印未实现），不提供系统服务注册；
-- **`context_exhausted`**：受控错误码里唯一尚未实现的一个；
+- **`context_exhausted`**：规格（`session-gateway/spec.md`）要求「超上下文回 context_exhausted」，
+  但代码与契约（错误码清单）里都没有它 —— 目前是**规格承诺、实现缺失**，需么实现、么降级为未实现；
 - **附件容量与安全**：无 artifact 配额、无 `ENOSPC` 专门处理、无入站扫描/quarantine、无引用计数；
 - **备份与恢复**：状态库没有 backup/restore 流程；
 - **A2A 推送**：无 push notification / webhook；
 - **可观测性**：无 OpenTelemetry / W3C `traceparent`，`/metrics` 只有进程内计数，无 DB/WAL/磁盘指标；
 - **传输与存储加密**：无 mTLS、无 AES-256-GCM 静态加密、无 key rotation、审计无 hash chain；
-- **发布**：`1.0.0` **尚未发布**（npm `latest` 仍是 `0.2.3`，仓库无 `v1.0.0` tag）；
-- **真实验证**：12 个适配器里完成模型级真跑的只有一部分，permission/form 目前以 mock/fake-CLI 为主。
+- **发布**：`1.0.0` 已于 2026-11-26 发布（npm `latest=1.0.0`、tag `v1.0.0`、GitHub Release 齐备）；
+  发布后 SHALL 手工补跑 `node site/scripts/gen-changelog.mjs` 并提交，否则仓库内站点 changelog 页
+  会落后一个版本（线上构建时重生成，所以用户看不出来，但 `site:check` 会一直红）；
+- **真实验证**：12 个适配器里完成模型级真跑的是 6 个（codex / agy / kimi-code / minimax-code /
+  ds-harness / opencode），其余 6 个卡在账号或本机配置（claude-code 订阅 403、mimo-code key 401、
+  codebuddy 需 `/login`、qoder 额度用尽、grok 的 `node_repl` MCP 路径不存在、trae 未登录）；
+  permission 交互只有 kimi-code 有真 CLI 证据，**form（elicitation）在所有适配器上都还没有真证据**。
 
 详见 `.harness/rules/protocol-contract-rules.md` §6 与 `.harness/rules/release-rules.md`。
 

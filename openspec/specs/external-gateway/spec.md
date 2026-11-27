@@ -123,12 +123,46 @@ acp 会话绑定丢失（内存态）SHALL 走 sessionNotFound，不假装可续
 - **WHEN** 轮次失败导致会话关闭后再次 prompt
 - **THEN** 拒绝并提示「请 session/new 新建会话」，不静默换新会话（上下文已丢，不假装可续）
 
+### Requirement: ACP 会话的按任务交互申请（add-interaction-optin）
+
+ACP `session/new` SHALL 接受可选扩展字段 `params._meta.allowInteractive`（严格布尔；非布尔值
+SHALL 以 invalidParams 拒绝，不做类型猜测）。该会话随后每轮 `session/prompt`
+发起的 bridge turn SHALL 带上 `allowInteractive`（首轮显式传，续轮由 turn.execution 继承）。
+是否真正开放交互 SHALL 仍由**本机策略**二重决定：进程未以 `--interaction-enabled` 启动时，
+即使客户端申请，turn 仍按非交互执行，ACP 权限请求被本机直接拒绝（不静默伪造选项，也不阻塞等待）。
+控制面 HTTP 的等价字段是 `POST /v1/tasks` 的 `allowInteractive`（同样只接受布尔，生效条件相同）。
+
+#### Scenario: 申请后收到权限请求帧
+
+- **WHEN** 进程以 `--interaction-enabled` 启动，客户端 `session/new` 带 `_meta.allowInteractive: true`，
+  该轮 CLI 申请权限
+- **THEN** `session/prompt` 的 SSE 流出现 `event: request`（`session/request_permission`，含 options），
+  客户端以响应报文应答 `selected(optionId)` 后本轮继续，终帧为 `end_turn`
+
+#### Scenario: 未申请时不产生请求帧
+
+- **WHEN** 客户端未声明 `_meta.allowInteractive`（缺省）
+- **THEN** turn 以非交互执行，CLI 的权限请求被本机直接拒绝，SSE 流不出现 `event: request`
+
+### Requirement: A2A 表面的交互边界（add-interaction-optin）
+
+A2A 表面 SHALL NOT 声称支持交互：其协议没有 agent→client 请求帧通道，`task_interaction_response`
+也无从投递。因此 A2A `SendMessage` 的 `message.metadata.allowInteractive === true` SHALL 以
+JSON-RPC error 拒绝（`-32000`，`data.code = 'interaction_not_supported'`），且 MUST NOT 创建任务
+（幂等键不落账），而不是静默降级为非交互任务。
+
+#### Scenario: A2A 请求交互被明确拒绝
+
+- **WHEN** `SendMessage` 的 metadata 带 `allowInteractive: true`
+- **THEN** 返回 -32000 + `data.code='interaction_not_supported'`，GetTask 对该 messageId 查不到任务
+
 ### Requirement: 端到端验证
 
 网关 SHALL 附带端到端冒烟（`npm run e2e:gateway`）：真 bridge 进程 + 真服务令牌 + 真跑一次本机 CLI，
 覆盖 A2A send/get/cancel、messageId 幂等、ACP prompt/cancel 与多轮记忆（两轮对话内容引用断言）；
-permission/form 交互闭环由真 store + 真 SSE + 同一 dispatch 路径的单元测试覆盖。CLI 出网代理与
-系统代理不一致时 SHALL 支持 `E2E_PROXY` 覆盖。
+permission 交互闭环 SHALL 有真 CLI 证据（`E2E_INTERACTION=1`，请求帧 → 响应报文 → end_turn），
+form 交互暂无真 CLI 证据，仅以真 store + 真 SSE + 同一 dispatch 路径的单元测试覆盖，不得据此声称已验证。
+CLI 出网代理与系统代理不一致时 SHALL 支持 `E2E_PROXY` 覆盖。
 
 #### Scenario: 真 CLI 冒烟
 

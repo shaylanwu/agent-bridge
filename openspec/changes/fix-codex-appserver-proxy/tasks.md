@@ -22,9 +22,9 @@
 - [x] 3.1 `npm run gate` 七项全绿（协议边界 / 文档一致性 / tsc / vitest / 构建 / 提案格式 / 归档目录）；`npm run harness:validate` 全绿
 - [x] 3.2 **不设** `E2E_PROXY`，`E2E_AGENT=codex npm run e2e:gateway` → 全部通过（14 项断言 + A2A/ACP 全绿，约 70s 跑完）；修复前同一路径首个 token 要等 113s
 - [x] 3.3 `E2E_INTERACTION=1 E2E_AGENT=kimi-code npm run e2e:gateway` 交互闭环 **17/17**（请求帧 1、已应答 1、终态 end_turn、选项 `approve_once`）
-- [ ] 3.4 规范合并：`openspec/specs/task-execution/spec.md` 代理章节从 agy 扩到「声明 `preferSystemProxy` 的工具」（评审后执行）
+- [x] 3.4 规范合并：`openspec/specs/task-execution/spec.md` 的「agy 外部代理解析」已扩为「声明式外部代理解析（agy / codex）」，并新增「stderr 必须被消费」「回合 Promise 不得产生未处理拒绝」两条 Requirement
 
 ## 4. 归档
 
-- [ ] 4.1 评审通过后把 `specs/task-execution/spec.md` 的增量合并进 `openspec/specs/task-execution/spec.md`
+- [x] 4.1 `specs/task-execution/spec.md` 的增量已合并进 `openspec/specs/task-execution/spec.md`（2026-11-28）
 - [ ] 4.2 由人工执行 `mv openspec/changes/fix-codex-appserver-proxy openspec/changes/archive/<日期>-fix-codex-appserver-proxy`

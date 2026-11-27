@@ -34,5 +34,5 @@
 
 ## 6. 归档
 
-- [ ] 6.1 评审通过后把 `specs/external-gateway/spec.md` 的增量合并进 `openspec/specs/external-gateway/spec.md`
+- [x] 6.1 `specs/external-gateway/spec.md` 的增量已合并进 `openspec/specs/external-gateway/spec.md`（2026-11-28：ACP 交互申请 + A2A 边界两条 Requirement，端到端验证段同步注明 permission 有真 CLI 证据、form 无）
 - [ ] 6.2 由人工执行 `mv openspec/changes/add-interaction-optin openspec/changes/archive/<日期>-add-interaction-optin`

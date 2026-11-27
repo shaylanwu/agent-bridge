@@ -2,7 +2,8 @@
  * 帮助文本（CLI 支撑件）
  *
  * 命令清单与 `dispatch.ts` 的注册表必须一致 —— README 由 `doc:check` 机检，
- * 这里则是给人看的第一份说明，未实现的能力必须当场写清（daemon install/uninstall 仍是 stub）。
+ * 这里则是给人看的第一份说明，未实现的能力必须当场写清（例如 `context_exhausted`
+ * 这类规格里有、实现里没有的条款，不能写成已支持）。
  */
 
 import { existsSync } from 'node:fs';
