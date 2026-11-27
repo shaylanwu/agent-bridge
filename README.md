@@ -655,6 +655,7 @@ v1. **But if a message carries a token, it must verify** — there is no "presen
 | `agent_protocol_error` | The agent ended a turn with an unresolved interaction or violated the execution protocol |
 | `idempotency_conflict` | The same idempotency key was reused with a different request fingerprint |
 | `session_not_continuable` | The tool has no way to continue a session (`executionModes[].continuation` is `single-turn`), so `sessionMode = conversation` is refused at creation |
+| `context_exhausted` | The CLI itself reported that the history no longer fits its context window (`prompt is too long: … tokens > … maximum`, `context_length_exceeded`, …). Retrying the same prompt cannot succeed — open a new session or shorten the history. Detected from the CLI's own failure text (**never** predicted from a model budget table), and it only replaces `agent_error` |
 | `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | Service-token failures |
 | `protocol_incompatible` / `internal` | Version mismatch / bridge-side fault |
 

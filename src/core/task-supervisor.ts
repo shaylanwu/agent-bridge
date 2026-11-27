@@ -43,6 +43,7 @@ import { buildWinCommandLine, isWinShim } from '../adapters/win-exec.js';
 import { withoutHostEnv } from '../adapters/host-env.js';
 import { createStepParser, claudeToolCallOf, type ParsedStep, type PlanItem, type StepFormat } from '../adapters/step-parsers.js';
 import { BridgeError, type BridgeErrorCode } from './errors.js';
+import { looksLikeContextOverflow } from './context-overflow.js';
 import { PartialMessageTracker, acpChunkText, claudeBlockText, codexDeltaText } from './partial-messages.js';
 import { decidePermissionMode, fullResidualPermissionOutcome, permissionEnvFor, type PermissionPolicyName } from './permission-policy.js';
 import { externalProxyEnv } from '../infra/proxy-env.js';
@@ -203,6 +204,18 @@ export const DEFAULT_MAX_QUEUED = 60;
 /** 单个任务最多上行多少条 codex 非内容通知（去重后）；重连风暴时防刷屏 */
 const CODEX_NOTICE_LIMIT = 40;
 
+/**
+ * 失败分类用输出尾部的上限（字符）。
+ * 只用来读「上下文超限」这类终局文案，2 KiB 足够（各家报错都在一两行内）。
+ */
+export const CONTEXT_TAIL_LIMIT = 2048;
+
+/** 追加到有界尾部缓冲：超出即从头部截掉 */
+function appendTail(tail: string, text: string): string {
+  const next = tail + text;
+  return next.length > CONTEXT_TAIL_LIMIT ? next.slice(next.length - CONTEXT_TAIL_LIMIT) : next;
+}
+
 interface Entry {
   req: RunTaskRequest;
   hooks: TaskHooks;
@@ -230,6 +243,14 @@ interface Entry {
   authGuard?: AgentDef['authGuard'];
   /** 守卫匹配用的 stderr 有界缓冲（防模式跨 chunk 断裂） */
   authStderr: string;
+  /**
+   * 输出尾部有界缓冲（stdout+stderr 合计 ≤2 KiB），**只用于失败分类**。
+   *
+   * 为什么需要：很多 CLI 把「上下文超限」报在 stderr 上，而结算时能拿到的
+   * `info.error` 往往只有一句「CLI 退出码 1」——没有这个尾部就永远判不出超限
+   * （见 core/context-overflow.ts）。不上行、不落库，终态即随 entry 回收。
+   */
+  tail: string;
   child?: ChildProcess;
   acpAbort?: AbortController;
   acpPermissions?: Map<string, (answer?: InteractionAnswer) => Promise<boolean>>;
@@ -567,6 +588,7 @@ export class TaskSupervisor {
       stepRefs: new Map(),
       authGuard: def.authGuard,
       authStderr: '',
+      tail: '',
       resolve,
       done,
     };
@@ -792,6 +814,8 @@ export class TaskSupervisor {
       // 输出会在 settle 之后到达这里 —— 终态后一律不再上行（Emitter.settled 只是纵深防御）。
       if (entry.state === 'settled') return;
       const text = buf.toString('utf8');
+      // 失败分类用的输出尾部（有界，不上行）：很多 CLI 把「上下文超限」只写在 stderr 上
+      entry.tail = appendTail(entry.tail, text);
       if (stream === 'stdout' && entry.hooks.onSession) {
         const nativeSessionId = detectNativeSession(text);
         if (nativeSessionId) entry.hooks.onSession(nativeSessionId);
@@ -1357,6 +1381,22 @@ export class TaskSupervisor {
     }
     for (const resolve of entry.acpPermissions?.values() ?? []) resolve(undefined);
     entry.acpPermissions?.clear();
+
+    /**
+     * 上下文超限的反应式改判（`context_exhausted`）。
+     *
+     * 判定只来自 CLI 自己的失败文本（`info.error` 或输出尾部），**不做预算预测**；
+     * 只替换 `agent_error`，success / cancelled / timeout 与其它受控码一律不动，
+     * 识别不出来就维持 `agent_error` —— 宁可不报，不得虚报。
+     */
+    if (
+      status === 'failed' &&
+      info.errorCode === 'agent_error' &&
+      looksLikeContextOverflow(info.error, entry.tail)
+    ) {
+      info = { ...info, errorCode: 'context_exhausted' };
+    }
+
     // 终态快照存 entry：本条调用链内的重放直接用，不重跑 git diff
     entry.finishInfo = withDiff(entry.req, info);
     entry.hooks.onStatus(status, entry.finishInfo);

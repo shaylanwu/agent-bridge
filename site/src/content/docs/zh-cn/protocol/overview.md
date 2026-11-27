@@ -100,6 +100,7 @@ agy 1.5.9 起声明 `headless` 与 `acp-stdio`，旧版只保留 headless。agy 
 | `task_not_found` | 404 | taskId 从未存在，或不属于该租户 |
 | `artifact_not_found` | 404 | artifactId 未知或已淘汰 |
 | `session_not_continuable` | 409 | 该工具没有任何续接回合的通道（`continuation = single-turn`），不能开 conversation |
+| `context_exhausted` | 422 | CLI 报告历史已装不进上下文窗口。原样重试无解——应开新会话或缩短历史。判定来自 CLI 自己的失败文本，不做预算预测 |
 
 ## 排队语义
 

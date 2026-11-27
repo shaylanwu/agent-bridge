@@ -57,8 +57,10 @@ Trae 等 12 个）通过一条**出站 WebSocket** 暴露给远程编排平台�
 > macOS LaunchAgent / Linux systemd user unit，含 `--dry-run`，见 `src/commands/daemon.ts`
 > 与 `test/daemon*.test.ts`；真机注册未验证）都已落地，别再按旧台账当成不存在。
 
-- **`context_exhausted`**：规格（`session-gateway/spec.md`）要求「超上下文回 context_exhausted」，
-  但代码与契约（错误码清单）里都没有它 —— 目前是**规格承诺、实现缺失**，需么实现、么降级为未实现；
+- ~~**`context_exhausted`**~~：2026-11-28 已落地（提案 `add-context-exhausted`）—— **反应式**识别：
+  只看 CLI 自己的失败文本（`core/context-overflow.ts`），在 `settle()` 把 `agent_error` 改判为
+  `context_exhausted`（HTTP 422）；**不做**模型上下文预算表，识别不出就维持 `agent_error`。
+  注意它只覆盖「CLI 报了超限」，不覆盖「CLI 自己静默截断历史」的情况；
 - **附件容量与安全**：无 artifact 配额、无 `ENOSPC` 专门处理、无入站扫描/quarantine、无引用计数；
 - **备份与恢复**：状态库没有 backup/restore 流程；
 - **A2A 推送**：无 push notification / webhook；

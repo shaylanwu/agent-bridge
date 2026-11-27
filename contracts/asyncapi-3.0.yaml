@@ -997,3 +997,4 @@ components:
         - task_not_found
         - artifact_not_found
         - session_not_continuable
+        - context_exhausted

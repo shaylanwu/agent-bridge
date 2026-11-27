@@ -53,6 +53,10 @@ export const BRIDGE_ERROR_CODES = [
   // conversation 创建前就拒：该工具没有任何可续接回合的通道（continuation=single-turn）。
   // 在 message_ack 上早就用它了，这里钉住，让 run_task 的拒绝也能被程序化分支。
   'session_not_continuable',
+  // —— 会话历史（replay 超上下文）——
+  // 只由 CLI **自己报出的超限文本**触发（core/context-overflow.ts），不做预算预测：
+  // 重试同一个 prompt 一定还是失败，正确处理是「开新会话 / 缩短历史」，不是原样重试。
+  'context_exhausted',
 ] as const;
 
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
@@ -112,6 +116,9 @@ export const ERROR_HTTP_STATUS: Record<BridgeErrorCode, number> = {
   artifact_not_found: 404,
   // 会话形态与请求不符（工具不支持多轮），换个参数就能成功 ⇒ 409 而不是 400
   session_not_continuable: 409,
+  // 请求本身没写错，服务端也没坏，是「这段历史装不进模型的上下文窗口」⇒ 422（语义不可处理）。
+  // 重试无效，客户端应改用新会话或缩短历史。
+  context_exhausted: 422,
 };
 
 /** RFC 9457 `application/problem+json` 对象 */

@@ -594,6 +594,7 @@ bridge 会在终态 `task_status` 上**回显 `requestedBy`**，供平台落 `re
 | `agent_protocol_error` | Agent 在交互未决时结束回合或违反执行协议 |
 | `idempotency_conflict` | 同一幂等键携带了不同的请求指纹 |
 | `session_not_continuable` | 该工具没有任何续接回合的通道（`executionModes[].continuation` 为 `single-turn`），`sessionMode = conversation` 在**创建时**即被拒绝 |
+| `context_exhausted` | CLI 自己报告历史已装不进上下文窗口（`prompt is too long: … tokens > … maximum`、`context_length_exceeded` 等）。原样重试同一个 prompt 一定还是失败——应开新会话或缩短历史。判定来自 CLI 自己的失败文本（**不做**模型上下文预算预测），且只替换 `agent_error` |
 | `unauthorized` / `invalid_token` / `token_expired` / `insufficient_scope` | 服务令牌四类失败 |
 | `protocol_incompatible` / `internal` | 版本不匹配 / bridge 自身异常 |
 

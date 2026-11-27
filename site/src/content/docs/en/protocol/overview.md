@@ -109,6 +109,7 @@ route. `off`/`none` disables proxy injection entirely.
 | `task_not_found` | 404 | The taskId never existed, or belongs to another tenant |
 | `artifact_not_found` | 404 | Unknown or evicted artifactId |
 | `session_not_continuable` | 409 | The tool has no way to continue a session (`continuation = single-turn`), so no conversation |
+| `context_exhausted` | 422 | The CLI reported the history no longer fits its context window. Retrying cannot help — open a new session or shorten the history. Detected from the CLI's own failure text, never predicted |
 
 ## Queuing semantics
 
