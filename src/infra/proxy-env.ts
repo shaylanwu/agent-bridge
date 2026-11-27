@@ -45,11 +45,17 @@ export function detectWindowsSystemProxy(): string | undefined {
   }
 }
 
+/** `AGENT_BRIDGE_EXTERNAL_PROXY=off|none`：显式关闭代理注入（系统代理配错时的逃生口） */
+const PROXY_OFF_VALUES = new Set(['off', 'none', 'false', '0']);
+
 export function externalProxyEnv(
   base: NodeJS.ProcessEnv,
   opts: { platform?: NodeJS.Platform; detect?: () => string | undefined } = {},
 ): NodeJS.ProcessEnv {
-  const explicit = normalizeProxy(base['AGENT_BRIDGE_EXTERNAL_PROXY'] ?? '');
+  const declared = (base['AGENT_BRIDGE_EXTERNAL_PROXY'] ?? '').trim();
+  // 逃生口先于一切：用户明确要求直连时不得再读系统代理（否则等于把开关做成摆设）
+  if (PROXY_OFF_VALUES.has(declared.toLowerCase())) return { ...base };
+  const explicit = normalizeProxy(declared);
   const proxy =
     explicit ??
     ((opts.platform ?? process.platform) === 'win32'

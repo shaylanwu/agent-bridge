@@ -154,6 +154,10 @@ export const AGENTS: AgentDef[] = [
     // full：同时绕过审批与 Codex 自身沙箱
     fullArgs: ['--dangerously-bypass-approvals-and-sandbox'],
     steps: 'codex-json',
+    // codex 0.171 的 responses 走 WebSocket：本机直连该通道会被丢（重试 5 次 ≈113s 后
+    // 才回退 HTTPS，见 2026-11-27 实测）。桌面/终端启动的 bridge 环境里通常没有代理变量，
+    // 因此与 agy 同源处理：显式 AGENT_BRIDGE_EXTERNAL_PROXY → Windows 系统代理。
+    preferSystemProxy: true,
     credential: {
       envKey: 'OPENAI_API_KEY',
       envs: ['OPENAI_API_KEY'],

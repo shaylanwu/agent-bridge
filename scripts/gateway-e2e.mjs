@@ -305,7 +305,10 @@ const bridgeEnv = (extra = {}) => {
   };
   // CLI 出网代理修正：会话宿主可能注入坏代理（实测 65495 挡死全部 CLI 的 CONNECT），
   // E2E_PROXY 显式指定时覆盖四件套，让 bridge 里的 CLI 走对代理。
+  // 同时给 AGENT_BRIDGE_EXTERNAL_PROXY —— codex/agy 这类适配器按它（而非继承的 HTTPS_PROXY）
+  // 解析代理，只设四件套的话显式意图传不到它们那里。
   if (process.env.E2E_PROXY) {
+    env.AGENT_BRIDGE_EXTERNAL_PROXY = process.env.E2E_PROXY;
     for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) {
       env[key] = process.env.E2E_PROXY;
     }
@@ -388,6 +391,12 @@ async function runInteractionPhase(auth) {
       },
     },
   ).catch((error) => {
+    // SSE 超时但一帧 request 都没收到：多数 CLI 侧原因（本机模型不发起工具调用/自动放行），
+    // 桥接没有被证伪也没有被验证 —— 交给下面的「未验证」分支如实说明，不记成桥接失败。
+    if (requestFrames === 0) {
+      console.log(`  ℹ️  交互轮次 SSE 未到终帧（${error.message}），且未收到任何 request 帧`);
+      return [];
+    }
     record('ACP 交互轮次 SSE', false, error.message);
     return [];
   });

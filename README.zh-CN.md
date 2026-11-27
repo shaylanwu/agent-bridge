@@ -128,9 +128,10 @@ apiKey 配置；kimi 探测 oauth 登录态 `~/.kimi-code/credentials/kimi-code.
 不含 `login` 子命令——认证走 Trae IDE 团队/企业登录写入的 OS keyring，或上面的 PAT 环境变量；两者都没有时任何
 模型任务都无法运行。
 
-agy 的外部请求可用 `AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定代理；未指定时，Windows 自动读取当前用户系统代理。
-这避免 WorkBuddy 进程代理与系统代理不一致导致 Google API 502；不会把本机端口写死进代码。agy 1.5.9 起
-声明 ACP，旧版只保留 headless；已实测首轮和原生续接，未逐项实测的 permission/form 不声明。
+agy 与 codex 的外部请求可用 `AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定代理；未指定时，Windows 自动读取当前用户
+系统代理；设为 `off`（或 `none`）则不注入任何代理、直连。这避免 WorkBuddy 进程代理与系统代理不一致导致
+Google API 502，也避免 codex 的 responses WebSocket 走直连时空转约 113s；不会把本机端口写死进代码。
+agy 1.5.9 起声明 ACP，旧版只保留 headless；已实测首轮和原生续接，未逐项实测的 permission/form 不声明。
 
 ### 稳定设备身份与本地状态
 

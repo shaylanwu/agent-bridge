@@ -68,9 +68,10 @@ OS keyring targets, or official read-only status commands; secrets are never rea
 `keyring:gemini:antigravity` on Windows. Trae's official `login status` uses only its exit code and never reports
 output. Probe failures preserve the conservative result and do not interrupt scans of other agents.
 
-agy 1.5.9 declares both `headless` and `acp-stdio`; older versions remain headless-only. Set
-`AGENT_BRIDGE_EXTERNAL_PROXY` explicitly, or let Windows use the system proxy when unset, to avoid Google 502s
-caused by an inherited, unusable host proxy.
+agy 1.5.9 declares both `headless` and `acp-stdio`; older versions remain headless-only. For agy and codex,
+set `AGENT_BRIDGE_EXTERNAL_PROXY` explicitly, or let Windows use the system proxy when unset, to avoid Google 502s
+caused by an inherited, unusable host proxy and to keep codex's responses WebSocket from stalling on a direct
+route. `off`/`none` disables proxy injection entirely.
 
 ## Controlled error codes
 

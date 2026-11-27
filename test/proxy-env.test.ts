@@ -38,4 +38,20 @@ describe('外部代理环境', () => {
     expect(externalProxyEnv(base, { platform: 'linux', detect })).toEqual(base);
     expect(detect).not.toHaveBeenCalled();
   });
+
+  it('AGENT_BRIDGE_EXTERNAL_PROXY=off|none 关闭注入（系统代理配错时的逃生口）', () => {
+    const detect = vi.fn(() => 'http://127.0.0.1:7897');
+    for (const value of ['off', 'none', 'OFF', ' false ', '0']) {
+      const env = externalProxyEnv({ AGENT_BRIDGE_EXTERNAL_PROXY: value }, { platform: 'win32', detect });
+      expect(env.HTTPS_PROXY).toBeUndefined();
+      expect(env.HTTP_PROXY).toBeUndefined();
+    }
+    // 关闭语义不得连带清掉用户自己已有的代理变量
+    const kept = externalProxyEnv(
+      { AGENT_BRIDGE_EXTERNAL_PROXY: 'off', HTTPS_PROXY: 'http://user-proxy:8080' },
+      { platform: 'win32', detect },
+    );
+    expect(kept.HTTPS_PROXY).toBe('http://user-proxy:8080');
+    expect(detect).not.toHaveBeenCalled();
+  });
 });

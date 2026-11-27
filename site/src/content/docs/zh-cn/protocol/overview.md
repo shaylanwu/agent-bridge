@@ -60,8 +60,9 @@ sidebar:
 `keyring:gemini:antigravity`。Trae 的官方 `login status` 只认退出码且不上报输出；探测命令失败时保持保守状态，
 不影响其他工具扫描。
 
-agy 1.5.9 起声明 `headless` 与 `acp-stdio`，旧版只保留 headless。外部代理可由
-`AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定；Windows 未指定时读取系统代理，避免继承错误宿主代理后访问 Google 502。
+agy 1.5.9 起声明 `headless` 与 `acp-stdio`，旧版只保留 headless。agy 与 codex 的外部代理可由
+`AGENT_BRIDGE_EXTERNAL_PROXY` 显式指定；Windows 未指定时读取系统代理，避免继承错误宿主代理后访问 Google 502，
+也避免 codex 的 responses WebSocket 走直连时空转；设为 `off`/`none` 则完全不注入代理。
 
 ## 受控错误码
 

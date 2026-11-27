@@ -13,7 +13,9 @@
  */
 
 import { createInterface } from 'node:readline';
+import { externalProxyEnv } from '../infra/proxy-env.js';
 import { killCliProcess, spawnCliProcess } from './agent-adapters.js';
+import { withoutHostEnv } from './host-env.js';
 
 export type CodexApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
@@ -31,12 +33,22 @@ export interface CodexPromptOptions {
   prompt: string;
   /** 可执行文件路径；缺省 'codex'。调用方应传 resolveBin 出来的绝对路径 */
   command?: string;
+  /**
+   * 子进程环境；缺省 `externalProxyEnv(withoutHostEnv(process.env))`。
+   *
+   * 缺省值不是 `process.env`：直接继承有两处实测问题 —— ①宿主会话上下文
+   * （CODEBUDDY_SESSION_ID 等）冒充宿主会话；②桌面/终端启动的 bridge 没有代理变量，
+   * 而 codex 0.171 的 responses WebSocket 直连会被丢，每回合先空转 ~113s 才回退 HTTPS。
+   */
+  env?: NodeJS.ProcessEnv;
   /** 已有 Codex thread id：优先 thread/resume */
   nativeThreadId?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
   onUpdate?: (notification: Record<string, unknown>) => void;
   onApproval?: (request: CodexApprovalRequest) => Promise<string | undefined> | string | undefined;
+  /** stderr 的实时旁路（诊断用，已截断）；stderr 无论有没有订阅方都必须被读走 */
+  onStderr?: (text: string) => void;
   /** turn/start 完成后暴露 thread/turn 与 same-turn steer 能力 */
   onTurn?: (turn: {
     threadId: string;
@@ -53,6 +65,13 @@ export interface CodexPromptResult {
 
 export function codexAppServerArgs(): string[] {
   return ['app-server', '--stdio'];
+}
+
+/** stderr 尾部保留上限：与 ACP 通道同量级，够看清最后一条错误栈又不塞满错误消息 */
+export const CODEX_STDERR_TAIL_LIMIT = 4 * 1024;
+
+export function codexChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return externalProxyEnv(withoutHostEnv(base));
 }
 
 interface Pending {
@@ -92,8 +111,29 @@ function deliveryFuture(): { promise: Promise<boolean>; settle: (delivered: bool
 export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPromptResult> {
   const child = spawnCliProcess(opts.command ?? 'codex', codexAppServerArgs(), {
     cwd: opts.cwd,
-    env: process.env,
+    env: opts.env ?? codexChildEnv(),
   });
+
+  /**
+   * stderr 必须持续读走：codex app-server 会往这里写配置告警、重连/回退提示与失败栈。
+   * 不读有两个后果 —— ①失败只剩一个退出码，用户无法自查；②pipe 缓冲（64 KiB）写满后
+   * 子进程阻塞在 write 上，协议流彻底停摆，外部只看得到 heartbeat（2026-11-27 复盘到的
+   * 「交互模式回合挂死」就是这么被误判的）。尾部同时用于错误消息后缀。
+   */
+  let stderrTail = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString('utf8');
+    stderrTail = (stderrTail + text).slice(-CODEX_STDERR_TAIL_LIMIT);
+    try {
+      opts.onStderr?.(text);
+    } catch {
+      /* 诊断旁路不得影响回合 */
+    }
+  });
+  const withStderr = (message: string): string => {
+    const tail = stderrTail.trim();
+    return tail ? `${message}\n[stderr] ${tail}` : message;
+  };
 
   let nextId = 1;
   let threadId = '';
@@ -112,6 +152,10 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
     resolveTurn = resolve;
     rejectTurn = reject;
   });
+  // 握手阶段（initialize/thread/start/turn/start）失败时 turnDone 永远不会被 await，
+  // 它的 rejection 会变成未处理拒绝（Node 默认直接终止进程）。先挂一个空 catch 标记已处理；
+  // 后面 `await turnDone` 仍然正常抛错，语义不变。
+  void turnDone.catch(() => undefined);
   const pending = new Map<number, Pending>();
 
   const send = (message: JsonObject): boolean => {
@@ -130,7 +174,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
       const id = nextId++;
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error(`Codex ${method} 超时（${timeoutMs}ms）`));
+        reject(new Error(withStderr(`Codex ${method} 超时（${timeoutMs}ms）`)));
       }, timeoutMs);
       pending.set(id, { resolve, reject, timer });
       send({ jsonrpc: '2.0', id, method, params });
@@ -228,7 +272,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
       const turn = asObject(params['turn']);
       const status = String(turn['status'] ?? 'unknown');
       const error = codexTurnError(status, turn['error']);
-      if (error) rejectTurn?.(error);
+      if (error) rejectTurn?.(new Error(withStderr(error.message)));
       else resolveTurn?.();
       return;
     }
@@ -250,7 +294,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
       if (!p) return;
       pending.delete(id);
       clearTimeout(p.timer);
-      if (message['error']) p.reject(new Error(errorText(message['error'])));
+      if (message['error']) p.reject(new Error(withStderr(errorText(message['error']))));
       else p.resolve(message['result']);
       return;
     }
@@ -278,7 +322,7 @@ export async function runCodexPrompt(opts: CodexPromptOptions): Promise<CodexPro
   child.on('close', (code) => {
     closed = true;
     settleResponseWaiters();
-    const error = new Error(`Codex app-server 退出（code ${code ?? 'null'}）`);
+    const error = new Error(withStderr(`Codex app-server 退出（code ${code ?? 'null'}）`));
     failAll(error);
     if (!turnSettled) {
       turnSettled = true;

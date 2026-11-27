@@ -145,10 +145,12 @@ code of the official `traecli login status`; installation directories are not tr
 output is never reported. Note: trae-cli 0.121.3 ships no `login` subcommand — it authenticates through the OS
 keyring written by the Trae IDE team/enterprise sign-in, or the PAT env above; without either, no model task can run.
 
-For agy's external requests, set `AGENT_BRIDGE_EXTERNAL_PROXY` explicitly or let Windows read the current user's
-system proxy. This avoids Google API 502s when the WorkBuddy process proxy differs from the system proxy, without
-hardcoding a local port. agy declares ACP starting at 1.5.9; older versions remain headless-only. First and resumed
-turns were verified, while permission/form interactions that were not tested individually are not declared.
+For agy and codex, external requests use `AGENT_BRIDGE_EXTERNAL_PROXY` when set, otherwise Windows reads the
+current user's system proxy; set it to `off` (or `none`) to inject nothing and connect directly. This avoids
+Google API 502s when the WorkBuddy process proxy differs from the system proxy, and keeps codex's responses
+WebSocket from stalling for ~113s on a direct route, without hardcoding a local port. agy declares ACP starting
+at 1.5.9; older versions remain headless-only. First and resumed turns were verified, while permission/form
+interactions that were not tested individually are not declared.
 
 ### Stable device identity and local state
 
