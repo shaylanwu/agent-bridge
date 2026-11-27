@@ -52,7 +52,7 @@ numbers.**
 | `session-multi-turn` | `send_message` / `message_ack`; a conversation waits in `waiting_user` between turns |
 | `session-feed` | `task_message` / `task_step` / `task_artifact` share one `eventSeq` across turns; `get_task` fills gaps and pages history, so `task_log` never has to be parsed |
 | `task-interaction` | Permission / form / URL requests, responses, results and expiry |
-| `elicitation-form` | Relays agent form requests (`session/request_form` and ACP `elicitation/create`) and returns the structured answer |
+| `elicitation-form` | Relays agent form requests (`session/request_form` and ACP `elicitation/create`) and returns the structured answer — implemented and unit-tested, but **no real-CLI evidence yet** (the permission half of `task-interaction` is proven with kimi-code) |
 | `artifact-upload` | Inbound chunked upload with SHA-256, CAS and `task_artifact` |
 | `artifact-download` | Chunked download from CAS (ready / chunk / ack / result) |
 | `interaction-url` | `get_interaction_url`; URLs live in process memory with a short TTL |

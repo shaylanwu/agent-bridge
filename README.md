@@ -387,7 +387,9 @@ ACP: `codebuddy-cli`, `ds-harness`, `agy`, `opencode`, `mimo-code`, `kimi-code`,
 automation-only on that channel: it announces `permission` nowhere (tools run without asking, so its
 `executionModes` declares an empty `interactionKinds`) and continues sessions through its own
 `session/resume` rather than the standard `session/load`. `codex` uses the
-`codex app-server` JSON-RPC surface (thread/resume, turn/steer, approvals); Claude
+`codex app-server` JSON-RPC surface (thread/resume, turn/steer, and approval requests plumbed through
+`item/*/requestApproval` — no real-CLI approval evidence yet on our test machine, see the interaction
+loop below); Claude
 conversations keep a resident `stream-json` process across turns; Qoder uses headless with native `--resume`.
 CodeBuddy prefers an explicit `CODEBUDDY_AUTH_TOKEN`; otherwise the bridge reads the plaintext
 `auth/*.info` from the local CodeBuddyExtension and injects it into the ACP child. If neither exists it
@@ -857,6 +859,12 @@ an external contract** (decided 2026-11-22: frame formats will not follow upstre
   `POST /acp` with a response envelope (no method, carrying the gateway-issued id + result); the
   gateway converts it into `task_interaction_response` and runs the **same** dispatch path as
   `POST /v1/interactions/{id}:respond` (double-checked permissions).
+  **Evidence level**: the permission loop is proven end-to-end with a real CLI (kimi-code). The
+  form/auth-url (elicitation) path is implemented and unit-tested but **has no real-CLI evidence on
+  any adapter** — `interactionKinds` advertising `form` therefore records what the mode *can relay*,
+  not what has been observed. `opencode`/`minimax-code` auto-allow tool calls so they never ask;
+  `codex` does not issue tool calls at all on our Windows test machine (`codex exec` produces
+  reasoning only), so its approval path stays unproven even with `E2E_INTERACTION=1`.
 - End-to-end proof: `npm run e2e:gateway` (real bridge process + real service token + one real local
   CLI run, covering A2A send/get/cancel, messageId idempotency, and the ACP prompt/cancel loop;
   **multi-turn memory is asserted with a real two-round CLI dialogue**. If the CLIs' outbound proxy
@@ -866,12 +874,15 @@ an external contract** (decided 2026-11-22: frame formats will not follow upstre
   When none is ready it exits `2`, and only `E2E_ALLOW_SKIP=1` turns that into a skip (clearly
   reported as "nothing was verified"). The interaction loop (request frame → response envelope →
   turn continues) needs a CLI that actually asks for permission — tools differ a lot (kimi-code asks,
-  opencode/minimax auto-allow), so it is off by default and enabled with `E2E_INTERACTION=1`.
+  opencode/minimax auto-allow, codex issues no tool call on our test machine), so it is off by default
+  and enabled with `E2E_INTERACTION=1`. When the phase receives **zero** request frames it is reported
+  as *not verified* rather than as a bridge failure — an agent that never asks says nothing about
+  whether forwarding works.
 - Full contract: the `a2a-gateway` tag in `contracts/openapi.control-plane.yaml`.
 
 ### Live scan progress and brand icons
 
-Probing 11 CLIs takes a few seconds, so results stream in instead of arriving as one batch: for every adapter
+Probing 12 CLIs takes a few seconds, so results stream in instead of arriving as one batch: for every adapter
 that finishes, the bridge sends `scan_progress` with the newly finished `items` and `done: false`; one final
 `scan_progress` with `done: true` closes the probing phase, followed by the terminal list (`agent_list` on
 connect, or `scan_result` carrying the same `requestId` when answering `scan`). A platform that ignores

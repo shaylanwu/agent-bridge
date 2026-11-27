@@ -30,7 +30,7 @@
 
 - [x] 5.1 `npm run gate` 全绿；低并发全量 **66 文件 725 passed / 1 skipped**
 - [x] 5.2 真实 CLI 端到端：`E2E_INTERACTION=1 E2E_AGENT=kimi-code npm run e2e:gateway` **17/17**——请求帧 1、已应答 1、终态 end_turn、选项 `[{method:session/request_permission, options:3, optionId:approve_once}]`
-- [x] 5.3 实测：kimi-code 会发权限请求；opencode / minimax-code 自动放行（回合正常结束、无请求帧）→ 交互段改为 `E2E_INTERACTION=1` 显式启用，收不到请求帧时打印原因且**不记为通过**。另发现 codex 在交互模式下回合挂死（stdin `ignore`→`pipe` 差异，属 supervisor 高风险文件，另立修复）
+- [x] 5.3 实测：kimi-code 会发权限请求；opencode / minimax-code 自动放行（回合正常结束、无请求帧）→ 交互段改为 `E2E_INTERACTION=1` 显式启用；一帧 request 都没收到时记「未验证」（不算通过、也不算桥接失败）。<br>**归因更正（2026-11-28）**：当时记的「codex 交互模式回合挂死 = stdin `ignore`→`pipe`」是错的。复核实测：非交互路径同样挂，真因是 codex 0.171 的 responses WebSocket 直连被丢（重试 5 次 ≈113s 才回退 HTTPS）+ 桥接没给 codex 子进程注入代理 + 该窗口内的 `error` 通知被丢弃（全静默）。已在 `fix-codex-appserver-proxy` 修复；本机 codex 仍不发起工具调用属 CLI 侧问题，故其审批路径本轮无证据。
 
 ## 6. 归档
 

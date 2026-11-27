@@ -30,6 +30,24 @@ sidebar:
 提交信息写错，版本号和本页都会跟着错，所以 `commit-msg` 钩子（commitlint）会先拦一道。
 
 <!-- CHANGELOG:BEGIN -->
+## [1.1.0](https://github.com/shaylanwu/agent-bridge/compare/v1.0.0...v1.1.0) (2026-11-27)
+
+
+### Bug Fixes
+
+* **codex:** app-server 子进程注入外部代理并排空 stderr，修掉「回合静默挂住」 ([d685f22](https://github.com/shaylanwu/agent-bridge/commit/d685f227596f799a154322d573f9311f30a0e138))
+
+
+### Features
+
+* **codex:** 重连/配置告警上行成任务日志，不再整段静默 ([d31a2f4](https://github.com/shaylanwu/agent-bridge/commit/d31a2f45e4b3e865cdf995e80054b2b75f29abe2))
+* **gateway:** 控制面与 ACP 会话可按任务申请交互（allowInteractive 透传） ([f88e900](https://github.com/shaylanwu/agent-bridge/commit/f88e9005f1da627a4623dcf318d2a2125eb64ee5))
+
+
+### Performance Improvements
+
+* **proxy-env:** 系统代理探测按进程缓存，每进程只查一次注册表 ([da1f3ee](https://github.com/shaylanwu/agent-bridge/commit/da1f3ee718f7a6fdac51e66824839a011a776f30))
+
 ## [1.0.0](https://github.com/shaylanwu/agent-bridge/compare/v0.2.3...v1.0.0) (2026-11-26)
 
 

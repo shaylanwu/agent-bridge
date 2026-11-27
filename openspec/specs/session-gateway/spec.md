@@ -95,6 +95,16 @@ mode 缺省 queue；steer 仅在 adapter 声明且当前 Turn active 时允许�
 每个 AgentDef SHALL 按 executionMode 声明 continuation: native-session/resume-session/replay-session/single-turn，
 以及 liveInteraction/steer 能力。12 个适配器 SHALL 至少实现 replay-session 多轮底线；single-turn 仅在 CLI 无法接受
 后续 prompt 且有官方文档/实测证据时允许。replay 使用完整持久 transcript；模型上下文不足回 context_exhausted，不静默截断。
+
+> ⚠️ **`context_exhausted` 尚未实现**（2026-11-28 核对：`src/` 与错误码契约里都没有这个 code）。
+> 当前 replay 超长时的实际行为是**透传 CLI 自己的报错**，不会映射成该错误码。本节保留为**目标契约**：
+> 在实现之前，任何文档/客户端都不得把它当成已支持的错误码处理。
+
+#### Scenario: replay 会话
+
+- **WHEN** 适配器声明 replay-session
+- **THEN** 新 Turn 启动新进程并携带完整持久历史；超出上下文回 context_exhausted
+  （**未实现**：现阶段透传 CLI 的原始错误）
 native-session 使用官方 session/load，进程按 Turn 回收，不长期占用 running slot。
 
 #### Scenario: replay 会话

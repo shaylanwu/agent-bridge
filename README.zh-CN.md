@@ -340,7 +340,8 @@ ACP：`codebuddy-cli`、`ds-harness`、`agy`、`opencode`、`mimo-code`、`kimi-
 `ds-harness` 在这条通道上是 **automation-only**（实测）：跑工具只发 `tool_call`、从不回问权限，所以它的
 `executionModes.interactionKinds` 声明为空数组；续会话靠自家的 `session/resume`，标准 `session/load`
 会回 `-32601 Method not found`（客户端先试 load 再退 resume）。
-`codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer、审批）；Claude 的
+`codex` 走 `codex app-server` JSON-RPC（thread/resume、turn/steer，审批请求经
+`item/*/requestApproval` 接通——但**本机尚未取到真 CLI 的审批证据**，见下面交互闭环段）；Claude 的
 conversation 保持常驻 `stream-json` 进程（Turn 间复用）；Qoder 用 headless + 原生 `--resume`，其余工具保持各自已声明通道。
 CodeBuddy 优先用显式 `CODEBUDDY_AUTH_TOKEN`；未设置时从本机 CodeBuddyExtension 的明文
 `auth/*.info` 读取登录态并注入 ACP 子进程。两者都没有时回落 `codebuddy -p`，不会启动无认证子进程。
@@ -772,6 +773,11 @@ ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口
   form/auth-url 走 elicitation（form/url 两种 mode））。客户端用 `POST /acp` 发响应报文
   （无 method、带网关下发的 id + result）应答；网关转成 `task_interaction_response` 走与
   `POST /v1/interactions/{id}:respond` **同一条** dispatch 路径（权限判定双保险）。
+  **证据等级**：permission 闭环有真 CLI 证据（kimi-code）；form/auth-url（elicitation）已实现且有单测，
+  但**在任何适配器上都没有真 CLI 证据**——`interactionKinds` 里的 `form` 表示「这条通道能中转什么」，
+  不是「已经观测到什么」。`opencode`/`minimax-code` 会自动放行工具调用所以从不发问；`codex` 在本机
+  Windows 上根本不发起工具调用（`codex exec` 只出 reasoning），因此即使 `E2E_INTERACTION=1`，
+  它的审批路径仍未被证明。
 - 端到端取证：`npm run e2e:gateway`（真 bridge 进程 + 真服务令牌 + 真跑一次本机 CLI，
   覆盖 A2A send/get/cancel、messageId 幂等与 ACP prompt/cancel 全链路；**多轮记忆含真 CLI
   两轮对话断言**。CLI 出网代理与系统不一致时用 `E2E_PROXY=http://127.0.0.1:<port>` 指定）。
@@ -779,7 +785,9 @@ ACP v1 的 HTTP 承载在上游还是 RFD 阶段，但**本网关这一侧的口
   问题当成桥接回归）；指定时按指定跑。一个就绪的都没有时退出码 `2`，
   设 `E2E_ALLOW_SKIP=1` 才会以「跳过」结束（并明确打印本轮未验证任何行为）。
   交互闭环（权限请求帧 → 响应报文 → 回合继续）需要 CLI 真的申请权限，各工具差异大
-  （kimi-code 会问，opencode/minimax 自动放行），因此默认不跑：`E2E_INTERACTION=1` 才启用。
+  （kimi-code 会问，opencode/minimax 自动放行，codex 在本机不发工具调用），因此默认不跑：
+  `E2E_INTERACTION=1` 才启用。该段**一帧 request 都没收到时记为「未验证」而不是 FAIL**——
+  一个从不发问的 agent 既没证伪也没证明桥接。
 - 详见 `contracts/openapi.control-plane.yaml` 的 `a2a-gateway` tag。
 
 ### 扫描结果实时回传与品牌图标

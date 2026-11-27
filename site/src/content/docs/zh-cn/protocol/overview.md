@@ -45,7 +45,7 @@ sidebar:
 | `session-multi-turn` | 支持 `send_message` / `message_ack`；conversation 回合之间停在 `waiting_user` |
 | `session-feed` | `task_message` / `task_step` / `task_artifact` 跨回合共用一条 `eventSeq`；`get_task` 可补洞与回翻，不必解析 `task_log` |
 | `task-interaction` | 权限 / 表单 / URL 的请求、应答、结果与过期 |
-| `elicitation-form` | 中转 agent 的结构化表单请求（`session/request_form` 与 ACP `elicitation/create`），并把答案原路回传 |
+| `elicitation-form` | 中转 agent 的结构化表单请求（`session/request_form` 与 ACP `elicitation/create`），并把答案原路回传——已实现且有单测，但**尚无真 CLI 证据**（`task-interaction` 的 permission 一半已由 kimi-code 证明） |
 | `artifact-upload` | 入站分块上传：SHA-256 + CAS + `task_artifact` |
 | `artifact-download` | 从 CAS 分块下载（ready / chunk / ack / result） |
 | `interaction-url` | `get_interaction_url`；URL 只留在进程内存并带短 TTL |

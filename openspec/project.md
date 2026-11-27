@@ -83,8 +83,17 @@ npm test               # vitest run
 npm run gate           # 收尾门禁（契约边界 + 文档一致 + 类型 + 单测 + 构建）
 npm run harness:validate   # .harness 自检
 npm run openspec:validate  # 活跃提案格式校验
-node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs   # 端到端冒烟（需先 build）
+node .harness/skills/protocol-e2e/scripts/e2e-smoke.mjs   # WS 协议冒烟（需先 build）
+npm run e2e:gateway        # A2A/ACP/控制面端到端（真 bridge + 真令牌 + 真 CLI；自动挑就绪工具）
+npm --prefix site run check    # 文档站一致性（生成页 ↔ CHANGELOG/契约、i18n 对等、图标与页脚）
+node scripts/verify-release.mjs    # 发布链离线取证：算下一版 + 断言 CHANGELOG 结构（不联网不写仓库）
+node scripts/verify-release.mjs --expect=x.y.z   # 发布前闸门：版本不符即退出码 1
 ```
+
+E2E 说明：`e2e:gateway` 默认自动挑本机就绪的 CLI（全不就绪退出码 2，`E2E_ALLOW_SKIP=1` 才跳过）；
+`E2E_INTERACTION=1` 追加交互闭环段（需要 CLI 真的申请权限；一帧都没收到时记「未验证」，不算桥接失败）；
+CLI 出网代理与系统不一致时用 `E2E_PROXY=http://127.0.0.1:<port>`。
+**发布后须手工补跑** `node site/scripts/gen-changelog.mjs` 并提交，否则仓库内站点 changelog 页会落后一版。
 
 ## 文档索引
 
