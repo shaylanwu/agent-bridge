@@ -15,6 +15,7 @@ import { hasAnsi } from '../core/ansi.js';
 import { resolveWithinCwd, mimeTypeOf } from '../core/artifact-extract.js';
 import { InteractionBroker, type InteractionOutcome } from '../core/interaction-broker.js';
 import { capResultText } from '../core/result-text.js';
+import { capEventsByBytes, SNAPSHOT_MAX_BYTES } from '../core/snapshot-cap.js';
 export type { InteractionOutcome } from '../core/interaction-broker.js';
 import type { PermissionPolicyName } from '../core/permission-policy.js';
 import {
@@ -325,20 +326,21 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
           ? msg.afterEventSeq
           : undefined;
     const pruned = cursor !== undefined && cursor < prunedThrough;
-    o.emitter.emit({
-      type: 'task_snapshot',
+    const mappedEvents = snapshot.events.map((event) => ({
+      eventSeq: event.eventSeq,
+      type: event.type,
+      payload: event.payload,
+      createdAt: event.createdAt,
+    }));
+    // 除 events / hasMoreBefore 以外的全部字段：先拼成骨架，才能按「整帧」算字节预算
+    const baseFrame = {
+      type: 'task_snapshot' as const,
       taskId: msg.taskId,
       requestId: msg.requestId,
-      found: true,
+      found: true as const,
       ...(pruned ? { errorCode: 'session_history_pruned' } : {}),
       session: snapshot.session as unknown as Record<string, unknown>,
       turns: snapshot.turns as unknown as Record<string, unknown>[],
-      events: snapshot.events.map((event) => ({
-        eventSeq: event.eventSeq,
-        type: event.type,
-        payload: event.payload,
-        createdAt: event.createdAt,
-      })),
       oldestEventSeq: snapshot.oldestEventSeq,
       latestEventSeq: snapshot.latestEventSeq,
       ...(() => {
@@ -357,7 +359,6 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
           ? { interactionResults: results as unknown as Record<string, unknown>[] }
           : {};
       })(),
-      hasMoreBefore: snapshot.hasMoreBefore ?? false,
       ...(prunedThrough > 0 ? { prunedThrough } : {}),
       // 缺口必须一起给：平台拿到连续的 [oldest, latest] 不代表中间没丢
       eventWindow: {
@@ -365,6 +366,28 @@ export function dispatchGetTask(msg: GetTaskMessage, o: TaskDispatchOptions): vo
         latestEventSeq: snapshot.latestEventSeq,
         gaps: o.store.eventGaps(msg.taskId, snapshot.session.tenantId),
       },
+    };
+    /**
+     * 规格承诺「单响应 1 MiB 是默认可配置安全策略」——这里真的执行它。
+     * 预算按**整帧**算：先量骨架（events 置空）的大小，剩下才是事件额度，再留 1 KiB 给序列化噪声。
+     * 被裁掉的是**更早**的事件，用 `hasMoreBefore` 告知平台「往前翻还能取」。
+     */
+    const skeletonBytes = (() => {
+      try {
+        return Buffer.byteLength(JSON.stringify({ ...baseFrame, events: [] }), 'utf8');
+      } catch {
+        return 0;
+      }
+    })();
+    const { kept: events, truncated } = capEventsByBytes(
+      mappedEvents,
+      Math.max(0, SNAPSHOT_MAX_BYTES - skeletonBytes - 1024),
+    );
+    o.emitter.emit({
+      ...baseFrame,
+      events,
+      // 更早有货 = 存储层还有（翻页）**或**这次因字节上限被裁掉了前面的
+      hasMoreBefore: (snapshot.hasMoreBefore ?? false) || truncated,
     });
   } catch (error) {
     o.emitter.emit({
