@@ -30,6 +30,13 @@ sidebar:
 提交信息写错，版本号和本页都会跟着错，所以 `commit-msg` 钩子（commitlint）会先拦一道。
 
 <!-- CHANGELOG:BEGIN -->
+## [1.2.1](https://github.com/shaylanwu/agent-bridge/compare/v1.2.0...v1.2.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **acp:** 子进程崩溃时 stdin EPIPE 不再终止整个 bridge ([5e8c3f2](https://github.com/shaylanwu/agent-bridge/commit/5e8c3f2f66f9349a5db839ae71cfba21a0efbe08))
+
 ## [1.2.0](https://github.com/shaylanwu/agent-bridge/compare/v1.1.0...v1.2.0) (2026-11-27)
 
 
