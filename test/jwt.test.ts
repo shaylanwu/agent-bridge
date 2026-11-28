@@ -36,7 +36,18 @@ describe('JwtVerifier', () => {
     const verifier = new JwtVerifier({ jwks, issuer: 'https://issuer.test', audience: 'agent-bridge' });
     await expect(verifier.verify(sign({ ...base, exp: now - 60 }))).rejects.toMatchObject({ code: 'expired' });
     await expect(verifier.verify(sign({ ...base, aud: 'other' }))).rejects.toMatchObject({ code: 'bad_audience' });
-    await expect(verifier.verify(sign({ ...base, sub: 'x' }).slice(0, -2) + 'aa')).rejects.toMatchObject({
+    /**
+     * 篡改必须**确定性地**改变签名字节。
+     *
+     * 旧写法是「末两位替换成 `aa`」：base64url 的**尾部填充位会被解码忽略**，
+     * 实测 3000 次里有 12 次（≈0.4%，接近 1/256）解出的签名字节与原文**完全相同**，
+     * 于是验签照常通过 —— CI macOS 就这样红过一次
+     *（`promise resolved "{ subject: 'x', … }" instead of rejecting`）。
+     * 改为翻转签名**首字符**：它承载最高 6 位，实测 3000 次全部改变了签名字节。
+     */
+    const [header, payload, signature] = sign({ ...base, sub: 'x' }).split('.');
+    const flipped = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    await expect(verifier.verify(`${header}.${payload}.${flipped}`)).rejects.toMatchObject({
       code: 'bad_signature',
     });
     await expect(verifier.verify(sign(base, 'RS256', 'missing'))).rejects.toMatchObject({ code: 'unknown_kid' });
