@@ -67,7 +67,12 @@ export interface RunTaskRequest {
   captureDiff?: boolean;
   /** diff 文本上限（字节）；缺省用 git.ts 的 DEFAULT_DIFF_MAX_BYTES */
   diffMaxBytes?: number;
-  /** 打开 stdin 管道（steer / ACP 交互）；默认 false，保持 v1 行为 */
+  /**
+   * 本任务是否申请交互（决定审批请求转人工还是直接 decline）。
+   *
+   * ⚠️ 它**不**控制 stdin：headless 子进程恒 `stdio[0]='ignore'`，交互一律走
+   * ACP / app-server / stream-json 协议（见 `launch` 里的说明）。
+   */
   interactive?: boolean;
   /** 走该 CLI 的原生 ACP 会话 */
   acp?: boolean;
@@ -184,7 +189,12 @@ export interface TaskHandle {
   taskId: string;
   cancel: () => void;
   done: Promise<TaskStatus>;
-  /** 仅 request.interactive=true 且 stdin 可用时存在；写入一行并返回是否成功 */
+  /**
+   * 向 headless 子进程 stdin 写一行（历史 API）。
+   *
+   * headless 通道的 stdin 恒 `ignore`（见 `launch` 里的说明），因此对 headless 任务
+   * **总是返回 false**；真实交互走 `respondInteraction`（ACP / app-server 协议应答）。
+   */
   write?: (line: string) => boolean;
   /** 交互响应：等待 adapter 实际写入；false/异常均表示交付结果不确定。 */
   respondInteraction?: (requestId: string, answer?: InteractionAnswer) => boolean | Promise<boolean>;
@@ -759,7 +769,18 @@ export class TaskSupervisor {
     const childEnvBase = entry.permissionEnv ? { ...baseEnv, ...entry.permissionEnv } : baseEnv;
     const childEnv = entry.preferSystemProxy ? externalProxyEnv(childEnvBase) : childEnvBase;
     const shim = isWinShim(entry.cmd);
-    const stdinMode = entry.req.interactive ? 'pipe' : 'ignore';
+    /**
+     * headless 子进程的 stdin **恒为 ignore**，即使 `interactive=true`。
+     *
+     * 受控交互的读写通道是协议（ACP `session/request_permission`、app-server 的
+     * `item/…/requestApproval` 系列、claude stream-json 控制帧），**不是**子进程 stdin ——
+     * 没有任何适配器从 stdin 读审批答复。而给 stdin 打开 pipe 会直接毁掉那些
+     * 「先等 stdin EOF 再开工」的 CLI：实测 `codex exec --json` 在 `ignore` 下 20s 完成并
+     * 输出 879 字节，改成 pipe 且不写入内容后 25s **零字节**、进程不退出
+     * （2026-11-28 复现的「codex 交互模式回合挂死」就是这条：外部只看到 heartbeat）。
+     * 规格也写明：除受控交互适配器外，子进程 stdin SHALL 保持 ignore。
+     */
+    const stdinMode = 'ignore';
     const child: ChildProcess = shim
       ? spawn(buildWinCommandLine(entry.cmd, entry.argv), {
           cwd: entry.req.cwd,
