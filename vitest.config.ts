@@ -14,5 +14,17 @@ export default defineConfig({
   test: {
     testTimeout: 20_000,
     hookTimeout: 30_000,
+    /**
+     * 并行度上限（默认 = CPU 核数）。
+     *
+     * 为什么必须封顶：本机 16 核、而 `npm test` 里有**真实子进程**用例
+     *（`e2e-device-identity` 跑真 `dist/cli.js`、`e2e-ws-dispatch` 跑假 ACP 子进程、
+     * `bridge.test.ts` 跑 git）。满载机器上默认并行度会把这些文件挤到互相等待，
+     * 现象是「用例全部报完却不退出」——实测挂过 10 分钟以上，`--maxWorkers=4` 后同样
+     * 71 个文件 760 passed 只要 **14 秒**。
+     *
+     * 4 是「够快且不抢」的值：CI 的 2~4 核本来就跑不到更高，行为不变。
+     */
+    maxWorkers: 4,
   },
 });
