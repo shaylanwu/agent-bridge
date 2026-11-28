@@ -83,6 +83,7 @@ npm run e2e:smoke          # 端到端冒烟（mock 平台 + 真实 CLI，需先
 | 文档-实现同步（漂移台账） | `.harness/rules/doc-impl-sync-rules.md` |
 | 代码风格与模块职责 | `.harness/rules/code-style.md` |
 | 发布纪律 | `.harness/rules/release-rules.md` |
+| 版本号判定（patch / minor / major 怎么定） | `VERSIONING.md` |
 | 工作流与人工卡点 | `.harness/rules/workflow-rules.md` |
 | 风险分级 / 工具白名单 | `.harness/contracts/policy.yaml` |
 | Agent 角色 | `.harness/agents/<name>/AGENT.md` |
