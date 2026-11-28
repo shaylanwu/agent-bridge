@@ -87,6 +87,41 @@ rl.on('line', (line) => {
       }});
       return;
     }
+    // BURST:<条数>:<每条约 KB> —— 断线期间猛灌日志，用来验证 Outbox 的字节上限与「缺口提示」
+    if (String(text).includes('BURST:')) {
+      const n = Number(String(text).split('BURST:')[1].split(':')[0]) || 10;
+      const kb = Number(String(text).split('BURST:')[1].split(':')[1]) || 8;
+      let sent = 0;
+      const timer = setInterval(() => {
+        // 内容必须「像日志」：单行连续 64+ 字符会被 emitter 的脱敏折成长串密钥，
+        // 那样字节数就不真实了（用带空格的多行文本来撑体积）
+        const lines = [];
+        for (let i = 0; i < Math.ceil((kb * 1024) / 40); i += 1) lines.push('chunk ' + sent + ' line ' + i + ' payload data');
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: SID, update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: lines.join('\n') + '\n' },
+        }}});
+        sent += 1;
+        if (sent >= n) {
+          clearInterval(timer);
+          send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+        }
+      }, 10);
+      return;
+    }
+    // DELAY:<ms>:<marker> —— 先安静等一会儿再答，用来把「终态恰好发生在断线期间」摆成可控场景
+    if (String(text).includes('DELAY:')) {
+      const ms = Number(String(text).split('DELAY:')[1].split(':')[0]) || 300;
+      const marker = String(text).split('DELAY:')[1].split(':')[1] || 'DELAYED_OK';
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: SID, update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: marker },
+        }}});
+        send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+      }, ms);
+      return;
+    }
     send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: {
       sessionId: p.sessionId || 'sess_fake',
       toolCall: { toolCallId: 'call_1', title: 'Run tests' },
@@ -148,6 +183,23 @@ async function waitForFrame(predicate: (frame: Frame) => boolean, what: string):
     () => {
       hit = frames.find(predicate);
       expect(hit, `15s 内没有收到${what}；最近 5 帧=${JSON.stringify(frames.slice(-5))}\n桥接日志=${JSON.stringify(logs.slice(-8))}`).toBeTruthy();
+    },
+    { timeout: 15_000, interval: 20 },
+  );
+  return hit!;
+}
+
+/** 只看「某个时间点之后」到达的帧：断线重连类断言必须区分新旧连接，否则旧帧会冒充新帧 */
+async function waitForFrameSince(
+  from: number,
+  predicate: (frame: Frame) => boolean,
+  what: string,
+): Promise<Frame> {
+  let hit: Frame | undefined;
+  await vi.waitFor(
+    () => {
+      hit = frames.slice(from).find(predicate);
+      expect(hit, `15s 内没有收到${what}；重连后最近 5 帧=${JSON.stringify(frames.slice(Math.max(from, frames.length - 5)))}`).toBeTruthy();
     },
     { timeout: 15_000, interval: 20 },
   );
@@ -481,6 +533,66 @@ describe('WS 直连：artifact', () => {
   });
 });
 
+describe('WS 直连：get_task 快照（平台重连后重建历史的主通道）', () => {
+  it('已终态任务回快照：session 状态、事件流、eventWindow 完整且终态事件带 result', async () => {
+    await ensureConnected();
+    // ws_approve_1 已由前面的用例跑到 success；这里读的是**持久化**结果，不是内存
+    sendToBridge({ type: 'get_task', taskId: 'ws_approve_1', requestId: 'req_snap' });
+
+    const snapshot = await waitForFrame(
+      (frame) => frame.type === 'task_snapshot' && frame['requestId'] === 'req_snap',
+      'task_snapshot 帧',
+    );
+    expect(snapshot['found']).toBe(true);
+    const session = snapshot['session'] as Record<string, unknown>;
+    expect(session['status']).toBe('success');
+
+    const events = (snapshot['events'] ?? []) as Array<{ type: string; payload: Record<string, unknown> }>;
+    expect(events.length).toBeGreaterThan(1);
+    // 最终回答两条路都在：canonical task_message，以及终态 task_status.result（1.2.2 修的字段）
+    const finalMessage = events.find((event) => event.type === 'task_message');
+    expect(finalMessage?.payload['text']).toBe('APPROVED_OK');
+    const terminal = events.filter(
+      (event) => event.type === 'task_status' && event.payload['status'] === 'success',
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]?.payload['result']).toBe('APPROVED_OK');
+
+    // 窗口完整性：缺口数组为空才代表 eventSeq 连续，平台据此判断能否只补增量
+    const window = snapshot['eventWindow'] as Record<string, unknown>;
+    expect(window['gaps']).toEqual([]);
+    expect(Number(window['latestEventSeq'])).toBeGreaterThan(0);
+  });
+
+  it('未知任务回 found:false + task_not_found（不静默返回空快照）', async () => {
+    await ensureConnected();
+    sendToBridge({ type: 'get_task', taskId: 'ws_never_existed', requestId: 'req_snap_missing' });
+
+    const snapshot = await waitForFrame(
+      (frame) => frame.type === 'task_snapshot' && frame['requestId'] === 'req_snap_missing',
+      '未知任务的 task_snapshot 帧',
+    );
+    expect(snapshot).toMatchObject({ found: false, errorCode: 'task_not_found' });
+  });
+
+  it('两个游标同时给回 protocol_incompatible（不猜优先级）', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'get_task',
+      taskId: 'ws_approve_1',
+      requestId: 'req_snap_cursors',
+      afterEventSeq: 1,
+      beforeEventSeq: 5,
+    });
+
+    const snapshot = await waitForFrame(
+      (frame) => frame.type === 'task_snapshot' && frame['requestId'] === 'req_snap_cursors',
+      '游标冲突的 task_snapshot 帧',
+    );
+    expect(snapshot).toMatchObject({ found: false, errorCode: 'protocol_incompatible' });
+  });
+});
+
 describe('WS 直连：conversation 多轮续接', () => {
   /**
    * 续接的硬证据取**子进程落盘**：每轮 prompt 都把「实际使用的 sessionId + 文本」追加到文件。
@@ -549,4 +661,269 @@ describe('WS 直连：conversation 多轮续接', () => {
     expect(Number(pid1)).toBeGreaterThan(0);
     expect(Number(pid2)).toBeGreaterThan(0);
   }, 40_000);
+});
+
+describe('WS 直连：断线重连与补发', () => {
+  /**
+   * 这是真实平台上最容易碰到、也最容易被忽略的场景：笔记本合盖 / 网络抖动 → 连接断掉，
+   * 而**任务不会因为断线停下**。若断线期间的终态被静默丢弃，平台看到的就是
+   * 「任务永远在跑」，重启后也补不回来 —— 结论丢了比中间过程丢了严重得多。
+   *
+   * 桥接侧的两层保障都要在这里被验证：
+   *   1. transport 的 Outbox 缓冲控制类消息，重连后按序补发；
+   *   2. 事件已落 SQLite，平台还能用 get_task(afterEventSeq) 自行补洞。
+   * 第二层如果查出同一个终态出现两条不同 eventSeq，就说明补发在「造新事件」，那比丢更糟。
+   */
+  it('断线期间产生的终态在重连后补发，且不产生重复事件', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_reconnect_1',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      // 700ms 后才回答：断线（约 1s 后重连）之间正好把终态压进 Outbox
+      prompt: 'DELAY:700:RECONNECT_OK',
+      allowInteractive: false,
+    });
+    await waitForFrame(
+      (frame) =>
+        frame.type === 'task_status' && frame['taskId'] === 'ws_reconnect_1' && frame['status'] === 'running',
+      '任务进入 running',
+    );
+
+    const cut = frames.length;
+    socket?.terminate(); // 平台侧掐线（模拟网络中断），不是正常 close
+
+    const hello2 = await waitForFrameSince(cut, (frame) => frame.type === 'hello', '重连后的 hello');
+    expect(hello2).toMatchObject({ protocolVersion: 1, deviceId: DEVICE_ID });
+
+    const terminal = await waitForFrameSince(
+      cut,
+      (frame) => frame.type === 'task_status' && frame['taskId'] === 'ws_reconnect_1' && frame['status'] === 'success',
+      '断线期间终态的补发',
+    );
+    // 最终回答也随补发一起到（断线不该让结论变形）
+    expect(terminal['result']).toBe('RECONNECT_OK');
+
+    // 补发必须是「同一个事件的重放」，不是新造一条
+    sendToBridge({ type: 'get_task', taskId: 'ws_reconnect_1', requestId: 'req_after_reconnect' });
+    const snapshot = await waitForFrameSince(
+      cut,
+      (frame) => frame.type === 'task_snapshot' && frame['requestId'] === 'req_after_reconnect',
+      '重连后的 task_snapshot',
+    );
+    const events = (snapshot['events'] ?? []) as Array<{
+      type: string;
+      eventSeq: number;
+      payload: Record<string, unknown>;
+    }>;
+    const terminalEvents = events.filter(
+      (event) => event.type === 'task_status' && event.payload['status'] === 'success',
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.eventSeq).toBe(terminal['eventSeq']);
+  }, 60_000);
+
+  it('断线前收到的交互请求，重连后仍可作答（pending 路由不依赖活动连接）', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_reconnect_2',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      prompt: 'please run the tests after reconnect',
+      allowInteractive: true,
+    });
+
+    const request = await waitForFrame(
+      (frame) => frame.type === 'task_interaction_request' && frame['taskId'] === 'ws_reconnect_2',
+      '交互请求帧',
+    );
+
+    const cut = frames.length;
+    socket?.terminate();
+    await waitForFrameSince(cut, (frame) => frame.type === 'hello', '重连后的 hello');
+
+    // 用断线前拿到的 requestId 作答：broker 按 SQLite 的 pending 记录路由，不靠连接状态
+    sendToBridge({
+      type: 'task_interaction_response',
+      taskId: 'ws_reconnect_2',
+      requestId: request['requestId'],
+      responseId: 'resp_reconnect',
+      state: 'accepted',
+      payload: { optionId: 'allow_once' },
+      respondedBy: 'tester',
+    });
+
+    const terminal = await waitForFrameSince(
+      cut,
+      (frame) =>
+        frame.type === 'task_status' &&
+        frame['taskId'] === 'ws_reconnect_2' &&
+        ['success', 'failed'].includes(String(frame['status'])),
+      '重连后作答的终态',
+    );
+    expect(terminal['status']).toBe('success');
+    // 交付证据仍取子进程落盘：CLI 真的收到了 allow_once
+    expect(readFileSync(selectedOptionFile, 'utf8')).toBe('allow_once');
+  }, 60_000);
+});
+
+describe('WS 直连：断线期间的缓冲边界与终态竞争', () => {
+  /**
+   * Outbox 对日志是**按字节有界**的（默认 256 KB，满了丢最旧），丢弃必须留下痕迹 ——
+   * 否则平台只会看到「日志忽然跳了一段」而不知道是桥接丢的，排障时会被误导成 CLI 没输出。
+   * 单测已覆盖算法，这里验证它在**真实断线链路**上真的会浮现出来。
+   */
+  it('断线期间日志超限时补一条说明性 task_log，且补发总量有界', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_burst_1',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      // 60 × 8 KB ≈ 480 KB，明显超过 256 KB 上限；10ms 一条，绝大部分落在断线窗口里
+      prompt: 'BURST:60:8',
+      allowInteractive: false,
+    });
+    await waitForFrame(
+      (frame) => frame.type === 'task_status' && frame['taskId'] === 'ws_burst_1' && frame['status'] === 'running',
+      '任务进入 running',
+    );
+
+    const cut = frames.length;
+    socket?.terminate();
+    await waitForFrameSince(cut, (frame) => frame.type === 'hello', '重连后的 hello');
+
+    const notice = await waitForFrameSince(
+      cut,
+      (frame) => frame.type === 'task_log' && String(frame['data'] ?? '').includes('断线期间日志超出缓冲上限'),
+      '超限说明性日志',
+    );
+    expect(notice['stream']).toBe('stderr');
+    // 提示里要带量级，平台才知道缺了大概多少
+    expect(String(notice['data'])).toMatch(/（\d+ KB）/);
+
+    const replayed = frames
+      .slice(cut)
+      .filter((frame) => frame.type === 'task_log' && frame['taskId'] === 'ws_burst_1');
+    const bytes = replayed.reduce((sum, frame) => sum + Buffer.byteLength(String(frame['data'] ?? ''), 'utf8'), 0);
+    // 有界：不许把 480 KB 原样灌回来（留一点余量给证明提示本身）
+    expect(bytes).toBeLessThan(320 * 1024);
+    expect(replayed.length).toBeGreaterThan(1);
+  }, 60_000);
+
+  /**
+   * 竞争场景：平台因为「断线期间只看到 running」而补发取消。
+   * 此时任务其实已经成功 —— 桥接不能让迟到的 cancel 把结论改写成 cancelled，
+   * 也不能出现两条互相矛盾的终态（平台侧会当场显示成「取消」）。
+   */
+  it('断线期间任务已成功时，重连后补发的 cancel_task 不得改写终态', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_race_1',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      prompt: 'DELAY:600:CANCEL_RACE_OK',
+      allowInteractive: false,
+    });
+    await waitForFrame(
+      (frame) => frame.type === 'task_status' && frame['taskId'] === 'ws_race_1' && frame['status'] === 'running',
+      '任务进入 running',
+    );
+
+    const cut = frames.length;
+    socket?.terminate();
+    await waitForFrameSince(cut, (frame) => frame.type === 'hello', '重连后的 hello');
+
+    // 补发已经先到（同一条连接上先写 hello 再 flush），现在按旧认知发取消
+    sendToBridge({ type: 'cancel_task', taskId: 'ws_race_1' });
+
+    const terminal = await waitForFrameSince(
+      cut,
+      (frame) =>
+        frame.type === 'task_status' &&
+        frame['taskId'] === 'ws_race_1' &&
+        ['success', 'cancelled', 'failed'].includes(String(frame['status'])),
+      '终态',
+    );
+    expect(terminal['status']).toBe('success');
+    expect(terminal['result']).toBe('CANCEL_RACE_OK');
+
+    // 再给一拍：绝不能再冒出第二条终态（尤其不能是 cancelled）
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const terminals = frames
+      .slice(cut)
+      .filter(
+        (frame) =>
+          frame.type === 'task_status' && frame['taskId'] === 'ws_race_1' && frame['status'] !== 'running',
+      );
+    expect(terminals.map((frame) => frame['status'])).toEqual(['success']);
+  }, 60_000);
+
+  /**
+   * 抖动不会只发生一次。连续两次断开如果各自补发一遍，平台就会收到**两条**同一个终态
+   * （哪怕 eventSeq 相同，重复帧也会打乱基于「最后一条终态」的展示与告警）。
+   * 这里把退避（每次重连成功即重置为 1s）也顺带验证了。
+   */
+  it('连续两次断线重连：终态只补发一次，事件序不重复', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_multi_drop_1',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      prompt: 'DELAY:1500:MULTI_DROP_OK',
+      allowInteractive: false,
+    });
+    await waitForFrame(
+      (frame) =>
+        frame.type === 'task_status' && frame['taskId'] === 'ws_multi_drop_1' && frame['status'] === 'running',
+      '任务进入 running',
+    );
+
+    const cut = frames.length;
+    socket?.terminate();
+    await waitForFrameSince(cut, (frame) => frame.type === 'hello', '第 2 次连接（hello）');
+    const cut2 = frames.length;
+    socket?.terminate();
+    await waitForFrameSince(cut2, (frame) => frame.type === 'hello', '第 3 次连接（hello）');
+
+    const terminal = await waitForFrameSince(
+      cut2,
+      (frame) =>
+        frame.type === 'task_status' && frame['taskId'] === 'ws_multi_drop_1' && frame['status'] === 'success',
+      '两次断线后的终态补发',
+    );
+    expect(terminal['result']).toBe('MULTI_DROP_OK');
+
+    // 再等一拍，确认没有第二次补发
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const allTerminals = frames
+      .slice(cut)
+      .filter(
+        (frame) =>
+          frame.type === 'task_status' && frame['taskId'] === 'ws_multi_drop_1' && frame['status'] === 'success',
+      );
+    expect(allTerminals).toHaveLength(1);
+
+    sendToBridge({ type: 'get_task', taskId: 'ws_multi_drop_1', requestId: 'req_multi_drop' });
+    const snapshot = await waitForFrameSince(
+      cut2,
+      (frame) => frame.type === 'task_snapshot' && frame['requestId'] === 'req_multi_drop',
+      '多次断线后的 task_snapshot',
+    );
+    const events = (snapshot['events'] ?? []) as Array<{ type: string; eventSeq: number; payload: Record<string, unknown> }>;
+    const terminalEvents = events.filter(
+      (event) => event.type === 'task_status' && event.payload['status'] === 'success',
+    );
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.eventSeq).toBe(terminal['eventSeq']);
+  }, 60_000);
 });
