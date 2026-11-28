@@ -30,6 +30,14 @@ sidebar:
 提交信息写错，版本号和本页都会跟着错，所以 `commit-msg` 钩子（commitlint）会先拦一道。
 
 <!-- CHANGELOG:BEGIN -->
+## [1.2.3](https://github.com/shaylanwu/agent-bridge/compare/v1.2.2...v1.2.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **core:** 真正执行 get_task 单响应 1 MiB 上限，并让 hasMoreBefore 可兑现 ([dd7aa6d](https://github.com/shaylanwu/agent-bridge/commit/dd7aa6dd3ade2f3400cfa9c4051326e184c6791e))
+* **supervisor:** headless 子进程的 stdin 恒为 ignore（对齐规格，消除等 EOF 挂死） ([b6c8db0](https://github.com/shaylanwu/agent-bridge/commit/b6c8db08be031e8428913d530ebfb6ed0992a0ea))
+
 ## [1.2.2](https://github.com/shaylanwu/agent-bridge/compare/v1.2.1...v1.2.2) (2026-11-28)
 
 
