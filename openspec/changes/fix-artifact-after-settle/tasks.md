@@ -14,10 +14,11 @@
 - [x] 2.3 approve：`task_interaction_request` 下行 → `task_interaction_response` 上行 → 假 CLI 落盘 `allow_once` → success
 - [x] 2.4 cancel：挂住的回合 → `cancel_task` → `cancelled`（不是 failed / 不是干等超时）
 - [x] 2.5 artifact：未知 id → `found:false` + `artifact_not_found`；已知 id → 元数据 + base64 内容
+- [x] 2.6 conversation 多轮续接（补 `send_message` 链路）：`run_task(sessionMode=conversation)` → 首轮上行 `running` + `phase=waiting_user`（会话保持开启，不是 `success`）→ `send_message` 回 `message_ack.delivery=queued` 且 `turnId` 与第二轮终态一致 → **两轮 ACP `sessionId` 相同**（假 CLI 的 id 按 pid 唯一，证明走的是跨进程 `session/load` 而非新开会话）。`parts` 字段名是 `kind`，写成 `type` 会静默拿不到 `message_ack`
 
 ## 3. 验证与取证
 
-- [x] 3.1 WS e2e **5 例全绿**（约 1.7s）
+- [x] 3.1 WS e2e **6 例全绿**（约 1.9s）
 - [x] 3.2 先红后绿：回退 Emitter 修复 → 两条 artifact 用例各挂 **15s 超时**变红；恢复后 1.7s 全绿
 - [x] 3.3 `test/emitter-settled.test.ts` 4 例全绿（artifact / snapshot 放行两例同样在回退后变红）
 - [x] 3.4 `npm run gate` 全绿；`npm run harness:validate` 全绿；低并发全量 vitest 不回归

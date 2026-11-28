@@ -29,13 +29,19 @@ import { TaskRegistry } from '../src/app/task-registry.js';
 import { createSession, type BridgeSession } from '../src/app/session.js';
 
 /**
- * 假 ACP CLI：prompt 里带 HANG 就永不回应（喂给 cancel），否则发一次权限请求，
- * 收到 allow_once 就回一段文本并 end_turn。
+ * 假 ACP CLI：
+ *  - prompt 里带 `HANG` → 永不回应（喂给 cancel）；
+ *  - prompt 里带 `CONV:` → 不申请权限，把「会话 id + 文本」追加落盘后回 `ACK:` 并 end_turn
+ *    （喂给多轮会话：第二轮能带上同一个 native session 才算真续接）；
+ *  - 其余 → 发一次权限请求，收到 allow_once 就回文本并 end_turn。
  */
 const FAKE_ACP = String.raw`
 const fs = require('node:fs');
 const readline = require('node:readline');
 const selectedOut = process.argv[2]; // 把「实际收到的选项」落盘：交付证据不能只看桥接日志
+const promptLog = process.argv[3];   // 每轮「会用到的 sessionId + 文本」，用于证明续接复用同一会话
+// 按进程唯一：第二轮若新建会话（而不是续接），sessionId 就会变，断言立刻红
+const SID = 'sess_' + process.pid;
 
 const rl = readline.createInterface({ input: process.stdin });
 let promptId = null;
@@ -43,12 +49,25 @@ const send = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 rl.on('line', (line) => {
   let m; try { m = JSON.parse(line); } catch { return; }
   if (m.method === 'initialize') return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: 1 } });
-  if (m.method === 'session/new') return send({ jsonrpc: '2.0', id: m.id, result: { sessionId: 'sess_fake' } });
+  if (m.method === 'session/new') return send({ jsonrpc: '2.0', id: m.id, result: { sessionId: SID } });
+  // 续接：客户端先试 load，失败才退 resume。这里直接接受，证明「原生续接」这条路径通了。
+  if (m.method === 'session/load') return send({ jsonrpc: '2.0', id: m.id, result: {} });
   if (m.method === 'session/prompt') {
     promptId = m.id;
-    if (JSON.stringify(m.params || {}).includes('HANG')) return; // 挂住：给 cancel_task 用
+    const p = m.params || {};
+    const text = (p.prompt && (p.prompt.text || (p.prompt[0] && p.prompt[0].text))) || '';
+    if (String(text).includes('HANG')) return; // 挂住：给 cancel_task 用
+    if (promptLog) fs.appendFileSync(promptLog, String(p.sessionId || '') + '\t' + process.pid + '\t' + String(text) + '\n');
+    if (String(text).includes('CONV:')) {
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: p.sessionId || 'sess_fake', update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'ACK:' + String(text) },
+      }}});
+      send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+      return;
+    }
     send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: {
-      sessionId: 'sess_fake',
+      sessionId: p.sessionId || 'sess_fake',
       toolCall: { toolCallId: 'call_1', title: 'Run tests' },
       options: [
         { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once' },
@@ -84,6 +103,7 @@ let wss: WebSocketServer;
 let socket: WebSocket | undefined;
 let session: BridgeSession | undefined;
 let selectedOptionFile = '';
+let promptLogFile = '';
 let store: SessionStore;
 const frames: Frame[] = [];
 const logs: string[] = [];
@@ -119,6 +139,7 @@ beforeAll(async () => {
   const script = join(tmpRoot, 'fake-acp.cjs');
   writeFileSync(script, FAKE_ACP);
   selectedOptionFile = join(tmpRoot, 'acp-selected.txt');
+  promptLogFile = join(tmpRoot, 'acp-prompts.log');
 
   // 假 ACP 通过 def.acp 注入（**通道真源是 def.acp**，不是 acpSpec——后者由 manifest 派生）：
   // 安装闸门用 def.bin，所以 bin 指到 PATH 上必然存在的 node。
@@ -129,7 +150,7 @@ beforeAll(async () => {
   def.bin = 'node';
   (def as { acp?: unknown }).acp = {
     command: process.execPath,
-    args: [script, selectedOptionFile],
+    args: [script, selectedOptionFile, promptLogFile],
     label: 'fake-acp',
     sanitizeHostEnv: false,
   };
@@ -333,4 +354,74 @@ describe('WS 直连：artifact', () => {
     expect(frame).toMatchObject({ found: true, name: 'notes.txt', mimeType: 'text/plain' });
     expect(Buffer.from(String(frame['data'] ?? ''), 'base64').toString('utf8')).toBe('HELLO');
   });
+});
+
+describe('WS 直连：conversation 多轮续接', () => {
+  /**
+   * 续接的硬证据取**子进程落盘**：每轮 prompt 都把「实际使用的 sessionId + 文本」追加到文件。
+   * 假 CLI 的 sessionId 按进程唯一（`sess_<pid>`），所以第二轮只要没复用会话，
+   * 就会是另一个 pid 的 id，断言立刻红 —— 这比看桥接日志可靠。
+   */
+  it('run_task(sessionMode=conversation) 后 send_message 复用同一 native session', async () => {
+    await ensureConnected();
+    writeFileSync(promptLogFile, '');
+
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_conv_1',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      prompt: 'CONV: first',
+      sessionMode: 'conversation',
+      allowInteractive: false,
+    });
+
+    // 会话模式下「一轮成功」不等于会话结束：上行是 running + phase=waiting_user（会话保持开启）
+    const firstTurn = await waitForFrame(
+      (frame) =>
+        frame.type === 'task_status' &&
+        frame['taskId'] === 'ws_conv_1' &&
+        frame['phase'] === 'waiting_user',
+      '第 1 轮回合完成（waiting_user）',
+    );
+
+    sendToBridge({
+      type: 'send_message',
+      taskId: 'ws_conv_1',
+      messageId: 'msg_2',
+      parts: [{ kind: 'text', text: 'CONV: second' }],
+      mode: 'queue',
+    });
+
+    const ack = await waitForFrame(
+      (frame) => frame.type === 'message_ack' && frame['messageId'] === 'msg_2',
+      'message_ack',
+    );
+    expect(ack['delivery']).toBe('queued');
+    expect(typeof ack['turnId']).toBe('string');
+
+    const secondTurn = await waitForFrame(
+      (frame) =>
+        frame.type === 'task_status' &&
+        frame['taskId'] === 'ws_conv_1' &&
+        frame['phase'] === 'waiting_user' &&
+        frame['turnId'] !== firstTurn['turnId'],
+      '第 2 轮回合完成（waiting_user）',
+    );
+    expect(secondTurn['turnId']).toBe(ack['turnId']);
+
+    const rounds = readFileSync(promptLogFile, 'utf8').trim().split('\n');
+    expect(rounds).toHaveLength(2);
+    const [session1, pid1, prompt1] = rounds[0]!.split('\t');
+    const [session2, pid2, prompt2] = rounds[1]!.split('\t');
+    expect(prompt1).toContain('CONV: first');
+    expect(prompt2).toContain('CONV: second');
+    expect(session1).toMatch(/^sess_\d+$/);
+    // 两轮必须是同一个原生会话：续接走 session/load，不是新开一个。
+    // 假 CLI 的 id 按**进程**唯一，所以 pid 不同而 id 相同，恰好证明「跨进程 load 续接」成立。
+    expect(session2).toBe(session1);
+    expect(Number(pid1)).toBeGreaterThan(0);
+    expect(Number(pid2)).toBeGreaterThan(0);
+  }, 40_000);
 });

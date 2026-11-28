@@ -13,6 +13,9 @@
 - [x] 2.2 诚实记录：Windows 上移除修复后用例**仍绿**（本机不触发 `EPIPE`），红证据来自 macOS CI 日志 `Unhandled Errors … write EPIPE at send src/adapters/acp-codebuddy.ts:301`
 - [x] 2.3 `npm run gate` 全绿（vitest 并行度已封顶 4，不再「跑完不退出」）
 - [x] 2.4 推送后 **macOS CI 转绿**（`ci 5e8c3f2 success`，三平台全过，不再出现 `write EPIPE` 未捕获异常）
+- [x] 2.5 下游语义补测 `test/acp-delivery-unknown.test.ts` 3 例：只守「不崩」不够，还要验证写失败后**结算成什么**
+  - broker 层：`deliver()` 返回 false / 抛异常 → 结果码固定 `interaction_delivery_unknown`；同一请求的第二份响应**不得再次交付**（`deliver` 调用次数保持 1）——重复授权比失败更糟
+  - supervisor 层：真实 ACP 假子进程（`session/request_permission` 后不回 `end_turn`）→ `failInteraction()` 以 `failed` + `interaction_delivery_unknown` 结算，而非 `agent_error`，`error` 含「禁止重试」
 
 ## 3. 归档
 
