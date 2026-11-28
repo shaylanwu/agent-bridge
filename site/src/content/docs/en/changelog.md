@@ -32,6 +32,18 @@ semantic-release has for a major bump: if the commit message is wrong, the versi
 page are wrong too, which is why the `commit-msg` hook (commitlint) rejects malformed ones first.
 
 <!-- CHANGELOG:BEGIN -->
+## [1.2.0](https://github.com/shaylanwu/agent-bridge/compare/v1.1.0...v1.2.0) (2026-11-27)
+
+
+### Bug Fixes
+
+* **emitter:** 终态后 get_artifact 零响应——读回包被终态闸门一起丢了 ([7bcf3ff](https://github.com/shaylanwu/agent-bridge/commit/7bcf3ffcaf4c3a01101bb188ab4ccfd69eea4946))
+
+
+### Features
+
+* **errors:** context_exhausted 落地为反应式识别，不再只是规格承诺 ([1aad19e](https://github.com/shaylanwu/agent-bridge/commit/1aad19e6d7979c93d337788c26b17938d901ffd1))
+
 ## [1.1.0](https://github.com/shaylanwu/agent-bridge/compare/v1.0.0...v1.1.0) (2026-11-27)
 
 
