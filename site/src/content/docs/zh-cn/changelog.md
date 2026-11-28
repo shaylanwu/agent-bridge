@@ -30,6 +30,13 @@ sidebar:
 提交信息写错，版本号和本页都会跟着错，所以 `commit-msg` 钩子（commitlint）会先拦一道。
 
 <!-- CHANGELOG:BEGIN -->
+## [1.2.2](https://github.com/shaylanwu/agent-bridge/compare/v1.2.1...v1.2.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **protocol:** 终态 task_status 补上 result（契约写了、实现从没发过） ([8ae3c9f](https://github.com/shaylanwu/agent-bridge/commit/8ae3c9f30823ba44e48d1de980da97c6bd4b3963))
+
 ## [1.2.1](https://github.com/shaylanwu/agent-bridge/compare/v1.2.0...v1.2.1) (2026-11-28)
 
 
