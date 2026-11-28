@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2](https://github.com/shaylanwu/agent-bridge/compare/v1.2.1...v1.2.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **protocol:** 终态 task_status 补上 result（契约写了、实现从没发过） ([8ae3c9f](https://github.com/shaylanwu/agent-bridge/commit/8ae3c9f30823ba44e48d1de980da97c6bd4b3963))
+
 ## [1.2.1](https://github.com/shaylanwu/agent-bridge/compare/v1.2.0...v1.2.1) (2026-11-28)
 
 
