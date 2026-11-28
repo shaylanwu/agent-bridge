@@ -12,7 +12,7 @@
 - [x] 2.1 `test/acp-diagnostics.test.ts` **23 例全绿**
 - [x] 2.2 诚实记录：Windows 上移除修复后用例**仍绿**（本机不触发 `EPIPE`），红证据来自 macOS CI 日志 `Unhandled Errors … write EPIPE at send src/adapters/acp-codebuddy.ts:301`
 - [x] 2.3 `npm run gate` 全绿（vitest 并行度已封顶 4，不再「跑完不退出」）
-- [ ] 2.4 推送后 macOS CI 转绿（同一提交族不再出现 `write EPIPE` 未捕获异常）
+- [x] 2.4 推送后 **macOS CI 转绿**（`ci 5e8c3f2 success`，三平台全过，不再出现 `write EPIPE` 未捕获异常）
 
 ## 3. 归档
 
