@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1](https://github.com/shaylanwu/agent-bridge/compare/v1.2.0...v1.2.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **acp:** 子进程崩溃时 stdin EPIPE 不再终止整个 bridge ([5e8c3f2](https://github.com/shaylanwu/agent-bridge/commit/5e8c3f2f66f9349a5db839ae71cfba21a0efbe08))
+
 ## [1.2.0](https://github.com/shaylanwu/agent-bridge/compare/v1.1.0...v1.2.0) (2026-11-27)
 
 
