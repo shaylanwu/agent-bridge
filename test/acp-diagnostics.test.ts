@@ -52,6 +52,29 @@ describe('stderr 尾部缓冲', () => {
 });
 
 describe('ACP 失败文案', () => {
+  /**
+   * 回归：子进程先死时 stdin 的 `EPIPE` 必须是「被吞掉并结算」，不能变成未捕获异常。
+   *
+   * 红证据（2026-11-28，macOS CI）：修之前在 `send()` 的 `child.stdin.write` 上抛
+   * `Error: write EPIPE`（异步 error 事件，try/catch 抓不到）→ 71 个文件全过、进程退出码 1，
+   * 真实场景里就是**子进程一崩把 bridge 一起带走**。
+   * ⚠️ Windows 上不触发该 EPIPE（移除修复后本用例仍绿），所以这条用例的「红」只能在 macOS 侧看到；
+   * 断言本身仍有效：它锁住「以进程退出码正常 reject + 不产生未捕获异常」这两个行为。
+   */
+  it('子进程立刻退出时 stdin EPIPE 不产生未捕获异常，按进程退出结算', async () => {
+    const { dir, script } = scriptDir('process.exit(2);\n');
+    await expect(
+      runAcpPrompt({
+        cwd: dir,
+        prompt: 'hi',
+        spec: { command: process.execPath, args: [script], sanitizeHostEnv: false, label: 'EPIPE CLI' },
+        timeoutMs: 10_000,
+      }),
+    ).rejects.toThrow(/^EPIPE CLI 进程退出（code 2）/);
+    // 给异步 stdin error 一个落地窗口：若没被监听，这里会以未捕获异常让整个文件变红
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  });
+
   it('用 spec.label 而不是写死的 CodeBuddy', async () => {
     const { dir, script } = scriptDir('process.stderr.write("boot failed\\n"); process.exit(3);\n');
     await expect(

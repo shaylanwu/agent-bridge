@@ -295,6 +295,23 @@ export async function runAcpPrompt(opts: AcpPromptOptions): Promise<AcpPromptRes
     responseWaiters.clear();
   };
 
+  /**
+   * stdin 的 `EPIPE` 是**异步 `error` 事件**，`send()` 里的 `try/catch` 抓不到
+   * （`write()` 只是把数据入队，失败在事件循环后段才报）。
+   *
+   * 后果很重：子进程先死（CLI 崩溃、被 kill、诊断用例里 `process.exit`）而这里没有
+   * 监听器时，`error` 无人处理 → **未捕获异常直接终止整个 bridge 进程**，
+   * 与 codex 之前那个未处理 rejection 属同一类缺陷（macOS CI 实测：
+   * `Error: write EPIPE … at send src/adapters/acp-codebuddy.ts:301`，测试全过但进程退出码 1）。
+   *
+   * 这里只做「标记已关闭 + 唤醒等待中的响应」，不抛错也不改写结论：
+   * 真正的失败由进程 `exit` 分支按原有语义结算（stderr 尾部照样拼进原因）。
+   */
+  child.stdin?.on('error', () => {
+    closed = true;
+    settleResponseWaiters();
+  });
+
   const send = (message: Record<string, unknown>): boolean => {
     if (closed || !child.stdin.writable || child.stdin.destroyed) return false;
     try {
