@@ -15,6 +15,11 @@
  *      `task_interaction_response` 上行 → 假 CLI 收到 allow_once → end_turn → success + 结果文本
  *   3. cancel：挂住的回合 → `cancel_task` → cancelled（不是 failed，也不是干等超时）
  *   4. artifact：未知 id → found:false + artifact_not_found；已知 id → 读到 base64 内容
+ *   5. form（elicitation）：下行 `kind:'form'` + requestedSchema → 非法 content 被
+ *      `interaction_invalid_response` 挡在桥内（回合不死、请求仍可作答）→ 合法 content 以
+ *      `{action:'accept',content}` 原样送到 CLI。这是 form 链路**唯一**的真闭环证据来源：
+ *      真 CLI 会不会发 elicitation 取决于各家实现与账号，桥接侧能自证的就是这一整条
+ *      「请求 → 校验 → 应答 → 子进程真的收到」。
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -33,6 +38,8 @@ import { createSession, type BridgeSession } from '../src/app/session.js';
  *  - prompt 里带 `HANG` → 永不回应（喂给 cancel）；
  *  - prompt 里带 `CONV:` → 不申请权限，把「会话 id + 文本」追加落盘后回 `ACK:` 并 end_turn
  *    （喂给多轮会话：第二轮能带上同一个 native session 才算真续接）；
+ *  - prompt 里带 `FORM:` → 发一次标准 `elicitation/create`（带 requestedSchema），
+ *    把**实际收到的应答**落盘，喂给 form 链路；
  *  - 其余 → 发一次权限请求，收到 allow_once 就回文本并 end_turn。
  */
 const FAKE_ACP = String.raw`
@@ -40,6 +47,7 @@ const fs = require('node:fs');
 const readline = require('node:readline');
 const selectedOut = process.argv[2]; // 把「实际收到的选项」落盘：交付证据不能只看桥接日志
 const promptLog = process.argv[3];   // 每轮「会用到的 sessionId + 文本」，用于证明续接复用同一会话
+const formOut = process.argv[4];     // form：把 elicitation/create 实际拿到的 result 原样落盘
 // 按进程唯一：第二轮若新建会话（而不是续接），sessionId 就会变，断言立刻红
 const SID = 'sess_' + process.pid;
 
@@ -66,6 +74,19 @@ rl.on('line', (line) => {
       send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
       return;
     }
+    if (String(text).includes('FORM:')) {
+      // 标准 ACP elicitation（另一个入口是 CodeBuddy 扩展的 session/request_form，语义一致）
+      send({ jsonrpc: '2.0', id: 910, method: 'elicitation/create', params: {
+        sessionId: p.sessionId || 'sess_fake',
+        message: 'Pick an environment',
+        requestedSchema: {
+          type: 'object',
+          properties: { env: { type: 'string' }, replicas: { type: 'integer' } },
+          required: ['env'],
+        },
+      }});
+      return;
+    }
     send({ jsonrpc: '2.0', id: 900, method: 'session/request_permission', params: {
       sessionId: p.sessionId || 'sess_fake',
       toolCall: { toolCallId: 'call_1', title: 'Run tests' },
@@ -74,6 +95,16 @@ rl.on('line', (line) => {
         { optionId: 'reject_once', kind: 'reject_once', name: 'Reject' },
       ],
     }});
+    return;
+  }
+  if (m.id === 910 && m.result) {
+    // 落盘「CLI 实际收到的东西」：合法 content 必须原样到达，被拒的非法 content 必须**到不了**这里
+    if (formOut) fs.writeFileSync(formOut, JSON.stringify(m.result));
+    send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'sess_fake', update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'FORM_OK:' + JSON.stringify((m.result && m.result.content) || {}) },
+    }}});
+    send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
     return;
   }
   if (m.id === 900 && m.result) {
@@ -104,6 +135,7 @@ let socket: WebSocket | undefined;
 let session: BridgeSession | undefined;
 let selectedOptionFile = '';
 let promptLogFile = '';
+let formResultFile = '';
 let store: SessionStore;
 const frames: Frame[] = [];
 const logs: string[] = [];
@@ -140,6 +172,7 @@ beforeAll(async () => {
   writeFileSync(script, FAKE_ACP);
   selectedOptionFile = join(tmpRoot, 'acp-selected.txt');
   promptLogFile = join(tmpRoot, 'acp-prompts.log');
+  formResultFile = join(tmpRoot, 'acp-form-result.json');
 
   // 假 ACP 通过 def.acp 注入（**通道真源是 def.acp**，不是 acpSpec——后者由 manifest 派生）：
   // 安装闸门用 def.bin，所以 bin 指到 PATH 上必然存在的 node。
@@ -150,7 +183,7 @@ beforeAll(async () => {
   def.bin = 'node';
   (def as { acp?: unknown }).acp = {
     command: process.execPath,
-    args: [script, selectedOptionFile, promptLogFile],
+    args: [script, selectedOptionFile, promptLogFile, formResultFile],
     label: 'fake-acp',
     sanitizeHostEnv: false,
   };
@@ -265,9 +298,101 @@ describe('WS 直连：approve（权限请求 → 响应 → 回合继续）', ()
       '任务终态',
     );
     expect(finalStatus['status']).toBe('success');
+    expect(finalStatus['result']).toBe('APPROVED_OK');
     // 交付证据看子进程落盘（它只在真收到响应时才写），不看桥接自己的日志
     expect(readFileSync(selectedOptionFile, 'utf8')).toBe('allow_once');
   }, 30_000);
+});
+
+describe('WS 直连：form（elicitation 表单）', () => {
+  /**
+   * form 与 permission 的差别不在「能不能弹」，而在**应答要过 schema 校验**：
+   * 非法 content 不能悄悄送到 CLI（那等于把坏数据塞给 agent），也不能把回合打死
+   * （用户填错一个字段就该重填，不是整个任务失败）。
+   */
+  it('非法 content 被拦在桥内且回合存活，合法 content 原样送达 CLI', async () => {
+    await ensureConnected();
+    sendToBridge({
+      type: 'run_task',
+      taskId: 'ws_form_1',
+      agentType: 'codebuddy-cli',
+      cwd: tmpRoot,
+      args: [],
+      prompt: 'FORM: deploy please',
+      allowInteractive: true,
+    });
+
+    const request = await waitForFrame(
+      (frame) => frame.type === 'task_interaction_request' && frame['taskId'] === 'ws_form_1',
+      '表单请求帧',
+    );
+    expect(request['kind']).toBe('form');
+    const payload = (request['payload'] ?? {}) as Record<string, unknown>;
+    expect(payload['message']).toBe('Pick an environment');
+    expect((payload['requestedSchema'] as Record<string, unknown>)['required']).toEqual(['env']);
+
+    // 1) 缺必填字段 → 桥内拒绝，并明确告知「这条应答无效」
+    sendToBridge({
+      type: 'task_interaction_response',
+      taskId: 'ws_form_1',
+      requestId: request['requestId'],
+      responseId: 'resp_form_bad',
+      state: 'accepted',
+      payload: { content: { replicas: 2 } },
+      respondedBy: 'tester',
+    });
+
+    const rejected = await waitForFrame(
+      (frame) =>
+        frame.type === 'task_interaction_result' &&
+        frame['requestId'] === request['requestId'] &&
+        frame['responseId'] === 'resp_form_bad',
+      '非法应答的 task_interaction_result',
+    );
+    expect(rejected['responseStatus']).toBe('invalid');
+    expect(rejected['errorCode']).toBe('interaction_invalid_response');
+    // 请求仍是 pending：填错可以重填，不是「已使用」的终态
+    expect(rejected['requestState']).toBe('pending');
+
+    // 2) 修正后重新提交 → 正常受理
+    sendToBridge({
+      type: 'task_interaction_response',
+      taskId: 'ws_form_1',
+      requestId: request['requestId'],
+      responseId: 'resp_form_ok',
+      state: 'accepted',
+      payload: { content: { env: 'staging', replicas: 2 } },
+      respondedBy: 'tester',
+    });
+
+    const accepted = await waitForFrame(
+      (frame) =>
+        frame.type === 'task_interaction_result' &&
+        frame['requestId'] === request['requestId'] &&
+        frame['responseId'] === 'resp_form_ok',
+      '合法应答的 task_interaction_result',
+    );
+    expect(accepted['responseStatus']).toBe('accepted');
+    expect(accepted['requestState']).toBe('resolved');
+
+    const finalStatus = await waitForFrame(
+      (frame) =>
+        frame.type === 'task_status' &&
+        frame['taskId'] === 'ws_form_1' &&
+        (frame['status'] === 'success' || frame['status'] === 'failed'),
+      '任务终态',
+    );
+    expect(finalStatus['status']).toBe('success');
+    // 协议字段表写着「终态最终回答文本（≤16KB）」，实现此前从没填过（fix-task-status-result）
+    expect(String(finalStatus['result'] ?? '')).toContain('FORM_OK');
+
+    // 3) 交付证据取子进程落盘：它写的是**自己收到的 result**，且只写过一次
+    //    （非法 content 若被放行，这里会是 {replicas:2}）
+    expect(JSON.parse(readFileSync(formResultFile, 'utf8'))).toEqual({
+      action: 'accept',
+      content: { env: 'staging', replicas: 2 },
+    });
+  }, 40_000);
 });
 
 describe('WS 直连：cancel', () => {

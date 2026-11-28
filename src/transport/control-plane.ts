@@ -22,6 +22,7 @@ import { extname, resolve as resolvePath, sep } from 'node:path';
 import { Emitter, type Upstream } from '../core/emitter.js';
 import type { PermissionPolicyName } from '../core/permission-policy.js';
 import { hasAnsi } from '../core/ansi.js';
+import { capResultText } from '../core/result-text.js';
 import { isBridgeErrorCode, toProblem, type BridgeErrorCode } from '../core/errors.js';
 import type { SessionLog } from '../app/session-log.js';
 import type { TaskRegistry } from '../app/task-registry.js';
@@ -681,6 +682,8 @@ export async function startControlPlane(
                 error: info?.error,
                 errorCode: info?.errorCode,
                 permissionMode: info?.permissionMode,
+                // 与 WS dispatch 同口径（fix-task-status-result）：终态带最终回答，非终态不带
+                result: status === 'running' ? undefined : capResultText(info?.result),
               },
             });
             if (status !== 'running') deps.store.closeSession(taskId, status, info?.error, input.tenantId);

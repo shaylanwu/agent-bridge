@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { hasAnsi } from '../core/ansi.js';
 import { resolveWithinCwd, mimeTypeOf } from '../core/artifact-extract.js';
 import { InteractionBroker, type InteractionOutcome } from '../core/interaction-broker.js';
+import { capResultText } from '../core/result-text.js';
 export type { InteractionOutcome } from '../core/interaction-broker.js';
 import type { PermissionPolicyName } from '../core/permission-policy.js';
 import {
@@ -716,6 +717,9 @@ export function dispatchRunTask(
       onApprovalLookup: (input) => resolveApproval(o, input, msg.taskId),
       onStatus: (status, info) => {
         o.registry.updateStatus(msg.taskId, status, info);
+        // 终态最终回答：协议字段表写着 task_status.result（≤16KB），实现此前从未填过
+        // （见 openspec/changes/fix-task-status-result）。非终态一律不带 —— 半截回答属于事件流。
+        const resultText = terminalStatus(status) ? capResultText(info?.result) : undefined;
         // 权限判定审计（每个任务一条，终态时落）：只写策略名/模式/结果，不写 argv 与环境值
         if (terminalStatus(status)) {
           const deniedByPolicy =
@@ -863,6 +867,7 @@ export function dispatchRunTask(
               permissionMode: info?.permissionMode,
               stopReason: info?.stopReason,
               feedIncomplete: info?.feedIncomplete,
+              result: resultText,
             };
             eventSeq = o.store.appendEvent({
               sessionId: msg.taskId,
@@ -894,6 +899,7 @@ export function dispatchRunTask(
           permissionMode: info?.permissionMode,
           stopReason: info?.stopReason,
           feedIncomplete: info?.feedIncomplete,
+          result: resultText,
           turnId: turn?.turnId,
           eventSeq,
         });
