@@ -16,6 +16,11 @@ bridge SHALL 主动向平台发起 WebSocket 连接（`/api/bridge/ws?deviceId=<
 以及本地控制面（`[control_plane] enabled` / `agent-bridge serve`，**默认关闭**，不回 `Access-Control-Allow-Origin`）。
 回环监听不构成对外网络暴露。
 
+连接断开 SHALL NOT 影响本机任务：正在执行的回合继续跑，断线期间产生的状态与日志进入**有界缓冲**，
+在下一次连接建立后按序补发（控制类按条数、日志按字节，各自独立上限）。
+日志超限 SHALL 丢弃最旧并 SHALL 插入一条说明性 `task_log`（`stream:"stderr"`，含量级），SHALL NOT 静默丢弃。
+补发 SHALL 是**原事件的重放**（沿用同一 `eventSeq`），SHALL NOT 新造事件。
+
 #### Scenario: 握手成功
 
 - **WHEN** 设备已绑定且网络可达
@@ -29,7 +34,23 @@ bridge SHALL 主动向平台发起 WebSocket 连接（`/api/bridge/ws?deviceId=<
 #### Scenario: 网络中断
 
 - **WHEN** 连接异常断开（如 1006）
-- **THEN** bridge 以 1s→2s→4s…→30s 指数退避重连，并在重连后补发状态类消息（`task_log` 不补发）
+- **THEN** bridge 以 1s→2s→4s…→30s 指数退避重连（连接成功后重置），重连后补发断线期间缓冲的状态与日志
+
+#### Scenario: 断线期间任务结束
+
+- **WHEN** 任务在断线窗口内到达终态
+- **THEN** 终态（含最终回答）在重连后补发，且同一 `eventSeq` 的重放与持久化记录一致（不产生两条终态）
+
+#### Scenario: 断线期间日志超出缓冲
+
+- **WHEN** 断线期间累计日志超过日志缓冲上限
+- **THEN** bridge 丢弃最旧部分并补发一条 `[agent-bridge] 断线期间日志超出缓冲上限（N KB）` 的 stderr 日志，
+  平台据此识别「日志跳段」是桥接裁剪而不是 CLI 没输出
+
+#### Scenario: 断线期间收到交互请求
+
+- **WHEN** 交互请求在断线前已下行、平台在重连后才作答
+- **THEN** 响应 SHALL 按 SQLite 中的 pending 记录路由并交付 adapter（不依赖连接状态）
 
 ### Requirement: 工具状态上报
 
@@ -370,16 +391,26 @@ result 的事件 id SHALL 为 `interaction-result:<requestId>:<resultSeq>`。res
 bridge SHALL 提供 canonical 的 task_message、富 task_step 和 task_artifact 事件，供外部构建 Web Agent 会话窗口。
 task_log SHALL 保留为调试通道，SHALL NOT 被文档宣称为稳定消息协议。**每任务只有一条 eventSeq 序列**，
 覆盖 queued/running/waiting/终态 task_status、task_message、task_step、task_artifact 与 task_interaction_request；
-task_log 与 task_interaction_result 不占 eventSeq，后者用 requestId+resultSeq 排序并可在任务终态后回传。
+`task_log` SHALL 占用同一 eventSeq 序列（它就是持久化事件，`task_snapshot.events` 与缺口计算都以同一集合为准，
+否则缺口会指向平台永远取不到的内容）；平台 SHALL NOT 依赖其文本格式。`task_interaction_result` SHALL NOT 占用
+eventSeq，用 requestId+resultSeq 排序并可在任务终态后回传。
 task_step 的 seq 仍表示步骤序号，不得与 eventSeq 混用。每个 feed 事件首次发出时分配一次，
 重放保持，新事件严格 +1。终态 task_status 的 eventSeq 必须大于所有已发出的 canonical feed 事件。
 task_message SHALL 支持 delta/complete 两种 state，complete 携带权威完整 part。**1.0 的实际口径**：
 bridge 只发 complete（每条落库消息一条），**不推送 delta 帧** —— 正在生成中的文本改由
 `task_snapshot.partialMessages` 暴露（只在内存、不落库、终态即清）。`delta` 为保留位，平台不得等它。
 
-feed SHALL 同时受条数和字节预算限制。淘汰最旧事件时 SHALL 记录显式 gap（fromEventSeq/toEventSeq/reason），
-SHALL NOT 静默造成时间线空洞。adapter 在终态前 SHALL 有界 flush 最终消息/附件，终态 task_status 的 eventSeq
-SHALL 大于所有 feed 事件；收尾失败 SHALL 在终态标记 feedIncomplete。
+feed SHALL 同时受**条数**与**字节**预算限制，且两类裁剪 SHALL 用两种不同语义表达，不得混用：
+
+1. **分类淘汰 = 窗口内缺口**：按类型（messages / steps / artifacts）计条数淘汰最旧同类，事件序号**水位不前移**，
+   SHALL 在 `task_snapshot.eventWindow.gaps` 里以 `{ from, to, reason }` 显式给出，
+   `reason` 取 `count` / `task_bytes` / `global_bytes`；无记录来源的缺口（如写入失败）SHALL 不带 `reason`。
+2. **前缀删除 = `prunedThrough`**：按字节从最旧整段删除时推进水位，SHALL 用 `prunedThrough` 与
+   `session_history_pruned` 表达「更早的部分已回收」，SHALL NOT 混入窗口内缺口。
+
+各会话**最新终态 `task_status`** SHALL 作为保护行，SHALL NOT 被条数淘汰删除（结论比过程重要）；
+adapter 在终态前 SHALL 有界 flush 最终消息/附件，终态 task_status 的 eventSeq SHALL 大于所有 feed 事件；
+收尾失败 SHALL 在终态标记 feedIncomplete。缺口是**持久化事实**：SHALL NOT 因断线重连而消失或改变。
 
 #### Scenario: 半截文本（1.0 口径）
 
@@ -398,6 +429,23 @@ SHALL 大于所有 feed 事件；收尾失败 SHALL 在终态标记 feedIncomple
 - **THEN** task_artifact 携带 name/mimeType/size/sha256 与可选 inline base64；超过上限只发元数据并明确不可下载；
   文件读取限制在任务 cwd realpath 子树，模型提供的路径不作为读取依据，符号链接/凭据路径拒绝
 
+#### Scenario: 分类淘汰产生缺口
+
+- **WHEN** 某任务的 step 条数超过预算上限，且类型交错导致序号不连续
+- **THEN** `eventWindow.gaps` 非空、每段带 `reason`（如 `count`），平台据此知道「中间缺内容」而不是「序号连续」；
+  同一快照里该任务的最新终态 `task_status` 仍在
+
+#### Scenario: 前缀删除不产生窗口内缺口
+
+- **WHEN** 某任务的 payload 字节超过预算，从最旧整段删除
+- **THEN** `prunedThrough` 前移、`eventWindow.gaps` 为空；游标落在已删区间时回 `found:true` +
+  `errorCode: session_history_pruned` + 同一 `prunedThrough`
+
+#### Scenario: 断线重连后缺口不变
+
+- **WHEN** 平台断开并重连，对同一任务再次 get_task
+- **THEN** `eventWindow`（`oldestEventSeq` / `latestEventSeq` / `gaps`）与断线前完全一致 —— 缺口不会被「治好」
+
 #### Scenario: 不支持的 feed 维度
 
 - **WHEN** 某适配器无法可靠提取 assistant 文本或富工具内容
@@ -411,8 +459,8 @@ bridge SHALL 支持 `get_task { taskId, include, afterEventSeq?, beforeEventSeq?
 afterEventSeq 与 beforeEventSeq 不得同时出现，同时出现回 `protocol_incompatible` 而不是静默挑一个。
 limit 默认 200、上限 1000，单响应 1 MiB 是默认可配置安全策略。快照 SHALL 包含状态、permissionMode、
 可选 stopReason、按 eventSeq 升序的 events、partialMessages、pendingInteraction、
-eventWindow { oldestRetainedEventSeq, lastEventSeq, gaps }、hasMoreBefore、可选 prunedThrough 和 feedIncomplete，
-SHALL NOT 包含 raw task_log、Form content 或大文件正文。任务不存在回 task_not_found（404，ID 从未存在）；
+eventWindow { oldestEventSeq, latestEventSeq, gaps }、hasMoreBefore、可选 prunedThrough 和 feedIncomplete，
+SHALL NOT 包含 Form content 或大文件正文。任务不存在回 task_not_found（404，ID 从未存在）；
 tombstone 命中回 session_deleted（410，会话被删除且 ID 永不复用，平台应放弃重试）；
 游标落在已裁剪区间时仍回 `found: true`，但附 `errorCode: session_history_pruned`（410）与 prunedThrough，
 表达「更早的部分已回收」，不得表现为「没有更早的历史」。close_session 只关闭会话、保留历史，
